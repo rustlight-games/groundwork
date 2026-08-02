@@ -90,8 +90,8 @@ impl Default for WindField {
     fn default() -> Self {
         Self {
             direction: Vec2::new(1.0, 0.35).normalize(),
-            speed: 3.4,
-            turbulence: 1.3,
+            speed: 1.6,
+            turbulence: 0.7,
             gust_strength: 5.0,
             gust_speed: 7.0,
             gust_width: 2.6,

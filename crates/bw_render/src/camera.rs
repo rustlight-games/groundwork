@@ -30,7 +30,7 @@ impl Default for BattleCamera {
         // Thirty-two gives about 1800 m² — deliberately wider than Warcraft,
         // because an auto-battler is watched rather than driven and the whole
         // engagement wants to be on screen at once.
-        Self { view_height: 32.0 }
+        Self { view_height: 26.0 }
     }
 }
 

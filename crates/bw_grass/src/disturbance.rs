@@ -26,6 +26,7 @@
 use bevy::prelude::*;
 
 use crate::field::GrassField;
+use crate::noise::fbm;
 
 /// Bend a firm contact asks for, in radians. Not quite flat — a body pushes
 /// grass aside as much as it presses it down.
@@ -111,18 +112,36 @@ pub struct Shockwave {
     pub strength: f32,
     /// Where the ring gives out, in metres.
     pub max_radius: f32,
+    /// Seed for the raggedness and swirl of this particular blast.
+    ///
+    /// Per-blast rather than global, so two blasts in the same place do not
+    /// produce the same shape.
+    pub seed: u32,
 }
+
+/// How far the front's radius wanders, as a fraction of it.
+const RAGGEDNESS: f32 = 0.30;
+
+/// Lobes around the ring. Low, so the front undulates rather than crinkles.
+const RAGGED_LOBES: f32 = 2.4;
+
+/// How far the kick twists away from straight out, in radians.
+const SWIRL: f32 = 1.5;
+
+/// Cycles per metre of the field that does the twisting.
+const SWIRL_METRES: f32 = 0.55;
 
 impl Default for Shockwave {
     fn default() -> Self {
         Self {
             origin: Vec2::ZERO,
             age: 0.0,
+            seed: 0x51A5_5EED,
             // Comfortably faster than a person, slow enough to watch cross the
             // field. Much quicker and it is a flicker rather than a wave.
             speed: 7.0,
             width: 0.75,
-            strength: 34.0,
+            strength: 62.0,
             max_radius: 11.0,
         }
     }
@@ -167,8 +186,16 @@ pub struct GrassEvents {
 impl GrassEvents {
     /// Set off a blast at a world position.
     pub fn shockwave(&mut self, origin: Vec2) {
+        // Seeded from where it went off, so two blasts in different places look
+        // different and one replayed in the same place looks the same.
+        let seed = crate::noise::hash_2d(
+            (origin.x * 64.0) as i32,
+            (origin.y * 64.0) as i32,
+            0x9E37_79B9,
+        );
         self.shockwaves.push(Shockwave {
             origin,
+            seed,
             ..Default::default()
         });
     }
@@ -297,7 +324,26 @@ pub fn stamp_shockwave(field: &mut GrassField, wave: &Shockwave) {
                 continue;
             }
 
-            let front = range - radius;
+            // The front is ragged, not a circle.
+            //
+            // A perfectly circular ring reads as a drop landing in water, which
+            // is the one thing a blast in grass should not look like. Real
+            // fronts break up: they run further where the grass is thin and
+            // stall where it is thick. Perturbing the radius by a smooth
+            // angular field costs one noise sample and turns the ring into
+            // something that happened *in* the grass.
+            let angle = offset.y.atan2(offset.x);
+            let ragged = radius
+                * (1.0
+                    + RAGGEDNESS
+                        * (fbm(
+                            angle.cos() * RAGGED_LOBES,
+                            angle.sin() * RAGGED_LOBES,
+                            wave.seed,
+                            2,
+                        ) - 0.5));
+
+            let front = range - ragged;
             let envelope = (-(front * front) / variance).exp();
             if envelope <= 1e-3 {
                 continue;
@@ -308,6 +354,23 @@ pub fn stamp_shockwave(field: &mut GrassField, wave: &Shockwave) {
             } else {
                 Vec2::X
             };
+            // Not purely outward. A blast throws grass out *and* stirs it, so
+            // the kick is swirled by the same angular field — without this the
+            // whole ring lies down in perfect radial symmetry, which is the
+            // other half of the water-drop look.
+            let swirl = SWIRL
+                * (fbm(
+                    point.x * SWIRL_METRES,
+                    point.y * SWIRL_METRES,
+                    wave.seed ^ 0x51DE_9A7C,
+                    2,
+                ) - 0.5);
+            let (sin, cos) = swirl.sin_cos();
+            let outward = Vec2::new(
+                outward.x * cos - outward.y * sin,
+                outward.x * sin + outward.y * cos,
+            );
+
             let push = envelope * intensity;
 
             // The kick, which throws the grass outward.
@@ -572,9 +635,15 @@ mod tests {
     }
 
     #[test]
-    fn a_shockwave_is_rotationally_symmetric() {
-        // The blast must not favour a screen axis, which is the giveaway that
-        // something is being simulated in projected space.
+    fn a_shockwave_has_no_directional_bias() {
+        // The blast is deliberately *not* rotationally symmetric — a perfect
+        // ring reads as a drop landing in water, which is the one thing an
+        // explosion in grass must not look like. So the property worth guarding
+        // is weaker and more useful: the raggedness must be *unbiased*. It may
+        // run further in one place than another, but averaged around the ring
+        // it must not favour a direction, because a systematic bias is the
+        // giveaway that something is being simulated in projected space rather
+        // than in the world.
         let mut field = still_field();
         let dt = 1.0 / 60.0;
         let mut wave = Shockwave {
@@ -587,20 +656,65 @@ mod tests {
             wave.age += dt;
         }
 
-        let magnitudes: Vec<f32> = [
-            Vec2::new(1.2, 0.0),
-            Vec2::new(-1.2, 0.0),
-            Vec2::new(0.0, 1.2),
-            Vec2::new(0.0, -1.2),
-        ]
-        .iter()
-        .map(|&p| field.bend_at(p).length())
-        .collect();
+        // Sampled densely around the ring rather than at four points, so local
+        // raggedness averages out and only a real bias survives.
+        let samples = 64;
+        let mut sum = Vec2::ZERO;
+        let mut total = 0.0;
+        for i in 0..samples {
+            let angle = i as f32 / samples as f32 * std::f32::consts::TAU;
+            let at = Vec2::new(angle.cos(), angle.sin()) * 1.2;
+            let magnitude = field.bend_at(at).length();
+            sum += Vec2::new(angle.cos(), angle.sin()) * magnitude;
+            total += magnitude;
+        }
 
-        let min = magnitudes.iter().cloned().fold(f32::MAX, f32::min);
-        let max = magnitudes.iter().cloned().fold(0.0, f32::max);
-        assert!(max > 0.05, "the blast should have reached the probes");
-        assert!((max - min) / max < 0.1, "asymmetric blast: {magnitudes:?}");
+        assert!(
+            total / samples as f32 > 0.02,
+            "the blast should have reached the ring"
+        );
+        // The magnitude-weighted centroid of the ring should sit on the origin.
+        let bias = sum.length() / total;
+        assert!(bias < 0.12, "the blast leans one way: bias {bias}");
+    }
+
+    #[test]
+    fn a_shockwave_front_is_ragged() {
+        // The other half of the same decision. If this ever measures perfectly
+        // even, the raggedness has been tuned or refactored away and the blast
+        // is a water drop again.
+        let mut field = still_field();
+        let dt = 1.0 / 60.0;
+        let mut wave = Shockwave {
+            width: 0.4,
+            ..Default::default()
+        };
+        for _ in 0..24 {
+            stamp_shockwave(&mut field, &wave);
+            field.step(dt, &calm());
+            wave.age += dt;
+        }
+
+        let samples = 64;
+        let magnitudes: Vec<f32> = (0..samples)
+            .map(|i| {
+                let angle = i as f32 / samples as f32 * std::f32::consts::TAU;
+                field
+                    .bend_at(Vec2::new(angle.cos(), angle.sin()) * 1.2)
+                    .length()
+            })
+            .collect();
+        let mean = magnitudes.iter().sum::<f32>() / samples as f32;
+        let spread = (magnitudes
+            .iter()
+            .map(|m| (m - mean) * (m - mean))
+            .sum::<f32>()
+            / samples as f32)
+            .sqrt();
+        assert!(
+            spread / mean.max(1e-6) > 0.05,
+            "the front is perfectly even"
+        );
     }
 
     #[test]

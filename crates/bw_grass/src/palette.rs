@@ -107,7 +107,7 @@ pub const DRY: usize = 3;
 /// shaded and sunlit grass are the same plant rather than two different ones.
 ///
 /// Red is not incidental either. The art target runs a red-to-green ratio of
-/// 0.51 — a warm green, not a pure one — and pushing saturation up without
+/// 0.65 — a distinctly yellow-green, not a pure one — a warm green, not a pure one — and pushing saturation up without
 /// raising red alongside it drove ours to 0.32 and the grass toward emerald.
 /// Saturation and hue have to be tuned together or one simply eats the other.
 ///
@@ -118,9 +118,9 @@ pub const DRY: usize = 3;
 /// obviously wrong beside the reference, because the sky and fill multiply
 /// whatever blue the albedo offers them straight back up.
 const ALBEDO: [Vec3; RAMPS] = [
-    Vec3::new(0.042, 0.126, 0.023), // shadow: cooler, bluer leaf
-    Vec3::new(0.064, 0.166, 0.013), // body
-    Vec3::new(0.110, 0.212, 0.009), // highlight: yellower leaf
+    Vec3::new(0.062, 0.132, 0.012), // shadow: cooler, bluer leaf
+    Vec3::new(0.098, 0.174, 0.007), // body
+    Vec3::new(0.168, 0.228, 0.005), // highlight: yellower leaf
     Vec3::new(0.150, 0.128, 0.052), // dry: straw
 ];
 
@@ -136,7 +136,7 @@ const ALBEDO: [Vec3; RAMPS] = [
 /// was a field with the right *average* brightness and a third of the target's
 /// range — which is exactly what "flat" looks like when you take it apart.
 /// Brightness is not the problem a flat image has. Reach is.
-const EXPOSURE: f32 = 0.30;
+const EXPOSURE: f32 = 0.42;
 
 /// Sky reaching the deepest step of a ramp. Shared with the shader.
 const OCCLUSION_FLOOR: f32 = light::CANOPY_FLOOR;

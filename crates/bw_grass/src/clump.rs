@@ -558,16 +558,15 @@ use crate::noise::{fbm, hash_2d};
 /// If more density is ever wanted, the answer is not this number: it is fewer,
 /// larger sprites, or an opaque pass for the dense interior with blending kept
 /// for the silhouette.
-pub const PER_SQUARE_METRE: f32 = 3.2;
+pub const PER_SQUARE_METRE: f32 = 15.0;
 
 /// World size of a clump sprite, shortest to tallest, in metres.
 ///
-/// Large. At the battle camera's thirty-four pixels to the metre these are
-/// thirty to seventy pixels tall, which is the size at which a clump reads as a
-/// plant. Half that and they merge into a fine even texture — the field looks
-/// continuous and nothing in it is legible, which is the same failure the
-/// ribbon renderer had for the same reason.
-pub const SIZE: (f32, f32) = (0.95, 2.1);
+/// Seventeen to thirty-six pixels at the battle camera's thirty-four pixels to
+/// the metre. Large enough that a clump is a legible plant, small enough that a
+/// screenful is a field of them rather than a dozen shrubs — at twice this they
+/// read as bushes and the ground stops having a scale.
+pub const SIZE: (f32, f32) = (0.60, 1.30);
 
 /// Metres per cycle of the field that varies clump size and tint.
 pub const VARIATION_METRES: f32 = 9.0;
@@ -594,6 +593,15 @@ pub const DENSITY_METRES: f32 = 6.5;
 
 /// How far that field swings the count, in 0..1.
 const DENSITY_SWING: f32 = 0.45;
+
+/// Fraction of candidate clumps drawn at full detail.
+///
+/// Every candidate carries a stable random rank and is drawn when its rank
+/// falls below this. The stability is the whole point: lowering the fraction
+/// removes clumps without moving the ones that remain, so a density change is
+/// a *subset* of the denser field rather than an unrelated field. Thinning by
+/// re-rolling instead makes every plant jump the moment the camera moves.
+pub const DENSITY: f32 = 1.0;
 
 /// World position of the clump's root, shared by all four corners.
 pub const ATTRIBUTE_ROOT: MeshVertexAttribute =
@@ -714,7 +722,13 @@ pub fn build_chunk(field: &GrassField, chunk: IVec2, detail: f32, seed: u32) -> 
                         chunk_seed ^ 0x4D65_1F0B,
                         3,
                     );
-            if unit(hash.wrapping_mul(0x85eb_ca6b)) > field.density_at_world(root) * thickness {
+            // The stable rank. Drawn from the clump's own hash and never
+            // re-rolled, so it means the same thing at every density.
+            let rank = unit(hash.wrapping_mul(0x85eb_ca6b));
+            if rank > DENSITY {
+                continue;
+            }
+            if rank > field.density_at_world(root) * thickness {
                 continue;
             }
 
@@ -819,6 +833,13 @@ use bevy::render::render_resource::{
 use bevy::shader::ShaderRef;
 use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dKey};
 
+/// Coverage below which a clump fragment is discarded.
+///
+/// Mirrored in `clump.wgsl`. Around a half rather than near zero: the point of
+/// clipping is a clean silhouette the depth buffer can sort, and a low
+/// threshold keeps the soft rim that made sorting necessary in the first place.
+pub const ALPHA_CUT: f32 = 0.45;
+
 /// Where the clump shader lives.
 pub const SHADER_PATH: &str = "shaders/clump.wgsl";
 
@@ -842,12 +863,24 @@ pub struct ClumpSettings {
     /// bending over genuinely does get shorter.
     pub squash: f32,
     /// Amplitude of the per-clump idle sway, in sprite heights.
+    ///
+    /// Zero, and it should stay there. A per-clump sine looked like the obvious
+    /// way to keep a still field alive and it is the single change that made
+    /// the grass read as a water surface: smooth, continuous, everywhere at
+    /// once. Grass at rest is still. Liveliness belongs to the wind field,
+    /// which already gusts.
     pub sway: f32,
     /// How far tint shifts a clump's colour.
     pub tint_strength: f32,
     /// Shade multiplier at the darkest tint.
     pub tint_floor: f32,
-    pub _pad0: f32,
+    /// Exponent on how far up a sprite the lean is applied.
+    ///
+    /// One is a linear shear, and linear is wrong: it puts half the lean at
+    /// half the height, so the sprite slides as a unit and the plant reads as
+    /// moving across the ground rather than bending out of it. Grass is stiff
+    /// near the ground, so the exponent pushes the motion into the top.
+    pub root_stiffness: f32,
     pub _pad1: f32,
 }
 
@@ -859,12 +892,12 @@ impl Default for ClumpSettings {
             field_resolution: 1.0,
             time: 0.0,
             max_angle: 84.0_f32.to_radians(),
-            lean: 0.55,
+            lean: 0.30,
             squash: 0.22,
-            sway: 0.05,
+            sway: 0.0,
             tint_strength: 0.55,
-            tint_floor: 0.80,
-            _pad0: 0.0,
+            tint_floor: 0.86,
+            root_stiffness: 2.6,
             _pad1: 0.0,
         }
     }
@@ -891,13 +924,25 @@ impl Material2d for ClumpMaterial {
         SHADER_PATH.into()
     }
 
-    /// Blended, which opaque geometry never needed.
+    /// Clipped, not blended — and that choice fixes two separate problems.
     ///
-    /// A baked clump has soft edges and that is the whole point of baking it;
-    /// an alpha test would cut them back into the hard silhouette the sprite
-    /// exists to avoid.
+    /// Blending was the obvious reading of "the sprites have soft edges", and
+    /// it cost more than the softness was worth:
+    ///
+    /// - **Ordering.** Blended fragments composite in draw order, so overlap
+    ///   had to be sorted, and any residual order error lined up along the
+    ///   isometric depth axis into a visible lattice. Clipped grass writes
+    ///   depth, so the hardware sorts per fragment and the lattice becomes
+    ///   impossible rather than something to be sorted around.
+    /// - **Fill rate.** Blending pays for every overlapped fragment. Clipping
+    ///   lets the depth test reject them, which is what makes a dense field
+    ///   affordable at all.
+    ///
+    /// The cost is a hard silhouette. That is much less of a loss than it
+    /// sounds: the atlas still carries all its interior shading, and what gets
+    /// cut is only the transparent rim.
     fn alpha_mode(&self) -> AlphaMode2d {
-        AlphaMode2d::Blend
+        AlphaMode2d::Mask(ALPHA_CUT)
     }
 
     fn specialize(

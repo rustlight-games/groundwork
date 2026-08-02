@@ -61,7 +61,7 @@ fn main() {
 struct Zoom(f32);
 
 /// The height the game frames the battlefield at.
-const RTS_HEIGHT: f32 = 32.0;
+const RTS_HEIGHT: f32 = 26.0;
 
 fn setup(mut commands: Commands) {
     // Start where the game starts, so what the sandbox shows is what ships.

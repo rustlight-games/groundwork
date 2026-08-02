@@ -43,14 +43,27 @@ const ROWS: f32 = 8.0;
 
 const TAU: f32 = 6.2831855;
 
-// Coverage below which a fragment is thrown away.
+// How much of the field's bend a clump takes, limpest to stiffest.
 //
-// Higher than it looks like it should be, and it is a performance number as
-// much as a visual one: these sprites are blended and heavily overlapped, so
-// the long transparent tail of every clump is real fill-rate spent on pixels
-// that change almost nothing. Cutting it early is most of what makes a dense
-// field affordable.
-const ALPHA_CUT: f32 = 0.14;
+// A very wide spread. Neighbours that answer the wind alike move as one
+// surface, and an undulating surface is water however green it is.
+const STIFFNESS_MIN: f32 = 0.30;
+const STIFFNESS_MAX: f32 = 1.70;
+
+// Bend below which a clump does not move at all, as a fraction of the cap.
+//
+// Grass has stiff stems and a canopy that catches on itself; it ignores a light
+// breeze entirely. Without this every plant answers every ripple in the field
+// and the whole thing flows.
+const STICTION: f32 = 0.17;
+
+// Coverage below which a fragment is thrown away. Mirrored from clump.rs.
+//
+// These sprites are clipped rather than blended, so this is the silhouette:
+// everything above it writes depth and sorts per fragment, everything below it
+// never existed. Around a half, because a low threshold keeps the soft rim that
+// made sorting a problem in the first place.
+const ALPHA_CUT: f32 = 0.45;
 
 struct ClumpSettings {
     field_origin: vec2<f32>,
@@ -68,7 +81,7 @@ struct ClumpSettings {
     tint_strength: f32,
     // Shade multiplier at the darkest tint.
     tint_floor: f32,
-    _pad0: f32,
+    root_stiffness: f32,
     _pad1: f32,
 }
 
@@ -141,24 +154,47 @@ fn vertex(vertex: Vertex) -> ClumpOutput {
     let bend = field.xy;
     let strength = clamp(length(bend) / max(settings.max_angle, 1e-4), 0.0, 1.0);
 
-    // Every clump takes a different share and drifts at its own rate, so a
-    // gust crosses the field as a wave rather than snapping it flat as a sheet.
-    let stiffness = 0.6 + 0.8 * hash11(random + 4.1);
-    let idle = sin(settings.time * (0.7 + 0.5 * hash11(random + 9.3)) + random * TAU);
+    // Every clump takes a very different share of the wind. The spread is wide
+    // on purpose: neighbours that respond alike move as a *surface*, and a
+    // surface that undulates is water. Grass is a field of separate stiff
+    // plants, and the difference between the two is almost entirely how much
+    // their neighbours disagree with them.
+    let stiffness = STIFFNESS_MIN + (STIFFNESS_MAX - STIFFNESS_MIN) * hash11(random + 4.1);
+
+    // Grass does not respond to a light breeze at all. Below this the plant
+    // simply does not move — stems are stiff and there is friction in the
+    // canopy, and without a threshold every clump answers every ripple in the
+    // field, which is exactly what a liquid does.
+    let responsive = smoothstep(STICTION, 1.0, strength);
 
     var direction = vec2<f32>(0.0, 0.0);
     if (strength > 1e-4) {
         direction = normalize(bend);
     }
     // The lean, in world metres, applied only to the top of the sprite.
-    let lean = direction * (strength * stiffness * settings.lean * height)
-        + vec2<f32>(1.0, -1.0) * (idle * settings.sway * height * 0.35);
+    //
+    // There is no idle sway term. There used to be — a sine per clump — and it
+    // was the single thing that made a still field read as a water surface:
+    // continuous, smooth, everywhere at once. Grass at rest is *still*. All the
+    // motion should come from the wind field, which already gusts.
+    let lean = direction * (responsive * stiffness * settings.lean * height);
 
-    // The quad stands up from its root. `up` is 0 at the bottom edge and 1 at
-    // the top, so the shear is zero where the plant is planted.
-    let squash = 1.0 - settings.squash * strength * stiffness;
+    // How much of the lean this height takes.
+    //
+    // Emphatically *not* linear in `up`. A linear shear puts half the lean at
+    // half the height, which means the whole sprite slides sideways together
+    // and the plant reads as sliding across the ground rather than bending out
+    // of it — even though the root vertex itself never moves. A grass plant is
+    // stiff near the ground and limp at the tip, so almost none of the motion
+    // belongs in the bottom third.
+    //
+    // `root_stiffness` is the exponent: at one this is the old linear shear,
+    // and around two and a half the base is visibly planted.
+    let weight = pow(up, settings.root_stiffness);
+
+    let squash = 1.0 - settings.squash * responsive * stiffness;
     var world = vec3<f32>(
-        vertex.root + lean * up,
+        vertex.root + lean * weight,
         up * height * squash,
     );
 

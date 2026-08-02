@@ -163,7 +163,12 @@ fn chunk_bounds(coord: IVec2) -> Aabb {
     // overhang their chunk in every direction. Padding for a blade instead left
     // clumps near a chunk edge culled with it, which showed as faint diagonal
     // seams across the whole field on the chunk lattice.
-    let tallest = clump::SIZE.1 * 1.4;
+    // Generous, because the cost of over-estimating is a chunk that survives
+    // culling it did not need to and the cost of under-estimating is clumps
+    // vanishing at the edge of the view. A clump is drawn taller than it is
+    // rooted, wider than it is tall, and leans further still in wind — three
+    // reasons the world-space size alone is not the bound.
+    let tallest = clump::SIZE.1 * 3.0;
 
     let mut min = Vec3::splat(f32::MAX);
     let mut max = Vec3::splat(f32::MIN);
