@@ -11,23 +11,37 @@
 //! `BW_CAPTURE=path.png BW_CAPTURE_AFTER=2.5 cargo run -p bw_grass --example
 //! grass_sandbox` runs it headlessly enough to grab a frame and exit, which is
 //! how the look gets checked without a person sitting in front of it.
+//!
+//! `BW_CANVAS_HEIGHT=1080` (or 540, or 360) overrides the canvas height for one
+//! run, so the same seed and the same wind clock can be photographed at every
+//! chunkiness and compared side by side. The window is 1080p either way.
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+use bevy::window::WindowResolution;
 use bw_grass::disturbance::GrassEvents;
 use bw_grass::disturbance::GrassInteractor;
 use bw_grass::field::GrassField;
 use bw_grass::scene::GrassPointer;
-use bw_grass::{GrassPlugin, GrassScenePlugin, GrassSet, WindField, grass_camera};
+use bw_grass::{
+    GrassPlugin, GrassScenePlugin, GrassSet, PixelCanvas, PixelStyle, WindField, grass_camera,
+};
 
 fn main() {
     App::new()
+        // Before the plugins, so `PixelCanvasPlugin::build` finds it rather
+        // than inserting the shipped default over the top.
+        .insert_resource(PixelStyle::from_env())
         .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "Backseat Warlord — grass sandbox".to_string(),
+                        // The battle display, so what the sandbox shows is the
+                        // canvas the game runs at rather than whatever size the
+                        // window manager felt like.
+                        resolution: WindowResolution::new(1920, 1080),
                         ..default()
                     }),
                     ..default()
@@ -100,11 +114,30 @@ fn bw_render_projection(view_height: f32) -> Projection {
     })
 }
 
-fn capture(keys: Res<ButtonInput<KeyCode>>, mut commands: Commands) {
+fn capture(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut commands: Commands,
+    canvas: Option<Res<PixelCanvas>>,
+) {
     if keys.just_pressed(KeyCode::F12) {
         commands
-            .spawn(Screenshot::primary_window())
+            .spawn(shot(canvas.as_deref()))
             .observe(save_to_disk("grass.png"));
+    }
+}
+
+/// What to photograph: the canvas if there is one, the window otherwise.
+///
+/// The canvas, not the window, and the distinction stopped being cosmetic the
+/// moment the blit scale left one. The resemblance benchmark measures features
+/// in pixels against a pixel-art plate; photograph the window and every feature
+/// is `scale` times too big, so the same field scores differently on a retina
+/// display than on a plain one. The canvas is the art at its own resolution,
+/// which is the thing the plate is comparable to.
+fn shot(canvas: Option<&PixelCanvas>) -> Screenshot {
+    match canvas {
+        Some(canvas) => Screenshot::image(canvas.image.clone()),
+        None => Screenshot::primary_window(),
     }
 }
 
@@ -120,6 +153,7 @@ fn scripted_capture(
     mut pointers: Query<&mut GrassInteractor, With<GrassPointer>>,
     mut exit: MessageWriter<AppExit>,
     mut stage: Local<u32>,
+    canvas: Option<Res<PixelCanvas>>,
 ) {
     let Ok(path) = std::env::var("BW_CAPTURE") else {
         return;
@@ -158,7 +192,7 @@ fn scripted_capture(
     if *stage == 1 && now >= at {
         *stage = 2;
         commands
-            .spawn(Screenshot::primary_window())
+            .spawn(shot(canvas.as_deref()))
             .observe(save_to_disk(path));
     }
     if *stage == 2 && now >= at + 1.0 {

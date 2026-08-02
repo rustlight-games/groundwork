@@ -78,7 +78,7 @@ pub use field::GrassField;
 pub use lod::{GrassLod, lod_for_distance};
 pub use material::GrassMaterial;
 pub use params::GrassParams;
-pub use pixel::{PixelCanvas, PixelCanvasPlugin, grass_camera};
+pub use pixel::{CANVAS_HEIGHT, PixelCanvas, PixelCanvasPlugin, PixelStyle, grass_camera};
 pub use scene::{GrassScene, GrassScenePlugin};
 pub use wind::WindField;
 

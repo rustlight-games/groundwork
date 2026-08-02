@@ -297,7 +297,30 @@ fn overdraw(report: &mut Report, atlas: &clump::Atlas) {
     section.count("grass.overdraw.card_pixels", card_area, false);
     section.count("grass.overdraw.clumps_on_screen", clumps, false);
 
-    depth_rejection(&mut section, occupancy);
+    // The totals, which are the only numbers here that move with the canvas.
+    //
+    // Everything above is per-pixel, and per-pixel figures are deliberately
+    // scale-invariant: halve the canvas and both the card and the screen shrink
+    // by the same factor, so `layers_per_pixel` reads identically. That is the
+    // right way to measure the *art* — a field is fifteen cards deep whatever
+    // resolution you draw it at — and it is exactly the wrong way to measure the
+    // *cost*, which is what a change to the canvas moves.
+    //
+    // This was a real hole. The canvas dropped from 1080 rows to 540, cutting
+    // the fragment count fourfold, and not one measurement in the suite moved.
+    // A benchmark that cannot see a fourfold change in the thing it exists to
+    // count is worse than no benchmark, because it reports "no change" with the
+    // same confidence it reports everything else.
+    section.count("grass.overdraw.screen_pixels", screen_pixels, false);
+    let rasterised = screen_pixels * layers;
+    section.count("grass.overdraw.rasterised_fragments", rasterised, false);
+    section.count(
+        "grass.overdraw.shaded_fragments",
+        rasterised * occupancy,
+        false,
+    );
+
+    depth_rejection(&mut section, occupancy, rasterised);
 }
 
 /// How many of those fragments the depth test kills before they run.
@@ -316,7 +339,7 @@ fn overdraw(report: &mut Report, atlas: &clump::Atlas) {
 /// pixels, one depth per card rather than per fragment. What it captures is the
 /// thing that actually decides the cost — whether a fragment arrives before or
 /// after the thing that hides it — and that is a property of the order alone.
-fn depth_rejection(section: &mut Section, occupancy: f64) {
+fn depth_rejection(section: &mut Section, occupancy: f64, rasterised: f64) {
     let field = harness::uniform_field(128);
     let per_metre = pixels_per_metre();
     let batch = clump::build_chunk(&field, bevy::math::IVec2::ZERO, 1.0, 0x6A72_A551);
@@ -361,6 +384,15 @@ fn depth_rejection(section: &mut Section, occupancy: f64) {
     section.count(
         "grass.overdraw.modelled_fragments",
         cards.len() as f64,
+        false,
+    );
+
+    // The bottom line: fragments that survive the depth test *and* the alpha
+    // test, per frame. Every saving in this section — the draw order, the
+    // canvas height, a card trim — has to show up here or it did not happen.
+    section.count(
+        "grass.overdraw.executed_fragments",
+        rasterised * (1.0 - shipped) * occupancy,
         false,
     );
 }

@@ -268,6 +268,21 @@ BW_CAPTURE=$PWD/benchmarks/capture/grass.png BW_CAPTURE_AFTER=3 \
   cargo run --release -p bw_grass --example grass_sandbox
 ```
 
+The screenshot is of the **canvas**, not the window, and that distinction is
+load-bearing rather than cosmetic. Every metric in this section measures features
+in pixels; photograph the window and each one is `PixelCanvas::scale` times too
+big, so the same field scores differently on a retina display than on a plain
+one. The canvas is 960×540 whatever the display is, which is the resolution the
+art is authored at and the only one comparable to the plate.
+
+Two metrics in this section are known to punish large-scale tonal structure, and
+a run that improves the tone field will show both falling. `match.feature_scale`
+and `match.repetition` are both computed against a small tiling swatch of
+near-uniform tone; a field with 14 m patches has no way to score well on either,
+because the reference has no room to contain the thing being measured. Neither is
+wrong — read them beside `tone.spread_ratio` and `match.overall` rather than on
+their own, and see `clump.rs` for the controlled comparison that pins the cause.
+
 Everything else runs without a GPU. That is deliberate: a suite that needs a
 window does not run in CI, on a headless box, or twice in the same minute.
 

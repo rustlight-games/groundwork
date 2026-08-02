@@ -1000,9 +1000,34 @@ pub const VARIATION_METRES: f32 = 9.0;
 // a multiplier of 0.923 to 1.0, which is a quarter of one bucket.
 //
 // This is *the* thing that separates painted grass from generated grass at
-// battlefield distance. A clump is thirty pixels there. Everything that varies
-// inside one is gone; what survives is whole plants disagreeing with each other,
-// and they were not disagreeing at all.
+// battlefield distance. A clump is eight to sixteen pixels there. Everything
+// that varies inside one is gone; what survives is whole plants disagreeing with
+// each other, and they were not disagreeing at all.
+//
+// Widening the rungs closed most of the gap — 0.795 to 2.243 against the
+// target's 2.409 — and it is worth recording what did *not* work, because both
+// are the obvious things to try:
+//
+// - **More clumps.** Density was swept 19.5 → 46 per square metre. Every
+//   resemblance metric fell monotonically and `match.overall` went 0.482 →
+//   0.414, because a denser canopy is a *flatter* one: the extra plants fill the
+//   gaps that let bare earth and shadow show through. Density is what makes a
+//   field look uniform, not what makes it look detailed.
+// - **More contrast on a narrow span.** `TONE_CONTRAST` was swept to 2.4 with
+//   eight rungs. `grass.tone.shade_levels` stayed pinned at 9 the whole way —
+//   the vocabulary was already fully used, and pushing harder only piled more of
+//   the field onto the two end rungs.
+//
+// The range was the constraint, and only the range.
+//
+// Two resemblance metrics move the *wrong* way and are expected to.
+// `match.feature_scale` falls 69% and `match.repetition` 74%, both because the
+// reference plate is a small tiling swatch of near-uniform tone with no room for
+// 14 m structure. Measured rather than assumed: with the capture method held
+// fixed and only the rung span changed, `texture.repetition` goes 0.0795 to
+// 0.2908 — so the patches cause it, and any field with regions large enough to
+// see the shape of will score the same way against that plate. `match.overall`
+// rises 9.3% regardless, which is the aggregate saying the trade is worth it.
 
 /// Luminance ratio between neighbouring rungs of a palette ramp.
 ///
@@ -1022,14 +1047,40 @@ pub const TONE_RATIO: f32 = 1.0418;
 /// Asymmetric, and the ceiling is the reason. The atlas already holds the *lit*
 /// colour, so brightening runs out of palette before darkening does: the
 /// brightest pixel in the sheet sits at 0.688 luminance and the brightest entry
-/// in the palette at 0.812, which is room for two rungs and not three. Downward
-/// there is the whole of the shadow ramp.
+/// in the palette at 0.812. Downward there is the whole of the shadow ramp,
+/// which is why the two numbers are so far apart.
 ///
-/// Nine levels spanning eight rungs, which is about three and a half of the art
-/// target's tones — wide enough to read as tonal structure, narrow enough that
-/// the field does not separate into light and dark halves.
-pub const TONE_RUNGS_DOWN: i32 = 7;
-pub const TONE_RUNGS_UP: i32 = 1;
+/// A gain of twenty-one rungs across the tone field, of which about fifteen are
+/// actually reached — summed Perlin covers the middle 72% of 0..1 and the clamp
+/// at either end is headroom rather than operating range. Note where those
+/// fifteen sit: the top of the reached range is the atlas's own brightness, so
+/// the field darkens into shadow and never brightens past the baked sprite. That
+/// is correct rather than a shortfall, because the atlas already holds the *lit*
+/// colour; "lighter patches" are the ones at full brightness.
+///
+/// This was 7 and 1, on the
+/// argument that a narrow span keeps the field from separating into light and
+/// dark halves — and separating into light and dark halves turned out to be the
+/// thing that was missing. At eight rungs `grass.tone.clump_spread` read 0.795
+/// against the art target's 2.409: a third of the tonal range of the thing it is
+/// copying. The field was correct, on palette, and flat.
+///
+/// Twenty-one rungs brings the spread to 2.243, and it moves the resemblance
+/// score as a whole — `grass.match.overall` 0.4849 to 0.5301, with
+/// `tone_distribution` up 42%, `chroma` 35%, and `value_hierarchy` 27%. That is
+/// the first change in this file to improve the aggregate rather than trade
+/// inside it.
+///
+/// The stopping point is `grass.tone.palette_compliance`, which is what the
+/// whole geometric-ramp scheme exists to protect. Every rung down multiplies by
+/// 1/1.0418, and eventually the darkest atlas colour times that shade falls off
+/// the bottom of its own ramp and lands on a colour the palette does not
+/// contain. At twenty-one rungs compliance is 0.960; the sweep continued to
+/// twenty-five, where the spread finally reaches the target's 2.456 and
+/// compliance collapses to 0.891. Four percent off-palette buys almost all of
+/// the range. Eleven percent is a different renderer.
+pub const TONE_RUNGS_DOWN: i32 = 18;
+pub const TONE_RUNGS_UP: i32 = 3;
 
 /// Divisor that brings a shade multiplier into the packed attribute's 0..1.
 const SHADE_SCALE: f32 = 2.0;
@@ -1041,7 +1092,7 @@ const SHADE_SCALE: f32 = 2.0;
 /// structure, and the field needs both at once: patches you can see the shape of
 /// from across the battlefield, variation inside them, and no two neighbours
 /// exactly equal.
-pub const TONE_MACRO_METRES: f32 = 12.0;
+pub const TONE_MACRO_METRES: f32 = 14.0;
 pub const TONE_MESO_METRES: f32 = 3.5;
 
 /// Metres per cycle of the finest continuous tone field.
@@ -1062,12 +1113,19 @@ pub const TONE_FINE_METRES: f32 = 1.5;
 
 /// How the three scales are mixed. Macro dominates, because macro is what the
 /// battle camera can actually resolve.
-const TONE_MACRO_WEIGHT: f32 = 0.40;
-const TONE_MESO_WEIGHT: f32 = 0.28;
-const TONE_FINE_WEIGHT: f32 = 0.18;
+///
+/// Weighted further towards macro than it was — 0.40/0.28/0.18/0.14 — for the
+/// same reason the rung span widened. The lower scales are what the eye reads as
+/// *texture*, and texture was never the problem; the missing thing was regions
+/// large enough to have a shape. Moving twelve points of weight up to the 14 m
+/// scale is what turns a uniformly speckled field into darker and lighter
+/// patches with edges you can follow.
+const TONE_MACRO_WEIGHT: f32 = 0.52;
+const TONE_MESO_WEIGHT: f32 = 0.24;
+const TONE_FINE_WEIGHT: f32 = 0.14;
 /// The per-clump term. Small on purpose — it is the only one with no extent, so
 /// it is the only one that reads as noise rather than as the field being patchy.
-const TONE_MICRO_WEIGHT: f32 = 0.14;
+const TONE_MICRO_WEIGHT: f32 = 0.10;
 
 /// How far the mixed tone field is stretched about its middle before bucketing.
 ///
@@ -1075,7 +1133,7 @@ const TONE_MICRO_WEIGHT: f32 = 0.14;
 /// limit theorem working against the art direction — and left alone it would put
 /// most of the field in the middle two rungs and waste the range at both ends.
 /// This pushes it back out.
-const TONE_CONTRAST: f32 = 1.75;
+const TONE_CONTRAST: f32 = 1.80;
 
 /// The smooth part of the tone field at a world position, in 0..1.
 ///
@@ -1870,11 +1928,20 @@ mod card_tests {
         }
     }
 
-    /// The tone field must actually reach both ends of its range.
+    /// The tone field must actually reach a wide range, not just declare one.
     ///
     /// A guard against the quiet failure mode of summing noise fields: three of
     /// them averaged together concentrate hard on the middle, and a range that
     /// is never reached is the same as a range that does not exist.
+    ///
+    /// Measured against the *reached* span rather than the declared one, because
+    /// those are not the same number and pretending they are hides the more
+    /// interesting fact. `TONE_RUNGS_DOWN` and `TONE_RUNGS_UP` set the gain — how
+    /// many rungs a unit of tone is worth — and the clamp at either end. Summed
+    /// Perlin covers about the middle 72% of 0..1, so a declared 21-rung gain
+    /// delivers about 15 rungs of actual separation and the clamp almost never
+    /// engages. That headroom is the point: the clamp is there to catch an
+    /// extreme excursion, not to be the normal operating range.
     #[test]
     fn the_tone_field_uses_most_of_its_range() {
         let field = GrassField::new(64, 0.28, 0x6A72_A551);
@@ -1888,11 +1955,19 @@ mod card_tests {
                 }
             }
         }
-        let span = TONE_RUNGS_DOWN + TONE_RUNGS_UP + 1;
+        let reached = seen.last().copied().unwrap_or(0) - seen.first().copied().unwrap_or(0);
+        // Two thirds of the declared gain, which is what a Perlin sum delivers.
+        let expected = (TONE_RUNGS_DOWN + TONE_RUNGS_UP) * 2 / 3;
         assert!(
-            seen.len() as i32 >= span - 2,
-            "only {} of {span} tone levels appear: {seen:?}",
-            seen.len()
+            reached >= expected,
+            "the tone field spans {reached} rungs, wanted at least {expected}: {seen:?}"
+        );
+        // And no gaps in the middle — every rung between the ends is used, or the
+        // field is stepping rather than shading.
+        assert_eq!(
+            seen.len() as i32,
+            reached + 1,
+            "the reached range has holes in it: {seen:?}"
         );
     }
 

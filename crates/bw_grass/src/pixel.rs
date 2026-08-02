@@ -1,9 +1,9 @@
 //! The pixel canvas.
 //!
-//! Grass does not draw to the window. It draws to a small image — around 270
-//! rows — which is then blitted to the window at a whole-number scale with
-//! nearest sampling. Everything about the pixel-art look follows from that one
-//! decision, and none of it can be faked afterwards:
+//! Grass does not draw to the window. It draws to a small image — 960×540,
+//! see [`CANVAS_HEIGHT`] — which is then blitted to the window at a whole-number
+//! scale with nearest sampling. Everything about the pixel-art look follows from
+//! that one decision, and none of it can be faked afterwards:
 //!
 //! - **Pixels are a grid, not a filter.** A blade either covers a pixel or it
 //!   does not. Post-processing a full-resolution image into chunky blocks gives
@@ -22,11 +22,11 @@
 //!
 //! ## Sizing
 //!
-//! The canvas is the window's own resolution — see [`PIXEL_SCALE`] for why it
-//! does not upscale. Should that ever change, the scale stays a whole number
-//! and the canvas overscans rather than letterboxing: a fractional scale draws
-//! some pixels four screen pixels wide and their neighbours five, which is far
-//! more visible than it sounds.
+//! The canvas height is fixed and the *scale* varies with the display — the
+//! opposite of the obvious arrangement, and [`CANVAS_HEIGHT`] explains why. The
+//! scale stays a whole number and the canvas overscans rather than
+//! letterboxing: a fractional scale draws some pixels two screen pixels wide
+//! and their neighbours three, which is far more visible than it sounds.
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{ImageRenderTarget, RenderTarget, ScalingMode};
@@ -37,28 +37,89 @@ use bevy::render::render_resource::TextureFormat;
 
 use crate::palette;
 
-/// Screen pixels per canvas pixel.
+/// Rows of canvas the grass is drawn into, whatever the display is.
 ///
-/// **One.** The canvas is the window's own resolution and nothing is upscaled.
+/// **540.** With the 16:9 framing that is a 960×540 canvas, blitted up to fill
+/// the window: two screen pixels per canvas pixel on a 1080p display, four on
+/// the 2160-row backing store a retina window of the same size actually has.
 ///
-/// That deserves explaining, because a pixel canvas that does not scale looks
-/// pointless. It is not: chunky pixels are a *different* style from what this
-/// game is aiming at. The reference is Warcraft III — hand-painted, stylised,
-/// deliberate texel detail, viewed from far enough away that no individual
-/// pixel is ever a visible square. Blowing pixels up to three screen pixels
-/// each reads as a retro de-make instead, and no amount of tuning the art
-/// underneath fixes that, because the chunkiness *is* what the eye sees first.
+/// Fixing the *canvas* rather than the *scale* is the whole trick, and it is
+/// worth being explicit about why, because the obvious version of this constant
+/// is a multiplier and the obvious version is wrong. A multiplier divides the
+/// display, so the same "2×" gives 960×540 on one monitor and 1920×1080 on
+/// another — the art is a different size on every machine, which for a pixel
+/// style is the one thing that must never happen. A fixed canvas inverts it:
+/// the picture is 960×540, and the *scale* is whatever whole number the display
+/// can fit. 1080p and its retina equivalent both land on it exactly.
 ///
-/// Everything else the canvas does still earns its place at a scale of one:
+/// The promise is a bound rather than an equality, because integer scaling
+/// cannot give more without letterboxing: a 1440-row display divides by two, not
+/// by two and two thirds, so it draws 720 rows. The canvas is therefore always
+/// in `[540, 1080)` — never finer than the design size, never as much as twice
+/// it — which is the whole of what a whole-number scale can promise.
 ///
-/// - It is where multisampling and tonemapping are turned off, which keeps
-///   every pixel exactly on palette.
-/// - It defines [`PixelCanvas::pixels_per_unit`], which the vertex shader needs
-///   to give a blade a whole number of pixels of width. Without that a stroke
-///   at this distance lands on fractional coverage and shimmers as it moves.
-/// - It keeps the option open. Raising this to two or three is a one-line
-///   change if the art direction ever wants the chunkier look.
-pub const PIXEL_SCALE: u32 = 1;
+/// The canvas used to be the window's own resolution, on the argument that the
+/// reference art is Warcraft III — hand-painted, viewed from far enough away
+/// that no pixel is ever a visible square — and that chunky pixels would read
+/// as a retro de-make. That was a claim about style made without measuring what
+/// the style costs. At 540 rows:
+///
+/// - A clump is about 7–16 pixels tall rather than 15–32, so its baked interior
+///   detail thins out and what carries the field is silhouette and tone — which
+///   is what the tonal patches were built to do.
+/// - It is a quarter of the fragments of a 1080p canvas. Nothing else available
+///   to this renderer comes close; see `grass.overdraw` in the benchmark table.
+///
+/// 360 rows was tried first and is a third of the fragments again, but at that
+/// size a clump is five pixels and the silhouette stops being readable as a
+/// plant. 540 is where the chunkiness still reads as deliberate.
+///
+/// Everything the canvas already did still holds: multisampling and tonemapping
+/// stay off, so every pixel is exactly on palette, and
+/// [`PixelCanvas::pixels_per_unit`] still tells the vertex shader how big a
+/// pixel is.
+pub const CANVAS_HEIGHT: u32 = 540;
+
+/// Runtime override for [`CANVAS_HEIGHT`].
+///
+/// Exists so 1080, 540, and 360 rows can be compared in one sitting. Insert it
+/// before startup and the canvas is built at that height instead.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct PixelStyle {
+    /// Rows of canvas. Clamped to at least one.
+    pub canvas_height: u32,
+}
+
+impl Default for PixelStyle {
+    fn default() -> Self {
+        Self {
+            canvas_height: CANVAS_HEIGHT,
+        }
+    }
+}
+
+impl PixelStyle {
+    /// Read `BW_CANVAS_HEIGHT`, falling back to the compiled-in default.
+    ///
+    /// For the sandbox and for capture scripts. The game does not consult the
+    /// environment — what ships is what [`CANVAS_HEIGHT`] says.
+    pub fn from_env() -> Self {
+        Self::parse(std::env::var("BW_CANVAS_HEIGHT").ok().as_deref())
+    }
+
+    /// The parsing half of [`from_env`](Self::from_env), without the world.
+    ///
+    /// Split out because the crate forbids `unsafe` and setting an environment
+    /// variable now needs it — so the interesting behaviour is tested here and
+    /// the read above is the one line that cannot be.
+    pub fn parse(value: Option<&str>) -> Self {
+        let canvas_height = value
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .filter(|height| *height >= 1)
+            .unwrap_or(CANVAS_HEIGHT);
+        Self { canvas_height }
+    }
+}
 
 /// Render layer the canvas blit lives on, so the grass camera cannot see it.
 pub const CANVAS_LAYER: usize = 1;
@@ -110,18 +171,34 @@ pub struct PixelCanvasPlugin;
 
 impl Plugin for PixelCanvasPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup_canvas).add_systems(
-            Update,
-            (resize_canvas, track_scale)
-                .chain()
-                .before(crate::GrassSet::Upload),
-        );
+        app.init_resource::<PixelStyle>()
+            .add_systems(Startup, setup_canvas)
+            .add_systems(
+                Update,
+                (resize_canvas, track_scale)
+                    .chain()
+                    .before(crate::GrassSet::Upload),
+            );
     }
 }
 
 /// Canvas scale and size for a window of this many physical pixels.
+///
+/// At the shipped [`CANVAS_HEIGHT`]. The benchmarks call this, so what they
+/// measure is the resolution the game runs at.
 pub fn canvas_geometry(window: UVec2) -> (u32, UVec2) {
-    let scale = PIXEL_SCALE.max(1);
+    canvas_geometry_at(window, CANVAS_HEIGHT)
+}
+
+/// The same, for a canvas height chosen by the caller.
+///
+/// The scale is the largest whole number of screen pixels that still leaves at
+/// least `canvas_height` rows to draw into. Whole, because a fractional scale
+/// draws some pixels two screen pixels wide and their neighbours three, which
+/// is far more visible than it sounds; and *at least*, because the canvas
+/// overscans rather than letterboxing.
+pub fn canvas_geometry_at(window: UVec2, canvas_height: u32) -> (u32, UVec2) {
+    let scale = (window.y / canvas_height.max(1)).max(1);
     let size = UVec2::new(
         window.x.div_ceil(scale).max(1),
         window.y.div_ceil(scale).max(1),
@@ -146,12 +223,13 @@ fn setup_canvas(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     windows: Query<&Window>,
+    style: Res<PixelStyle>,
 ) {
     let pixels = windows
         .iter()
         .next()
         .map_or(UVec2::new(1280, 720), window_pixels);
-    let (scale, size) = canvas_geometry(pixels);
+    let (scale, size) = canvas_geometry_at(pixels, style.canvas_height);
     let image = images.add(canvas_image(size));
 
     commands.insert_resource(PixelCanvas {
@@ -207,11 +285,12 @@ fn resize_canvas(
     mut sprites: Query<&mut Sprite, With<CanvasSprite>>,
     mut canvas_cameras: Query<&mut Projection, With<CanvasCamera>>,
     mut grass_cameras: Query<&mut RenderTarget, With<GrassCamera>>,
+    style: Res<PixelStyle>,
 ) {
     let Some(pixels) = windows.iter().next().map(window_pixels) else {
         return;
     };
-    let (scale, size) = canvas_geometry(pixels);
+    let (scale, size) = canvas_geometry_at(pixels, style.canvas_height);
 
     if size != canvas.size || scale != canvas.scale {
         canvas.image = images.add(canvas_image(size));
@@ -311,8 +390,51 @@ mod tests {
     #[test]
     fn a_common_window_gets_a_whole_scale_and_no_letterbox() {
         let (scale, size) = canvas_geometry(UVec2::new(1920, 1080));
-        assert_eq!(scale, PIXEL_SCALE);
+        assert_eq!(scale, 2);
         assert_eq!(size * scale, UVec2::new(1920, 1080));
+    }
+
+    #[test]
+    fn the_battle_display_is_960_by_540() {
+        // The shipped configuration, spelled out: a 1080p window shows a
+        // 960x540 canvas at a scale of two. Art direction rather than
+        // arithmetic, so a change to it should have to come through here.
+        let (scale, size) = canvas_geometry(UVec2::new(1920, 1080));
+        assert_eq!(scale, 2);
+        assert_eq!(size, UVec2::new(960, 540));
+    }
+
+    #[test]
+    fn every_display_gets_a_canvas_within_one_doubling() {
+        // The property a scale multiplier cannot give and the reason the
+        // constant is a height. A retina window of the same size has four times
+        // the pixels behind it; the art must not be four times smaller in it.
+        //
+        // Bounded rather than fixed, and the bound is the honest statement of
+        // what integer scaling can promise. An exact multiple of 540 lands on
+        // 540 exactly; 1440 does not, and rounding the scale *down* to two — the
+        // only choice that still covers the window — gives 720 rows. So the
+        // canvas is always in [540, 1080): never smaller than the design size,
+        // never as much as twice it. Rounding up instead would letterbox.
+        for window in [
+            UVec2::new(1920, 1080),
+            UVec2::new(3840, 2160),
+            UVec2::new(2560, 1440),
+            UVec2::new(5120, 2880),
+            UVec2::new(1280, 720),
+            UVec2::new(3440, 1440),
+        ] {
+            let (_, size) = canvas_geometry(window);
+            assert!(
+                size.y >= CANVAS_HEIGHT && size.y < CANVAS_HEIGHT * 2,
+                "{window:?} gave {} rows",
+                size.y
+            );
+        }
+        // And the two that matter most land exactly on the design size.
+        for window in [UVec2::new(1920, 1080), UVec2::new(3840, 2160)] {
+            assert_eq!(canvas_geometry(window).1.y, CANVAS_HEIGHT, "{window:?}");
+        }
     }
 
     #[test]
@@ -347,25 +469,59 @@ mod tests {
     }
 
     #[test]
-    fn the_canvas_is_the_windows_own_resolution() {
-        // The property that keeps this out of retro-de-make territory: no
-        // pixel is ever drawn as a visible square. If someone raises
-        // PIXEL_SCALE, this is the test that tells them what they changed.
-        for height in [720, 800, 1080, 1440, 2160, 1600] {
-            let window = UVec2::new(height * 16 / 9, height);
-            let (scale, size) = canvas_geometry(window);
-            assert_eq!(scale, 1, "the canvas is meant to render at native size");
-            assert_eq!(size, window, "{height}");
-        }
+    fn the_canvas_costs_a_quarter_of_the_fragments() {
+        // The reason the canvas is 540 rows rather than a matter of taste,
+        // stated as the ratio the overdraw benchmark moves by. It should not be
+        // possible to change the height without this test naming the price.
+        let (_, size) = canvas_geometry(UVec2::new(1920, 1080));
+        let native = 1920.0 * 1080.0;
+        let canvas = (size.x as f64) * (size.y as f64);
+        assert!((canvas / native - 0.25).abs() < 1e-6, "{canvas} / {native}");
     }
 
     #[test]
     fn a_window_smaller_than_the_canvas_still_works() {
-        // Never divide by zero into a scale of zero, which would panic on the
-        // div_ceil below it.
+        // A window with fewer rows than the design canvas cannot be scaled at
+        // all, so it draws at native size rather than letterboxing.
         let (scale, size) = canvas_geometry(UVec2::new(320, 200));
         assert_eq!(scale, 1);
         assert_eq!(size, UVec2::new(320, 200));
+    }
+
+    #[test]
+    fn a_degenerate_canvas_height_does_not_divide_by_zero() {
+        // Zero rows is nonsense, but it must be *harmless* nonsense: the height
+        // clamps to one and the arithmetic below it stays finite.
+        let (scale, size) = canvas_geometry_at(UVec2::new(320, 200), 0);
+        assert!(scale >= 1);
+        assert!(size.x >= 1 && size.y >= 1);
+        assert!(size.x * scale >= 320 && size.y * scale >= 200);
+    }
+
+    #[test]
+    fn the_height_can_be_overridden_for_comparison() {
+        // 1080, 540 and 360 rows on a 1080p display: scales of one, two, three.
+        for (height, expected) in [(1080, 1), (540, 2), (360, 3)] {
+            let (scale, size) = canvas_geometry_at(UVec2::new(1920, 1080), height);
+            assert_eq!(scale, expected, "{height}");
+            assert_eq!(size.y, height, "{height}");
+        }
+    }
+
+    #[test]
+    fn an_unusable_override_falls_back_to_the_shipped_height() {
+        // Reading the environment is a dev affordance, and a typo in it must
+        // not silently produce a canvas nobody asked for.
+        assert_eq!(PixelStyle::parse(None).canvas_height, CANVAS_HEIGHT);
+        assert_eq!(
+            PixelStyle::parse(Some("not a number")).canvas_height,
+            CANVAS_HEIGHT
+        );
+        assert_eq!(PixelStyle::parse(Some("")).canvas_height, CANVAS_HEIGHT);
+        assert_eq!(PixelStyle::parse(Some("0")).canvas_height, CANVAS_HEIGHT);
+        assert_eq!(PixelStyle::parse(Some("-2")).canvas_height, CANVAS_HEIGHT);
+        assert_eq!(PixelStyle::parse(Some("360")).canvas_height, 360);
+        assert_eq!(PixelStyle::parse(Some(" 1080 ")).canvas_height, 1080);
     }
 
     #[test]
