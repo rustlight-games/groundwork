@@ -116,8 +116,45 @@ Ask in this order:
 3. Is it real? Re-run. Performance benchmarks on a laptop under thermal load
    produce nonsense.
 
+## The grass suite
+
+`cargo bench -p bw_grass` is the worked example for a per-frame system, the way
+`score-rocks` is for a generator. It writes `benchmarks/grass.ron` and compares
+against `benchmarks/baseline/grass.ron`.
+
+It measures three things at once, because they trade against each other and any
+one of them alone is misleading.
+
+**Performance.** Step cost at three field resolutions, expressed both in
+absolute time and as `frame_share_at_60hz` — the fraction of a frame the field
+consumes. That last one is the number that decides whether a change ships.
+
+**Physics.** Properties that no correctness test notices going wrong, because
+the grass still moves:
+
+| Metric | Range | Catches |
+|---|---|---|
+| `timestep_invariance` | 0..1, higher | An integrator whose answer depends on frame rate |
+| `energy_monotonicity` | 0..1, higher | A solver quietly manufacturing energy — grass that eventually vibrates on its own |
+| `direction_isotropy` | 0..1, higher | Anything simulated in screen space, where a shove from the north behaves differently from one from the east |
+| `blast_isotropy` | 0..1, higher | Explosions coming out egg-shaped |
+| `coupling_locality` | 0..1, higher | Neighbour coupling creeping up until the field moves like a rubber sheet |
+| `axis_reinforcement` | 0..1, higher | The unsigned flattening axis failing to survive a path walked both ways |
+| `polar_cancellation` | 0..1, higher | Signed direction memory *not* cancelling when it should |
+| `wind.divergence` | 0, lower | Turbulence with sources and sinks, which sucks grass toward fixed points |
+| `wind.gust_contrast` | 0..1, higher | A single global wind vector, where the whole meadow leans as one sheet |
+
+`direction_isotropy` and `energy_monotonicity` should both read exactly 1.0.
+They are structural properties, not tuning, so treat any movement as a bug
+rather than as drift.
+
+**Aesthetics.** `placement_spread` catches blades clumping instead of spreading,
+`length_variety` catches a canopy with a mown flat top, and `luminance_spread`
+catches a palette flat enough that the grass reads as one material.
+
 ## Current state
 
-The harness, fixtures, metrics, and reporting exist and are tested. The
-criterion `benches/` directories are not written yet — they are the next piece
-of work, and this document is the standard they should follow.
+`bw_grass` has a full suite; the harness, fixtures, metrics, and reporting are
+tested. The criterion `benches/` directories for the simulation and navigation
+crates are not written yet, and this document is the standard they should
+follow.

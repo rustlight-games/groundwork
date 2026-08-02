@@ -86,3 +86,4 @@ debug/
 # benchmarks/baseline/ instead.
 benchmark-results/
 target/criterion/
+benchmarks/*.ron

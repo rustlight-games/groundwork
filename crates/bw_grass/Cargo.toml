@@ -3,13 +3,31 @@ name = "bw_grass"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Chunked grass renderer"
+description = "Grass simulation and rendering"
 
 [dependencies]
 bw_core.workspace = true
 bw_content.workspace = true
 bevy.workspace = true
+# Reinterpreting the field's f32 state as texture bytes. Bevy already depends on
+# it, so this costs nothing but the line.
+bytemuck.workspace = true
+# The solver's three hot loops are row-independent. Jacobi in particular reads
+# one buffer and writes another, so threading it changes nothing about the
+# answer — only how long it takes to get there.
+rayon.workspace = true
+
+[dev-dependencies]
+bw_bench.workspace = true
 
 [[example]]
 name = "grass_sandbox"
 path = "examples/grass_sandbox.rs"
+
+# `harness = false` because this prints a table rather than running libtest
+# cases, and `cargo bench` builds it optimised — which is the only way the
+# timings mean anything.
+[[bench]]
+name = "grass"
+path = "benches/grass.rs"
+harness = false

@@ -2722,8 +2722,11 @@ name = "bw_grass"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bw_bench",
  "bw_content",
  "bw_core",
+ "bytemuck",
+ "rayon",
 ]
 
 [[package]]

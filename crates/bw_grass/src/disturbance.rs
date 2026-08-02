@@ -1,130 +1,653 @@
-//! Trampling.
+//! Trampling and blasts.
 //!
-//! A low-resolution field that units write into as they move and that grass
-//! reads to bend away from them. Low resolution on purpose: it is uploaded
-//! every frame, and grass bending is a soft effect where a coarse field is
-//! indistinguishable from a fine one.
+//! Everything that pushes grass around, turned into contact samples the
+//! [field](crate::field) can integrate. Two shapes cover the cases that matter:
+//! a swept capsule for anything that moves through the grass, and an expanding
+//! ring for anything that goes off in it.
 //!
-//! Decays over time so an army leaves a wake that recovers behind it, which is
-//! most of what sells the effect.
+//! ## Why the capsule is swept
+//!
+//! Stamping a body at its current position leaves gaps. A unit crossing at four
+//! metres per second covers sixty-six millimetres per step, which is half a
+//! cell, and a sprinting one covers several — so the trail comes out as a line
+//! of dots rather than a track. Stamping the *segment* from the previous
+//! position to the current one costs the same and cannot skip ground, however
+//! fast the thing is going.
+//!
+//! ## Why a blast is an impulse, not a target
+//!
+//! A contact target says "be bent this far while I am here". That is right for
+//! a foot resting on grass and wrong for an explosion, which is over long
+//! before the next step. An explosion instead *kicks* the angular velocity and
+//! then lets go, so the grass flies outward, overshoots, and springs back under
+//! its own dynamics. The ring also lays down compaction and a radial axis
+//! behind itself, which is what leaves the scorched-looking star pattern.
 
 use bevy::prelude::*;
 
-/// Cells per edge of the disturbance field.
-pub const DISTURBANCE_RESOLUTION: usize = 64;
+use crate::field::GrassField;
 
-/// How much of the disturbance remains after one second.
-const DECAY_PER_SECOND: f32 = 0.4;
+/// Bend a firm contact asks for, in radians. Not quite flat — a body pushes
+/// grass aside as much as it presses it down.
+const MAX_CONTACT_ANGLE: f32 = 80.0 * std::f32::consts::PI / 180.0;
 
-/// Where the grass is currently pushed down.
-#[derive(Resource, Clone, Debug)]
-pub struct DisturbanceMap {
-    values: Vec<f32>,
-    /// World-space extent the field covers, centred on the origin.
-    pub world_size: f32,
+/// Sharpness of a footprint's edge. Above one, the influence falls off quickly
+/// and the print keeps a recognisable shape instead of blurring into a halo.
+const FOOTPRINT_POWER: f32 = 1.6;
+
+/// Speed at which a body's push is fully aligned with its travel, in m/s.
+///
+/// Below it the push turns radial, which is what a body standing still does:
+/// splay the grass outward rather than sweep it in a direction it is not going.
+const VELOCITY_BLEND_SPEED: f32 = 1.2;
+
+/// How much of a moving body's push follows its travel, at full speed.
+const VELOCITY_SHARE: f32 = 0.7;
+
+/// Contact area pressure that counts as heavy, in pascals-ish. Arbitrary units
+/// chosen so a footfall lands near one; only ratios matter.
+const REFERENCE_PRESSURE: f32 = 9_000.0;
+
+/// Speed that counts as fast, in m/s.
+const REFERENCE_SPEED: f32 = 4.0;
+
+/// Severity accrued merely by being touched, before mass or speed.
+const BASE_SEVERITY: f32 = 0.35;
+const PRESSURE_SEVERITY: f32 = 1.1;
+const VELOCITY_SEVERITY: f32 = 0.55;
+
+/// Something that pushes grass as it moves.
+///
+/// Carries its own previous position rather than reading a velocity component,
+/// so that anything at all — a unit, a projectile, a rolling boulder, a cursor
+/// — can disturb grass by writing two positions.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct GrassInteractor {
+    /// Where the body was at the previous stamp.
+    pub previous: Vec2,
+    /// Where it is now.
+    pub current: Vec2,
+    /// Radius of full influence, in metres.
+    pub radius: f32,
+    /// Distance over which influence fades to nothing beyond `radius`.
+    pub falloff: f32,
+    /// Mass in kilograms. Drives how much lasting damage is done, not how far
+    /// the grass bends — even something light physically displaces a blade it
+    /// walks through.
+    pub mass: f32,
 }
 
-impl Default for DisturbanceMap {
+impl Default for GrassInteractor {
     fn default() -> Self {
         Self {
-            values: vec![0.0; DISTURBANCE_RESOLUTION * DISTURBANCE_RESOLUTION],
-            world_size: 128.0,
+            previous: Vec2::ZERO,
+            current: Vec2::ZERO,
+            radius: 0.32,
+            falloff: 0.28,
+            mass: 70.0,
         }
     }
 }
 
-impl DisturbanceMap {
-    fn index_of(&self, position: Vec2) -> Option<usize> {
-        let half = self.world_size * 0.5;
-        if position.x < -half || position.x >= half || position.y < -half || position.y >= half {
-            return None;
+impl GrassInteractor {
+    /// Move the body, keeping the segment it swept.
+    pub fn move_to(&mut self, position: Vec2) {
+        self.previous = self.current;
+        self.current = position;
+    }
+}
+
+/// An expanding ring of force.
+#[derive(Clone, Copy, Debug)]
+pub struct Shockwave {
+    pub origin: Vec2,
+    /// Seconds since it went off.
+    pub age: f32,
+    /// How fast the front travels, in m/s.
+    pub speed: f32,
+    /// Standard deviation of the front, in metres.
+    pub width: f32,
+    /// Peak angular kick at the front.
+    pub strength: f32,
+    /// Where the ring gives out, in metres.
+    pub max_radius: f32,
+}
+
+impl Default for Shockwave {
+    fn default() -> Self {
+        Self {
+            origin: Vec2::ZERO,
+            age: 0.0,
+            // Comfortably faster than a person, slow enough to watch cross the
+            // field. Much quicker and it is a flicker rather than a wave.
+            speed: 7.0,
+            width: 0.75,
+            strength: 34.0,
+            max_radius: 11.0,
         }
-        let scale = DISTURBANCE_RESOLUTION as f32 / self.world_size;
-        let x = ((position.x + half) * scale) as usize;
-        let y = ((position.y + half) * scale) as usize;
-        Some(
-            y.min(DISTURBANCE_RESOLUTION - 1) * DISTURBANCE_RESOLUTION
-                + x.min(DISTURBANCE_RESOLUTION - 1),
-        )
+    }
+}
+
+impl Shockwave {
+    /// Radius of the front right now.
+    pub fn radius(&self) -> f32 {
+        self.age * self.speed
     }
 
-    /// Record a unit standing at `position`.
+    /// Whether the ring has run its course.
+    pub fn finished(&self) -> bool {
+        self.radius() > self.max_radius
+    }
+
+    /// How much punch is left.
     ///
-    /// Saturating rather than accumulating: a tight formation would otherwise
-    /// drive one cell far past the visual maximum and take much longer to
-    /// recover than the grass around it.
-    pub fn disturb(&mut self, position: Vec2, amount: f32) {
-        if let Some(i) = self.index_of(position) {
-            self.values[i] = (self.values[i] + amount).clamp(0.0, 1.0);
+    /// Falls off with radius because the same energy is spread around an
+    /// ever-longer circumference — the reason a real blast weakens with
+    /// distance rather than stopping at a boundary.
+    pub fn intensity(&self) -> f32 {
+        let radius = self.radius();
+        if radius >= self.max_radius {
+            return 0.0;
         }
+        // Geometric spreading, but gently. The physically honest `1/r` leaves a
+        // blast invisible within a couple of metres of going off, which reads
+        // as the effect failing rather than as distance.
+        let spread = 1.0 / (1.0 + radius * 0.16);
+        let fade = 1.0 - (radius / self.max_radius).powi(2);
+        spread * fade.max(0.0)
+    }
+}
+
+/// Blasts currently crossing the field.
+#[derive(Resource, Default, Debug)]
+pub struct GrassEvents {
+    shockwaves: Vec<Shockwave>,
+}
+
+impl GrassEvents {
+    /// Set off a blast at a world position.
+    pub fn shockwave(&mut self, origin: Vec2) {
+        self.shockwaves.push(Shockwave {
+            origin,
+            ..Default::default()
+        });
     }
 
-    pub fn sample(&self, position: Vec2) -> f32 {
-        self.index_of(position).map_or(0.0, |i| self.values[i])
+    pub fn push(&mut self, wave: Shockwave) {
+        self.shockwaves.push(wave);
     }
 
-    pub fn values(&self) -> &[f32] {
-        &self.values
+    pub fn active(&self) -> &[Shockwave] {
+        &self.shockwaves
     }
 
-    /// Fade everything toward zero.
-    pub fn decay(&mut self, delta_seconds: f32) {
-        let retained = DECAY_PER_SECOND.powf(delta_seconds.max(0.0));
-        for value in &mut self.values {
-            *value *= retained;
-            if *value < 0.001 {
-                *value = 0.0;
+    pub fn len(&self) -> usize {
+        self.shockwaves.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.shockwaves.is_empty()
+    }
+
+    /// Age every blast and drop the spent ones.
+    pub fn advance(&mut self, delta_seconds: f32) {
+        for wave in &mut self.shockwaves {
+            wave.age += delta_seconds;
+        }
+        self.shockwaves.retain(|wave| !wave.finished());
+    }
+}
+
+/// Stamp a body's swept capsule into the field.
+pub fn stamp_interactor(field: &mut GrassField, body: &GrassInteractor, dt: f32) {
+    let reach = body.radius + body.falloff;
+    let min = body.previous.min(body.current) - Vec2::splat(reach);
+    let max = body.previous.max(body.current) + Vec2::splat(reach);
+    let Some((x0, y0, x1, y1)) = field.cell_range(min, max) else {
+        return;
+    };
+
+    let travel = body.current - body.previous;
+    let distance = travel.length();
+    let speed = if dt > 0.0 { distance / dt } else { 0.0 };
+    let heading = if distance > 1e-6 {
+        travel / distance
+    } else {
+        Vec2::ZERO
+    };
+    let velocity_share = VELOCITY_SHARE * (speed / VELOCITY_BLEND_SPEED).clamp(0.0, 1.0);
+
+    let area = std::f32::consts::PI * body.radius * body.radius;
+    let pressure = body.mass * 9.81 / (area * REFERENCE_PRESSURE).max(1e-6);
+    let relative_speed = speed / REFERENCE_SPEED;
+
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let point = field.cell_center(x, y);
+            let closest = closest_point_on_segment(point, body.previous, body.current);
+            let offset = point - closest;
+            let range = offset.length();
+
+            let weight = falloff_weight(range, body.radius, body.falloff);
+            if weight <= 0.0 {
+                continue;
             }
+
+            let outward = if range > 1e-6 {
+                offset / range
+            } else {
+                // Directly under the body. Push along travel if it is moving,
+                // and pick a stable arbitrary direction if it is not, rather
+                // than producing a zero direction that would poison the axis
+                // accumulator with a meaningless value.
+                if heading == Vec2::ZERO {
+                    Vec2::X
+                } else {
+                    heading
+                }
+            };
+            let direction = (outward.lerp(heading, velocity_share))
+                .try_normalize()
+                .unwrap_or(outward);
+
+            let severity = weight
+                * (BASE_SEVERITY
+                    + PRESSURE_SEVERITY * pressure
+                    + VELOCITY_SEVERITY * relative_speed * relative_speed);
+
+            field.accumulate_contact(
+                x,
+                y,
+                direction * (MAX_CONTACT_ANGLE * weight),
+                direction,
+                weight,
+                severity,
+            );
         }
     }
 }
 
-pub fn decay_disturbance(time: Res<Time>, mut map: ResMut<DisturbanceMap>) {
-    map.decay(time.delta_secs());
+/// Stamp an expanding ring into the field.
+pub fn stamp_shockwave(field: &mut GrassField, wave: &Shockwave) {
+    let intensity = wave.intensity();
+    if intensity <= 1e-4 {
+        return;
+    }
+    let radius = wave.radius();
+    // Three standard deviations captures essentially all of the front, and
+    // bounding the stamp this way keeps the cost proportional to the ring's
+    // circumference rather than to the disc it has swept.
+    let reach = radius + wave.width * 3.0;
+    let Some((x0, y0, x1, y1)) = field.cell_range(
+        wave.origin - Vec2::splat(reach),
+        wave.origin + Vec2::splat(reach),
+    ) else {
+        return;
+    };
+
+    let inner = (radius - wave.width * 3.0).max(0.0);
+    let variance = 2.0 * wave.width * wave.width;
+
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let point = field.cell_center(x, y);
+            let offset = point - wave.origin;
+            let range = offset.length();
+            if range < inner {
+                continue;
+            }
+
+            let front = range - radius;
+            let envelope = (-(front * front) / variance).exp();
+            if envelope <= 1e-3 {
+                continue;
+            }
+
+            let outward = if range > 1e-6 {
+                offset / range
+            } else {
+                Vec2::X
+            };
+            let push = envelope * intensity;
+
+            // The kick, which throws the grass outward.
+            field.add_impulse(x, y, outward * (wave.strength * push));
+            // And the mark it leaves: a radial axis, which is what makes the
+            // aftermath read as a star rather than a smudge.
+            let weight = (push * 0.85).min(1.0);
+            field.accumulate_contact(
+                x,
+                y,
+                outward * (MAX_CONTACT_ANGLE * weight),
+                outward,
+                weight,
+                weight * 4.5,
+            );
+        }
+    }
+}
+
+/// Influence of a capsule at a given distance from its axis.
+fn falloff_weight(distance: f32, radius: f32, falloff: f32) -> f32 {
+    if distance <= radius {
+        return 1.0;
+    }
+    if falloff <= f32::EPSILON || distance >= radius + falloff {
+        return 0.0;
+    }
+    let t = (distance - radius) / falloff;
+    (1.0 - crate::noise::smoothstep(t)).powf(FOOTPRINT_POWER)
+}
+
+fn closest_point_on_segment(point: Vec2, from: Vec2, to: Vec2) -> Vec2 {
+    let along = to - from;
+    let length_squared = along.length_squared();
+    if length_squared <= 1e-12 {
+        return from;
+    }
+    let t = ((point - from).dot(along) / length_squared).clamp(0.0, 1.0);
+    from + along * t
+}
+
+/// Age the blasts each frame.
+pub fn advance_events(time: Res<Time>, mut events: ResMut<GrassEvents>) {
+    events.advance(time.delta_secs());
+}
+
+/// Write every disturbance into the field, before it steps.
+pub fn stamp_disturbances(
+    time: Res<Time>,
+    events: Res<GrassEvents>,
+    bodies: Query<&GrassInteractor>,
+    mut field: ResMut<GrassField>,
+) {
+    let dt = time.delta_secs().max(1e-4);
+    for body in &bodies {
+        stamp_interactor(&mut field, body, dt);
+    }
+    for wave in events.active() {
+        stamp_shockwave(&mut field, wave);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wind::WindField;
 
-    #[test]
-    fn disturbing_shows_up_when_sampled() {
-        let mut map = DisturbanceMap::default();
-        map.disturb(Vec2::new(4.0, 4.0), 0.8);
-        assert!(map.sample(Vec2::new(4.0, 4.0)) > 0.5);
-        assert_eq!(map.sample(Vec2::new(-40.0, -40.0)), 0.0);
+    fn still_field() -> GrassField {
+        let mut field = GrassField::new(64, 0.15, 1);
+        field.make_uniform(0.24, 1.0);
+        field
     }
 
-    #[test]
-    fn disturbance_saturates_rather_than_accumulating() {
-        let mut map = DisturbanceMap::default();
-        for _ in 0..50 {
-            map.disturb(Vec2::ZERO, 0.5);
+    fn calm() -> WindField {
+        WindField {
+            speed: 0.0,
+            turbulence: 0.0,
+            gust_strength: 0.0,
+            ..Default::default()
         }
-        assert_eq!(map.sample(Vec2::ZERO), 1.0);
     }
 
     #[test]
-    fn outside_the_field_is_ignored_not_a_panic() {
-        let mut map = DisturbanceMap::default();
-        map.disturb(Vec2::new(9_999.0, -9_999.0), 1.0);
-        assert_eq!(map.sample(Vec2::new(9_999.0, -9_999.0)), 0.0);
+    fn a_body_bends_the_grass_it_stands_in() {
+        let mut field = still_field();
+        let body = GrassInteractor {
+            previous: Vec2::ZERO,
+            current: Vec2::ZERO,
+            ..Default::default()
+        };
+        for _ in 0..10 {
+            stamp_interactor(&mut field, &body, 1.0 / 60.0);
+            field.step(1.0 / 60.0, &calm());
+        }
+        // Sampled off the exact centre. Directly beneath a stationary body the
+        // grass is splayed outward in every direction at once, so its *average*
+        // direction is genuinely zero — the grass is flattened, not upright,
+        // and asserting on the mean bend there would be measuring a
+        // cancellation rather than a lack of force. `dose` is what says the
+        // centre was touched.
+        assert!(
+            field.dose_at(Vec2::ZERO) > 0.0,
+            "the centre must register contact"
+        );
+        assert!(
+            field.bend_at(Vec2::new(0.2, 0.0)).length() > 0.3,
+            "grass under a body should be well bent, was {}",
+            field.bend_at(Vec2::new(0.2, 0.0)).length()
+        );
     }
 
     #[test]
-    fn decay_returns_grass_to_upright() {
-        let mut map = DisturbanceMap::default();
-        map.disturb(Vec2::ZERO, 1.0);
-        map.decay(10.0);
-        assert_eq!(map.sample(Vec2::ZERO), 0.0);
+    fn grass_well_clear_of_a_body_is_untouched() {
+        let mut field = still_field();
+        let body = GrassInteractor::default();
+        for _ in 0..10 {
+            stamp_interactor(&mut field, &body, 1.0 / 60.0);
+            field.step(1.0 / 60.0, &calm());
+        }
+        assert!(field.bend_at(Vec2::new(3.0, 3.0)).length() < 0.01);
     }
 
     #[test]
-    fn decay_is_gradual_rather_than_immediate() {
-        let mut map = DisturbanceMap::default();
-        map.disturb(Vec2::ZERO, 1.0);
-        map.decay(0.1);
-        let after = map.sample(Vec2::ZERO);
-        assert!(after > 0.5 && after < 1.0, "{after}");
+    fn a_fast_body_leaves_a_continuous_trail() {
+        // The reason the capsule is swept. At this speed the body moves several
+        // cells per step, and stamping only its current position would leave
+        // untouched gaps between the prints.
+        let mut field = still_field();
+        let dt = 1.0 / 60.0;
+        let mut body = GrassInteractor {
+            previous: Vec2::new(-2.0, 0.0),
+            current: Vec2::new(-2.0, 0.0),
+            ..Default::default()
+        };
+        for step in 0..40 {
+            let x = -2.0 + step as f32 * 0.1;
+            body.move_to(Vec2::new(x, 0.0));
+            stamp_interactor(&mut field, &body, dt);
+            field.step(dt, &calm());
+        }
+
+        // Sample along the middle of the path; every point should have
+        // registered contact. Measured on dose rather than compaction: dose
+        // responds the instant a cell is touched, whereas compaction is
+        // deliberately slow, so a gap in compaction after one quick pass would
+        // mean "not crushed yet" rather than "never touched".
+        let mut untouched = 0;
+        for i in 0..30 {
+            let x = -1.9 + i as f32 * 0.05;
+            if field.dose_at(Vec2::new(x, 0.0)) <= 0.0 {
+                untouched += 1;
+            }
+        }
+        assert_eq!(untouched, 0, "{untouched} gaps along a swept path");
+    }
+
+    #[test]
+    fn a_moving_body_pushes_grass_along_its_travel() {
+        let mut field = still_field();
+        let dt = 1.0 / 60.0;
+        let mut body = GrassInteractor {
+            previous: Vec2::new(-1.0, 0.0),
+            current: Vec2::new(-1.0, 0.0),
+            ..Default::default()
+        };
+        for step in 0..20 {
+            body.move_to(Vec2::new(-1.0 + step as f32 * 0.08, 0.0));
+            stamp_interactor(&mut field, &body, dt);
+            field.step(dt, &calm());
+        }
+        // Grass just behind the body should lean the way the body went.
+        let bend = field.bend_at(body.current - Vec2::new(0.15, 0.0));
+        assert!(bend.x > 0.0, "expected an eastward lean, got {bend:?}");
+    }
+
+    #[test]
+    fn a_stationary_body_splays_grass_outward() {
+        let mut field = still_field();
+        let body = GrassInteractor {
+            radius: 0.4,
+            ..Default::default()
+        };
+        for _ in 0..20 {
+            stamp_interactor(&mut field, &body, 1.0 / 60.0);
+            field.step(1.0 / 60.0, &calm());
+        }
+        // Opposite sides should lean in opposite directions.
+        let east = field.bend_at(Vec2::new(0.45, 0.0));
+        let west = field.bend_at(Vec2::new(-0.45, 0.0));
+        assert!(east.x > 0.0 && west.x < 0.0, "{east:?} / {west:?}");
+    }
+
+    #[test]
+    fn a_heavier_body_leaves_a_deeper_mark() {
+        let run = |mass: f32| {
+            let mut field = still_field();
+            let body = GrassInteractor {
+                mass,
+                ..Default::default()
+            };
+            for _ in 0..60 {
+                stamp_interactor(&mut field, &body, 1.0 / 60.0);
+                field.step(1.0 / 60.0, &calm());
+            }
+            field.compaction_at(Vec2::ZERO)
+        };
+        assert!(run(400.0) > run(40.0));
+    }
+
+    #[test]
+    fn a_shockwave_front_moves_outward_over_time() {
+        let mut wave = Shockwave::default();
+        let early = wave.radius();
+        wave.age = 0.5;
+        assert!(wave.radius() > early);
+        assert!((wave.radius() - 0.5 * wave.speed).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_shockwave_weakens_as_it_spreads() {
+        let near = Shockwave {
+            age: 0.1,
+            ..Default::default()
+        };
+        let far = Shockwave {
+            age: 0.9,
+            ..Default::default()
+        };
+        assert!(far.intensity() < near.intensity());
+    }
+
+    #[test]
+    fn a_shockwave_expires() {
+        let wave = Shockwave {
+            age: 100.0,
+            ..Default::default()
+        };
+        assert!(wave.finished());
+        assert_eq!(wave.intensity(), 0.0);
+    }
+
+    #[test]
+    fn a_shockwave_throws_grass_radially_outward() {
+        let mut field = still_field();
+        let dt = 1.0 / 60.0;
+        let mut wave = Shockwave {
+            origin: Vec2::ZERO,
+            width: 0.4,
+            ..Default::default()
+        };
+        // Step until the front has passed a probe a metre out.
+        for _ in 0..20 {
+            stamp_shockwave(&mut field, &wave);
+            field.step(dt, &calm());
+            wave.age += dt;
+        }
+
+        let east = field.bend_at(Vec2::new(1.0, 0.0));
+        let north = field.bend_at(Vec2::new(0.0, 1.0));
+        assert!(east.x > 0.05, "east probe should lean east: {east:?}");
+        assert!(north.y > 0.05, "north probe should lean north: {north:?}");
+    }
+
+    #[test]
+    fn a_shockwave_is_rotationally_symmetric() {
+        // The blast must not favour a screen axis, which is the giveaway that
+        // something is being simulated in projected space.
+        let mut field = still_field();
+        let dt = 1.0 / 60.0;
+        let mut wave = Shockwave {
+            width: 0.4,
+            ..Default::default()
+        };
+        for _ in 0..24 {
+            stamp_shockwave(&mut field, &wave);
+            field.step(dt, &calm());
+            wave.age += dt;
+        }
+
+        let magnitudes: Vec<f32> = [
+            Vec2::new(1.2, 0.0),
+            Vec2::new(-1.2, 0.0),
+            Vec2::new(0.0, 1.2),
+            Vec2::new(0.0, -1.2),
+        ]
+        .iter()
+        .map(|&p| field.bend_at(p).length())
+        .collect();
+
+        let min = magnitudes.iter().cloned().fold(f32::MAX, f32::min);
+        let max = magnitudes.iter().cloned().fold(0.0, f32::max);
+        assert!(max > 0.05, "the blast should have reached the probes");
+        assert!((max - min) / max < 0.1, "asymmetric blast: {magnitudes:?}");
+    }
+
+    #[test]
+    fn events_expire_on_their_own() {
+        let mut events = GrassEvents::default();
+        events.shockwave(Vec2::ZERO);
+        assert_eq!(events.len(), 1);
+        events.advance(10.0);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn a_body_outside_the_field_is_ignored_not_a_panic() {
+        let mut field = still_field();
+        let body = GrassInteractor {
+            previous: Vec2::splat(9_999.0),
+            current: Vec2::splat(9_999.0),
+            ..Default::default()
+        };
+        stamp_interactor(&mut field, &body, 1.0 / 60.0);
+        stamp_shockwave(
+            &mut field,
+            &Shockwave {
+                origin: Vec2::splat(-9_999.0),
+                age: 0.2,
+                ..Default::default()
+            },
+        );
+        assert_eq!(field.max_bend(), 0.0);
+    }
+
+    #[test]
+    fn the_capsule_falloff_is_monotonic() {
+        let mut previous = f32::MAX;
+        for i in 0..40 {
+            let distance = i as f32 * 0.03;
+            let weight = falloff_weight(distance, 0.3, 0.3);
+            assert!(weight <= previous + 1e-6, "weight rose at {distance}");
+            previous = weight;
+        }
+        assert_eq!(falloff_weight(1.0, 0.3, 0.3), 0.0);
+        assert_eq!(falloff_weight(0.0, 0.3, 0.3), 1.0);
+    }
+
+    #[test]
+    fn closest_point_handles_a_degenerate_segment() {
+        let at = Vec2::new(2.0, 2.0);
+        assert_eq!(closest_point_on_segment(Vec2::ZERO, at, at), at);
     }
 }

@@ -9,7 +9,7 @@
 pub mod registries;
 
 use bevy::prelude::*;
-use bw_grass::GrassPlugin;
+use bw_grass::{GrassPlugin, GrassScenePlugin};
 use bw_render::RenderPlugin;
 use bw_ui::UiPlugin;
 
@@ -21,17 +21,19 @@ pub struct GamePlugin;
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((UiPlugin, RenderPlugin, GrassPlugin))
+        app.add_plugins((UiPlugin, RenderPlugin, GrassPlugin, GrassScenePlugin))
             .add_systems(Startup, finish_boot);
     }
 }
 
 /// Leave the boot screen.
 ///
-/// Placeholder: this is where content loading and model loading will be waited
-/// on. It advances immediately for now so the binary reaches a real screen.
+/// Goes straight to the battlefield rather than to the menu. There is no roster
+/// to draft and no fight to start yet, and the terrain is the thing currently
+/// worth looking at — click it to set off a blast, drag with the right button
+/// to walk something through the grass.
 fn finish_boot(mut next: ResMut<NextState<GameState>>) {
-    next.set(GameState::MainMenu);
+    next.set(GameState::Battle);
 }
 
 /// Build the `App` the binary runs.

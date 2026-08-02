@@ -25,7 +25,7 @@ crates/
   bw_ai        observation encoding, DQN, policies
   bw_bench     benchmark fixtures, metrics, reporting
   bw_render    presentation: interpolation, camera, debug overlays
-  bw_grass     the grass renderer
+  bw_grass     grass: a bend-field simulation and its blade renderer
   bw_ui        screens and HUD, plus GameState
   bw_app       composition root
 
@@ -104,6 +104,32 @@ be built with a byte-identical compiler and dependency graph. Compile-time
 crates registering into string-keyed registries give the same modularity with
 none of that fragility — and content *data* stays hot-reloadable, which is where
 iteration speed actually matters.
+
+## Grass simulates a field, not blades
+
+`bw_grass` keeps a world-aligned grid holding the posture of the canopy — which
+way it leans, how fast it is moving, where it has been trodden — and the
+renderer reconstructs however many blades it needs by sampling that grid in a
+vertex shader. Cost then scales with the *area* being disturbed rather than with
+how much grass is drawn on it, which is the only reason a battlefield's worth of
+grass can react to a battlefield's worth of units.
+
+Two rules there are expensive to retrofit.
+
+**Simulate in world space; project only when drawing.** A blade shoved west must
+behave exactly like a blade shoved north. Simulating in screen space makes the
+response depend on the camera, and `grass.physics.direction_isotropy` exists to
+keep it that way.
+
+**Blades bend in a virtual third dimension.** A blade is a curve through
+`(X, Y, Z)` that preserves its arc length, projected at the last moment. That is
+what makes leaning shorten the silhouette and the tip travel along an arc.
+Shearing a flat sprite instead is what makes grass look like rubber.
+
+The unusual piece is that a cell records both a signed lean *and* an unsigned
+flattening axis. A path walked in both directions cancels to zero as a
+direction while remaining visibly flattened, and only the axis can tell that
+apart from undisturbed grass. See the `bw_grass::field` module docs.
 
 ## Learning
 
