@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+# Run the game. Extra arguments are passed through to the binary.
+#
+#   ./run                 debug build
+#   BW_DEV=1 ./run        dynamic Bevy linking, much faster incremental builds
+#   BW_RELEASE=1 ./run    optimised build
+set -e
+
+cd "$(dirname "$0")"
+
+if [ "${BW_RELEASE:-}" = "1" ]; then
+	exec cargo run --release -- "$@"
+elif [ "${BW_DEV:-}" = "1" ]; then
+	exec cargo run --features dev -- "$@"
+else
+	exec cargo run -- "$@"
+fi
