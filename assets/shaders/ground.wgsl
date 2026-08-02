@@ -33,25 +33,18 @@ const RAMP_SHADOW: i32 = 0;
 const RAMP_BODY: i32 = 1;
 const RAMP_DRY: i32 = 3;
 
-// Metres per cycle of the base wash.
+// Tone below which the ground uses the shadow ramp.
 //
-// Enormous next to a clump, which is about half a metre. The base is the slow
-// change across a field, not texture: at anything approaching clump scale its
-// period becomes visible and the ground reads as noise rather than as ground.
-const GRAIN_METRES: f32 = 14.0;
-
-// Stroke depth below which the ground uses the shadow ramp.
+// The body ramp's darkest entry has a luminance of 0.380 and the art target
+// reaches 0.335, so the ground does need the shadow ramp to have any real darks
+// at all.
 //
-// Keyed to the *strokes*, not to the broad variation field. That distinction is
-// the whole point. The body ramp's darkest entry has a luminance of 0.236 and
-// the art target's second percentile is 0.158, so the ground does need to reach
-// the shadow ramp to have any real darks at all — but reaching it via a broad
-// noise threshold put cloud-shaped dark blotches across the field, because a
-// broad field has broad shapes and nothing in a meadow is blotch-shaped.
-//
-// Switching on stroke depth instead puts the dark exactly where the gaps
-// between blades are: fine, grass-shaped, and the same size as the marks it
-// sits between.
+// What matters is *what the threshold is tested against*. Against a broad field
+// alone it draws cloud-shaped dark blotches, because a broad field has broad
+// shapes and nothing in a meadow is blotch-shaped — which is exactly what the
+// ground had. It is tested here against the broad field with the fine speckle
+// already added, so the darks land as grain scattered through the hollows
+// rather than as a continuous patch with an edge.
 const SHADOW_BELOW: f32 = 0.13;
 
 // Width of the stipple that softens that boundary, in units of variation.
@@ -135,39 +128,41 @@ fn fbm(p: vec2<f32>) -> f32 {
     return value / total;
 }
 
-// Fine grass strokes.
+// Fine Gaussian speckle, roughly zero-mean over about -0.5..0.5.
 //
-// Noise sampled in a frame stretched along the local grain, so a round blob of
-// noise comes out as an elongated mark. Two scales: the strokes themselves, and
-// a coarser one that breaks them into clumps so they do not read as corduroy.
-// Fine grain on the base.
+// The base layer is two things and only two: a large-scale Perlin undulation
+// for the lie of the land, and this — very small random variation to keep the
+// undulation from reading as an airbrushed wash. Everything else in the field
+// goes on top as geometry.
 //
-// Perlin plus a little white noise — deliberately *not* directional strokes.
+// It replaces a second broad noise layer that used to supply the ground's
+// "detail". Broad noise cannot supply detail by construction: wherever the
+// clumps thinned out, what showed through was a smooth blur several metres
+// across, and against a canopy of half-metre plants that reads as a bald patch
+// rather than as ground.
 //
-// An earlier revision drew grass marks here: three families of elongated
-// strokes at fixed angles, combined so each family contributed almost
-// everywhere. Three fixed directions laid over one another is a lattice, and at
-// magnification that is exactly what it looked like — a crosshatch with
-// straight runs tens of pixels long. Shortening the strokes or dropping a
-// family only ever changes the weave.
+// Gaussian rather than uniform because uniform speckle has hard shoulders — an
+// equal number of pixels at every offset, including the extremes — and quantised
+// onto three palette steps that lands as salt and pepper. A bell puts most
+// pixels near no change at all and only a few at the edges, which is what grain
+// looks like.
 //
-// The base layer's job is tone. Marks are geometry: the short grass and the
-// long blades, which have direction because each blade genuinely has one, and
-// which therefore cannot weave however many of them there are.
-fn grain(world: vec2<f32>) -> f32 {
-    // Two very broad octaves and nothing else.
-    //
-    // The base used to carry fine grain, a warp and a speckle, and the result
-    // was that you could *see the noise* — a field of Perlin rather than a
-    // field of grass. Once clumps cover the ground there is nothing for fine
-    // detail here to do except show through as texture belonging to no plant.
-    //
-    // What is left is a slow tonal wash at a scale far larger than any clump,
-    // so it reads as the light and the lie of the land rather than as a
-    // pattern. Anything with a visible period is the wrong answer at this layer.
-    let broad = value_noise(world / GRAIN_METRES);
-    let broader = value_noise(world / (GRAIN_METRES * 2.7) + vec2<f32>(31.4, -18.2));
-    return clamp(broad * 0.42 + broader * 0.58, 0.0, 1.0);
+// Built by the central limit theorem rather than Box–Muller: four white-noise
+// lattices summed is close enough to a bell for noise meant to be felt rather
+// than seen, and costs four integer hashes instead of a log and a cosine. The
+// lattices are rotated by an irrational angle against each other and against the
+// world axes, so no two ever line up — a set of axis-aligned lattices at the
+// same scale would reappear as a grid, and in this projection a grid becomes the
+// isometric crosshatch this layer has been rid of twice already.
+fn gaussian(p: vec2<f32>) -> f32 {
+    var total = 0.0;
+    var q = p;
+    for (var i = 0; i < 4; i = i + 1) {
+        total += hash21(floor(q));
+        q = vec2<f32>(q.x * 0.7986 - q.y * 0.6018, q.x * 0.6018 + q.y * 0.7986) * 1.31
+            + vec2<f32>(43.7, -19.3);
+    }
+    return total * 0.25 - 0.5;
 }
 
 // The 4x4 ordered dither matrix in closed form, keyed to the canvas pixel so
@@ -210,25 +205,18 @@ fn vertex(vertex: Vertex) -> GroundOutput {
 
 @fragment
 fn fragment(in: GroundOutput) -> @location(0) vec4<f32> {
-    // Two scales of variation. The broad one is the sweep of the land — the
-    // thing that stops a field being one flat colour when you look at it as a
-    // whole. The fine one breaks up the broad one so it does not read as a
-    // gradient someone airbrushed on.
-    let broad = fbm(in.world / max(settings.patch_metres, 0.01));
-    let mottle = fbm(in.world / max(settings.mottle_metres, 0.01));
-    // Weighted hard toward the broad scale. The fine one is there to keep the
-    // broad one from reading as an airbrushed gradient, not to compete with it —
-    // give them equal say and the large-scale structure disappears into grain.
-    let variation = clamp(broad * 0.85 + mottle * 0.15, 0.0, 1.0);
+    // The lie of the land: Perlin, at a scale far larger than any plant. This is
+    // the ground's whole shape — the lighter sweep where it rises, the darker
+    // pool in a hollow — and it is the only thing here with structure.
+    let undulation = fbm(in.world / max(settings.patch_metres, 0.01));
 
-    var shade = mix(settings.shade_low, settings.shade_high, variation);
+    // Then very small random variation on top, and nothing else. It carries no
+    // shape of its own; its only job is to stop the undulation reading as an
+    // airbrushed gradient wherever the canopy thins enough to show it.
+    let speckle = gaussian(in.world / max(settings.mottle_metres, 0.001));
+    let tone = clamp(undulation + speckle * settings.stroke_strength, 0.0, 1.0);
 
-    // The fine grass. This is most of the frame's local contrast — without it
-    // the base is a smooth wash and the whole field measures flat however many
-    // blades stand on it.
-    let stroke = grain(in.world);
-    shade += (stroke - 0.45) * settings.stroke_strength;
-    shade = clamp(shade, 0.0, 1.0);
+    let shade = mix(settings.shade_low, settings.shade_high, tone);
 
     let pixel = vec2<u32>(in.position.xy);
     let dither = (bayer4(pixel.x, pixel.y) + 0.5) / 16.0 - 0.5;
@@ -237,13 +225,13 @@ fn fragment(in: GroundOutput) -> @location(0) vec4<f32> {
     // The darkest hollows drop onto the shadow ramp, which gives the ground a
     // cool blue-green down there instead of simply less of the same green.
     //
-    // The threshold is dithered, and that is not a nicety. A hard comparison
-    // against a smooth noise field draws its own contour line: every pixel one
-    // side of it jumps a whole ramp, so a gentle dip in the ground appears as a
-    // dark blotch with a crisp edge that belongs to no feature in the world.
-    // Stippling the boundary spreads the switch over a few pixels and it reads
-    // as a gradient again.
-    if (stroke + dither * RAMP_STIPPLE < SHADOW_BELOW) {
+    // Tested against `tone`, which already has the speckle in it — see
+    // `SHADOW_BELOW`. The threshold is dithered on top of that, and that is not
+    // a nicety either. A hard comparison against a smooth field draws its own
+    // contour line: every pixel one side of it jumps a whole ramp, so a gentle
+    // dip appears as a dark blotch with a crisp edge belonging to no feature in
+    // the world.
+    if (tone + dither * RAMP_STIPPLE < SHADOW_BELOW) {
         ramp = RAMP_SHADOW;
     }
     let level = clamp(

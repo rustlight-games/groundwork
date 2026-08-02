@@ -73,19 +73,27 @@ pub struct GroundSettings {
     /// as something they are standing in and starts reading as a green
     /// backdrop they are pasted onto.
     pub shade_high: f32,
-    /// Metres per cycle of the broad variation — the sweep of the land.
+    /// Metres per cycle of the Perlin undulation — the sweep of the land.
     pub patch_metres: f32,
-    /// Metres per cycle of the fine variation, which breaks up the broad one so
-    /// it does not read as an airbrushed gradient.
+    /// Metres per cell of the fine Gaussian speckle.
+    ///
+    /// Genuinely small — a few centimetres, so a cell is a couple of pixels at
+    /// the battle camera. It used to be just under a metre, which is clump
+    /// scale, and noise at clump scale is not grain: it is a second layer of
+    /// blobs the same size as the plants standing on it, which is what made
+    /// thin spots in the canopy read as smooth bald patches rather than as
+    /// ground.
     pub mottle_metres: f32,
     /// Strength of the ordered dither between palette steps, in steps.
     pub dither: f32,
-    /// How far the fine grass strokes swing the shade, in ramp fractions.
+    /// How far the fine Gaussian speckle swings the tone, in 0..1.
     ///
-    /// This is where most of the frame's local contrast comes from. The art
-    /// target measures a mean neighbouring-pixel difference of 0.085; a base of
-    /// smooth noise with blades on top measured 0.015, and the gap was almost
-    /// entirely this.
+    /// Small, and small for a reason that is easy to get backwards. The speckle
+    /// is measured in *tone*, which the shade range then compresses into about
+    /// two palette steps — so a swing that looks negligible written down is
+    /// already most of a step by the time it is quantised. Four white-noise
+    /// lattices summed have a standard deviation near 0.14, so this lands a
+    /// typical pixel within half a step and only the tail crosses one.
     pub stroke_strength: f32,
     pub palette: [Vec4; palette::PALETTE_SIZE],
 }
@@ -112,12 +120,12 @@ impl Default for GroundSettings {
             // Around the scale of a small clearing, so a screenful contains
             // several light and dark regions rather than one gradient.
             patch_metres: 11.0,
-            mottle_metres: 0.95,
+            mottle_metres: 0.055,
             // Lower than the blades'. The ground is a broad, smooth surface, so
             // its dither has nothing fine to hide behind and reads as grain in
             // its own right.
             dither: 0.35,
-            stroke_strength: 0.75,
+            stroke_strength: 0.22,
             palette: palette::flattened(),
         }
     }
