@@ -1,0 +1,16 @@
+# Determinism guardrails.
+#
+# The battle simulation must produce bit-identical results from the same seed,
+# on any machine, in training and in game. The two classic ways that breaks are
+# iteration order and wall-clock time, so both are denied outright. Sim crates
+# use IndexMap/BTreeMap and the Tick counter instead.
+#
+# These fire across the whole workspace. Render-side crates that legitimately
+# need a HashMap should reach for bevy_platform::collections::HashMap, which is
+# seeded deterministically, rather than allowing std's here.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "iteration order is not deterministic; use IndexMap or BTreeMap" },
+    { path = "std::collections::HashSet", reason = "iteration order is not deterministic; use IndexSet or BTreeSet" },
+    { path = "std::time::Instant", reason = "wall-clock time breaks reproducibility; use bw_core::Tick" },
+    { path = "std::time::SystemTime", reason = "wall-clock time breaks reproducibility; use bw_core::Tick" },
+]

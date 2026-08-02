@@ -1,0 +1,15 @@
+[package]
+name = "bw_core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Deterministic primitives shared by every Backseat Warlord crate"
+
+[dependencies]
+fixed.workspace = true
+cordic.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+serde.workspace = true
+smol_str.workspace = true
+indexmap.workspace = true

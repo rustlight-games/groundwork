@@ -1,0 +1,12 @@
+(
+    obs_version: 1,
+    obs_len: 48,
+    action_count: 55,
+    net: (
+        obs_len: 48,
+        action_count: 55,
+        hidden: 128,
+    ),
+    trained_steps: 0,
+    notes: "",
+)

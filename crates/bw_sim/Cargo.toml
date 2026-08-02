@@ -1,0 +1,21 @@
+[package]
+name = "bw_sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Headless deterministic battle simulation"
+
+# Note the dependency list: bevy_ecs and bevy_app, never `bevy`. The renderer
+# must not be reachable from here, both so the trainer can run thousands of
+# battles without a GPU and so no presentation concern can influence a battle's
+# outcome. Adding `bevy` to this list would silently undo both properties.
+[dependencies]
+bw_core.workspace = true
+bw_content.workspace = true
+bw_nav.workspace = true
+bevy_ecs.workspace = true
+indexmap.workspace = true
+serde.workspace = true
+smol_str.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true

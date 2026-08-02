@@ -1,0 +1,15 @@
+// Props are authored sprites placed by a scatter rule, not generated geometry.
+// Trees are far more recognisable than rocks, and procedural foliage is a much
+// harder problem than procedural stone — so this stays hand-drawn.
+(
+    key: "pine_tree",
+    sprite: "sprites/props/pine_tree.png",
+    blocks_movement: true,
+    move_cost: 0,
+    scatter: (
+        density_per_100_cells: 3.0,
+        min_spacing: 2.5,
+        allowed_terrain: ["grassland"],
+        elevation_range: (40, 220),
+    ),
+)

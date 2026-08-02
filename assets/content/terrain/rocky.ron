@@ -1,0 +1,8 @@
+(
+    key: "rocky",
+    name: "Rocky Ground",
+    move_cost: 512,
+    blocks: false,
+    grass_density: 0.2,
+    color: (118, 112, 104),
+)

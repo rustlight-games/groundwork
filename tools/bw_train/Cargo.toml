@@ -1,0 +1,18 @@
+[package]
+name = "bw_train"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Headless DQN trainer"
+
+[dependencies]
+bw_core.workspace = true
+bw_content.workspace = true
+bw_sim.workspace = true
+bw_ai = { workspace = true, features = ["train"] }
+bw_fx_abilities.workspace = true
+bw_fx_terrain.workspace = true
+burn.workspace = true
+clap.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true

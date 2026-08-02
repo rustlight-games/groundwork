@@ -1,0 +1,13 @@
+# Build configuration.
+#
+# On macOS the system linker (ld-prime) is faster than LLD, so we deliberately
+# do not override it. See bevy's own .cargo/config_fast_builds.toml.
+#
+# On a nightly toolchain the following gives a further speedup. It is commented
+# out because the flags are rejected by stable rustc.
+#
+# [target.aarch64-apple-darwin]
+# rustflags = ["-Zshare-generics=y", "-Zthreads=0"]
+#
+# [unstable]
+# no-embed-metadata = true

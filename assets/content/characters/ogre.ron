@@ -1,0 +1,16 @@
+(
+    key: "ogre",
+    name: "Ogre Bruiser",
+    stats: (
+        max_health: 160.0,
+        move_speed: 2.2,
+        attack_damage: 14.0,
+        attack_range: 1.6,
+        attack_cooldown_ticks: 48,
+        armor: 4.0,
+        radius: 0.8,
+    ),
+    abilities: ["cleave", "second_wind"],
+    sprite: "sprites/ogre.png",
+    tags: ["melee", "tanky"],
+)

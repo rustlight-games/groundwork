@@ -1,0 +1,11 @@
+[package]
+name = "bw_render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Presentation of simulation state"
+
+[dependencies]
+bw_core.workspace = true
+bw_sim.workspace = true
+bevy.workspace = true

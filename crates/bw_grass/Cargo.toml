@@ -1,0 +1,15 @@
+[package]
+name = "bw_grass"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Chunked grass renderer"
+
+[dependencies]
+bw_core.workspace = true
+bw_content.workspace = true
+bevy.workspace = true
+
+[[example]]
+name = "grass_sandbox"
+path = "examples/grass_sandbox.rs"

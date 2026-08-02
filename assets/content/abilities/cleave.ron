@@ -1,0 +1,24 @@
+// A worked example of the effect tree: one registered primitive (`damage`),
+// aimed by data rather than by code. The same primitive backs a single-target
+// nuke; only the targeting differs.
+(
+    key: "cleave",
+    name: "Cleave",
+    cooldown_ticks: 96,
+    cast_time_ticks: 8,
+    range: 2.0,
+    effect: (
+        kind: "damage",
+        targeting: Some((
+            shape: Cone(radius: 2.5, arc_degrees: 110.0),
+            filter: Enemies,
+            sort: Nearest,
+            max_targets: 4,
+        )),
+        params: {
+            "amount": Num(18.0),
+            "variance": Num(0.2),
+        },
+    ),
+    tags: ["melee", "aoe"],
+)

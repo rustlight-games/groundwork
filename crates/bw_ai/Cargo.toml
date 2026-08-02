@@ -1,0 +1,23 @@
+[package]
+name = "bw_ai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Observation encoding, DQN models, and policies"
+
+[dependencies]
+bw_core.workspace = true
+bw_content.workspace = true
+bw_sim.workspace = true
+burn.workspace = true
+serde.workspace = true
+ron.workspace = true
+thiserror.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+
+[features]
+default = []
+# Autodiff, for training only. Pulled in by tools/bw_train so the game binary
+# never links it.
+train = ["burn/autodiff"]

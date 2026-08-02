@@ -1,0 +1,11 @@
+[package]
+name = "bw_nav"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Deterministic flow-field pathfinding and local avoidance"
+
+[dependencies]
+bw_core.workspace = true
+bw_content.workspace = true
+indexmap.workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "bw_fx_abilities"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Spell and ability effect primitives"
+
+# No bevy. These handlers run inside the headless trainer as well as the game,
+# so anything here must be reachable without a renderer.
+[dependencies]
+bw_core.workspace = true
+bw_content.workspace = true
+bw_sim.workspace = true
+rand.workspace = true

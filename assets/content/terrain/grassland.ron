@@ -1,0 +1,8 @@
+(
+    key: "grassland",
+    name: "Grassland",
+    move_cost: 256,
+    blocks: false,
+    grass_density: 0.85,
+    color: (86, 132, 62),
+)
