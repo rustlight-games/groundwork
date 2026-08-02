@@ -1,0 +1,271 @@
+# CLAUDE.md
+
+A compact implementation orientation for Claude Code and other coding agents.
+
+Read [AGENTS.md](AGENTS.md) first. It is the governing policy for execution,
+determinism, crate boundaries, benchmark-driven development, validation, and
+handoff. This file is the map of where things are and how to move around them.
+
+The single rule worth stating twice: **substantial work ends with a before/after
+table of measurements, not a description of the improvement.** This is a
+numerical optimisation project — a generated world and a learned policy both
+degrade silently, and the only defence is a number with a baseline beside it.
+
+## Project snapshot
+
+Backseat Warlord is a 2D auto-battler where units learn to fight via a Deep
+Q-Network, set in a heavily procedural world. Rust on Bevy 0.19 and Burn 0.21,
+edition 2024, MSRV 1.95.
+
+**Status: skeleton.** The structure, boundaries, and the properties that are
+expensive to retrofit are in place and tested. Gameplay is not. Do not read a
+design note as evidence that the mechanic exists in the binary.
+
+Two properties drive nearly every structural decision: the simulation is
+bit-deterministic and runs headless, and content volume must not equal code
+volume. [docs/DETERMINISM.md](docs/DETERMINISM.md) explains most of the
+decisions everywhere else — start there.
+
+## Repository layers
+
+```
+crates/
+  bw_core      fixed-point maths, deterministic RNG, ids, ticks, grid, hashing
+  bw_content   RON schemas, ContentDb, validation, generator registries
+  bw_nav       flow-field pathfinding, local avoidance
+  bw_sim       the battle simulation            (bevy_ecs only — no renderer)
+  bw_ai        observation encoding, DQN, policies
+  bw_bench     benchmark fixtures, metrics, reporting
+  bw_render    presentation: interpolation, camera, debug overlays
+  bw_grass     the grass renderer
+  bw_ui        screens and HUD, plus GameState
+  bw_app       composition root
+
+plugins/
+  bw_fx_abilities   spell and ability primitives        (no bevy)
+  bw_fx_terrain     terrain generators, effects, scatter (no bevy)
+  bw_fx_rocks       procedural 2D rock artwork           (no bevy)
+
+tools/
+  bw_train     headless DQN trainer
+  bw_forge     content validation and generator scoring
+
+assets/content/   RON: characters, abilities, status, terrain, rocks, props,
+                  encounters — loaded in sorted filename order
+assets/models/    weights plus the ModelManifest that guards them
+docs/             architecture, determinism, content, benchmarks
+```
+
+Dependencies point downward; `bw_app` is the only crate that knows all the
+others. `bw_sim` and everything under `plugins/` take `bevy_ecs`, never the
+`bevy` facade — see AGENTS.md for why that line is load-bearing.
+
+## The measurement system
+
+This is the part of the project that most needs an agent to behave differently
+from its defaults, so it is worth understanding before touching anything.
+
+`crates/bw_bench` is the shared harness, and it covers two kinds of measurement
+that are usually kept apart:
+
+- **Performance** — the familiar half. Simulation throughput, flow-field rebuild
+  cost, grass frame time, inference latency. criterion, in each crate's
+  `benches/`.
+- **Aesthetics** — the unusual half, and it exists because most of this game is
+  generated. A rock generator can regress in a way no unit test notices: the
+  geometry is still valid, the rocks just look worse — spikier, all alike, or
+  clumped when scattered. `bw_bench::metrics` turns those judgements into
+  numbers. They are proxies, not judges; they catch the drift between the times
+  a human looks at the output.
+
+Three things make any of it comparable, and all three are contracts rather than
+suggestions:
+
+| Contract | Where | Rule |
+| --- | --- | --- |
+| Fixed seeds | `bw_bench::SEEDS` | Ten of them. Append-only, never reorder or edit |
+| Named scenarios | `bw_bench::Scenario` | `small` 32×32/8 units, `medium` 128×128/40, `large` 512×512/200 |
+| Dotted measurement names | `bw_bench::Measurement` | `sim.tick_throughput`, `rocks.boulder.compactness` — matches crate structure |
+
+Each `Measurement` records its own `higher_is_better`, because the suite mixes
+directions and a comparison that guesses reports the wrong half as regressions.
+`Report::regressions_against` does the comparison; reports serialise to RON.
+
+`docs/BENCHMARKS.md` is the standard: when a benchmark is required, the
+aesthetic metrics and their healthy bands, tolerances (5% performance, 10%
+aesthetic, 0% determinism-adjacent), and how to read a regression.
+
+### The worked example
+
+`cargo run -p bw_forge -- score-rocks` is the shape to copy for any generator:
+run across all ten seeds, print the per-seed numbers, then the across-seed
+variety. It produces a table like this, which is roughly what a baseline capture
+looks like in practice:
+
+```
+              seed  compactness  convexity   contrast
+0x0000000000000001        0.827      0.933      0.360
+0x000000005eed1234        0.824      0.951      0.360
+...
+variety across seeds: 0.112
+```
+
+Read against the healthy bands in `docs/BENCHMARKS.md`: compactness 0.6–0.9,
+convexity 0.85–1.0, luminance spread 0.3–0.6, silhouette variety above 0.1.
+`silhouette_variety` deserves the most attention — near zero means the generator
+is producing the same shape for every seed, which is a real and easy failure to
+introduce and is invisible to every correctness test.
+
+### Current state of the harness
+
+Honest status, so nobody reports against a rig that does not exist:
+
+- The fixtures, metrics, reporting, and comparison logic exist and are tested.
+- The criterion `benches/` directories are **not written yet**, and criterion is
+  not yet a workspace dependency. They are the next piece of work, and
+  `docs/BENCHMARKS.md` is the standard they should follow.
+- `benchmarks/baseline/` does not exist yet. The first committed baseline
+  creates it.
+- `cargo run -p bw_forge -- score-rocks` is the only end-to-end aesthetic
+  measurement wired up today.
+
+So for now, a performance claim about the tick path or a generator usually means
+building the benchmark as the first milestone of the work. That is expected —
+"there was no rig" is a reason to build one, not a reason to skip the table.
+
+## Finding documentation
+
+Task-oriented rather than an index of everything:
+
+- [README.md](README.md) — status, how to run, layout.
+- [docs/DETERMINISM.md](docs/DETERMINISM.md) — the rules the simulation lives
+  under, and the reasoning behind each. Read before touching `bw_sim`,
+  `bw_core`, or `bw_nav`.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — why the workspace is split this
+  way, the tick phase order, why plugins are compile-time crates.
+- [docs/CONTENT.md](docs/CONTENT.md) — authoring characters, abilities, terrain,
+  rocks, props; how effect trees compose.
+- [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — the measurement standard.
+- Crate-level `//!` docs carry the reasoning for each crate. They are written to
+  be read, not skimmed — `bw_core`, `bw_sim`, `bw_ai`, and `bw_nav` in
+  particular explain decisions that are not obvious from the code.
+
+Useful discovery:
+
+```sh
+rtk rg --files crates plugins tools assets docs
+rtk rg -n "<concept>" crates plugins tools docs assets
+rtk rg -n "OBS_VERSION|GOLDEN|PINNED_HASH|SEEDS|higher_is_better" crates
+rtk cargo doc --workspace --no-deps --open
+```
+
+## Execution preference
+
+Prefer deterministic headless paths. The full game launch is for runtime smoke
+tests and startup failures, not for evaluating behaviour.
+
+```sh
+rtk cargo check --workspace --all-targets
+rtk cargo test --workspace
+rtk cargo clippy --workspace --all-targets
+rtk cargo fmt --all -- --check
+
+rtk cargo run -p bw_forge -- validate            # every content change
+rtk cargo run -p bw_forge -- score-rocks         # rock generator metrics
+rtk cargo run -p bw_train --release -- --episodes 10
+rtk cargo run -p bw_grass --example grass_sandbox
+
+./run                  # the game, debug
+BW_DEV=1 ./run         # dynamic Bevy linking, much faster incremental builds
+BW_RELEASE=1 ./run     # optimised
+```
+
+Always benchmark in `--release`, and never while another build or training run
+is competing for cores.
+
+## Architecture
+
+The authoritative path through a tick:
+
+```text
+Intent (policy or script)
+    -> BattleSim::step
+    -> Begin → Perception → Decision → Movement → Combat → Effects
+       → Status → Death → Cleanup
+    -> state hash / observation / outcome
+    -> Bevy presentation (read-only) or trainer
+```
+
+`BattleSim` owns a `World` and a `Schedule` and exposes exactly four operations:
+step, observe, check for an outcome, and hash. There is deliberately no `App`
+and no main loop — the trainer runs battles as fast as the CPU allows, the game
+runs one tick per frame, and neither should have to accommodate the other.
+
+The phase order is spelled out explicitly rather than inferred from data access,
+because Bevy's automatic ordering shifts when a system's parameters change and a
+battle's outcome would shift with it. The order encodes real rules: `Effects`
+follows `Combat` so a hit and its status land together; `Death` follows both so
+two units that kill each other on the same tick both connect.
+
+Simulation runs at 64 Hz; decisions at 8 Hz. Presentation reads simulation state
+and never writes back — `bw_render` is the only place fixed point becomes `f32`,
+and the conversion is one-way.
+
+## Core invariants
+
+Full statements and reasoning are in [AGENTS.md](AGENTS.md). In brief:
+
+- No floats in simulation state; no `HashMap`/`HashSet`; no wall clock.
+  `clippy.toml` enforces the last two.
+- Iterate by `UnitId`, break every tie explicitly, queue effects rather than
+  applying them inline.
+- Derive randomness per call site through `SimRng`; a new draw needs a new
+  `RngStream` variant, never a reused one.
+- `bw_sim` and `plugins/*` never depend on the `bevy` facade.
+- The trainer and the game register the same handlers and generators.
+- `GOLDEN`, `PINNED_HASH`, `OBS_VERSION`, `ActionSpace::SIZE`, `SEEDS`, and
+  committed baselines change only deliberately, in the same commit as the change
+  that caused them, with the reason in the message.
+- Never add AI attribution, generated-by comments, or `Co-Authored-By` trailers.
+
+## Content authoring
+
+Everything under `assets/content/` is RON, loaded by `bw_content` and validated
+by `cargo run -p bw_forge -- validate`. Adding a character or a spell should be a
+file, not a code change.
+
+An ability is a tree of registered primitives — `damage`, `heal`,
+`apply_status`, `sequence`, `terrain_mud` today — with targeting separated from
+payload, so one `damage` primitive serves a cone, a chain, and a single-target
+nuke. Prefer composing existing primitives; a new one is justified when several
+abilities want it, not when one does.
+
+Durations are always in ticks (64 per second), never seconds. Numbers are
+authored as decimals and converted to fixed point once, at load.
+
+Files load in sorted filename order and that order assigns `ContentId`s, which
+end up in observation vectors. **Prefer adding files over renaming them** — a
+rename can shift ids and invalidate a trained policy.
+
+## Known gaps
+
+Real, currently true, and worth knowing before you trip over them:
+
+- No `benches/` directories and no criterion dependency yet; see the harness
+  status above.
+- `tools/bw_train` duplicates the registry lists from `bw_app::registries`
+  rather than importing them (importing would pull the renderer into the
+  trainer). Its own comment claims a test keeps the two lists honest — there is
+  no such test, and its generator registry currently omits `bw_fx_rocks`. The
+  trainer/game parity invariant is therefore unenforced.
+- `bw_fx_rocks` varies its palette by applying one hue drift to all three tones
+  equally, which leaves the lightest-to-darkest spread unchanged. So
+  `luminance_spread` reads exactly 0.360 for all ten seeds — a dead column that
+  can never catch a regression as written.
+- `apply_status` takes its status as an integer `ContentId` rather than a key
+  string, because parameter values are not resolved against the interner at load
+  time. Awkward to author; the fix is a key-to-id resolution pass in `Params`.
+- `crates/bw_sim/tests/determinism.rs` contains
+  `a_battle_with_no_random_element_is_seed_independent`, which documents that
+  nothing in movement, targeting, or basic attacks currently draws. It is meant
+  to start failing when crits or damage variance land, and then be deleted.

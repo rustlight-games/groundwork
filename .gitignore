@@ -81,3 +81,8 @@ debug/
 
 # cargo-mutants
 **/mutants.out*/
+
+# Transient benchmark runs. Accepted baselines are committed under
+# benchmarks/baseline/ instead.
+benchmark-results/
+target/criterion/
