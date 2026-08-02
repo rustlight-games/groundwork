@@ -42,7 +42,7 @@ pub const CELL: usize = 64;
 /// atlas stays small. Variety within a variant comes from the placement side —
 /// scale, mirroring and tint — so this is the count of distinct *silhouettes*,
 /// which is the thing the eye actually latches onto.
-pub const VARIANTS: usize = 24;
+pub const VARIANTS: usize = 48;
 
 /// Cells across the atlas.
 pub const COLUMNS: usize = 6;
@@ -90,8 +90,8 @@ impl Default for Style {
             width: (0.75, 1.55),
             fan: 0.62,
             curve: (0.15, 0.85),
-            root_shade: 0.02,
-            tip_shade: 0.44,
+            root_shade: 0.14,
+            tip_shade: 0.84,
             softness: 0.9,
             sway: 0.35,
         }
@@ -528,5 +528,452 @@ mod tests {
             left_edge < CELL as f32 * 0.5,
             "cell 1 bleeds at its left edge"
         );
+    }
+}
+
+// --- placement ---------------------------------------------------------------
+
+use bevy::asset::RenderAssetUsages;
+use bevy::mesh::{
+    Indices, Mesh, MeshVertexAttribute, PrimitiveTopology, VertexAttributeValues, VertexFormat,
+};
+use bevy::prelude::*;
+
+use crate::field::GrassField;
+use crate::iso;
+use crate::noise::{fbm, hash_2d};
+
+/// Clumps per square metre at full detail.
+///
+/// Set by fill rate, not by taste. These are blended sprites about a metre and
+/// a half across, so each one covers roughly three thousand pixels, and blended
+/// geometry cannot skip a fragment the way opaque geometry can — every overlap
+/// is paid for in full.
+///
+/// At eleven per square metre a screenful was some sixty layers deep and the
+/// frame rate showed it. At three the field is still comfortably opaque,
+/// because a clump's footprint is about a square metre and three of them
+/// overlapping is plenty to hide the ground.
+///
+/// If more density is ever wanted, the answer is not this number: it is fewer,
+/// larger sprites, or an opaque pass for the dense interior with blending kept
+/// for the silhouette.
+pub const PER_SQUARE_METRE: f32 = 3.2;
+
+/// World size of a clump sprite, shortest to tallest, in metres.
+///
+/// Large. At the battle camera's thirty-four pixels to the metre these are
+/// thirty to seventy pixels tall, which is the size at which a clump reads as a
+/// plant. Half that and they merge into a fine even texture — the field looks
+/// continuous and nothing in it is legible, which is the same failure the
+/// ribbon renderer had for the same reason.
+pub const SIZE: (f32, f32) = (0.95, 2.1);
+
+/// Metres per cycle of the field that varies clump size and tint.
+pub const VARIATION_METRES: f32 = 9.0;
+
+/// Strata a clump may be jittered across.
+///
+/// Greater than one, which is unusual and is the point. Stratified points
+/// jittered *within* their own cell still sit on a lattice — every point is
+/// somewhere in a known square — and while that is invisible for scattered
+/// blades it is very visible here, because the isometric depth sort runs along
+/// X+Y and turns any residual lattice into diagonal seams through the overlaps.
+///
+/// Over-jittering lets neighbours swap cells, which destroys the lattice
+/// outright. The cost is occasional clustering, and clumps are supposed to
+/// clump.
+const JITTER: f32 = 1.8;
+
+/// Metres per cycle of the field that varies how many clumps grow.
+///
+/// Separate from the size-and-tint drift: density and appearance vary
+/// independently in a real meadow, and driving both from one map is what makes
+/// procedural ground look like a mask applied twice.
+pub const DENSITY_METRES: f32 = 6.5;
+
+/// How far that field swings the count, in 0..1.
+const DENSITY_SWING: f32 = 0.45;
+
+/// World position of the clump's root, shared by all four corners.
+pub const ATTRIBUTE_ROOT: MeshVertexAttribute =
+    MeshVertexAttribute::new("ClumpRoot", 0x6a72_0021, VertexFormat::Float32x2);
+
+/// `(corner x, corner y, atlas column, atlas row)`.
+pub const ATTRIBUTE_CORNER: MeshVertexAttribute =
+    MeshVertexAttribute::new("ClumpCorner", 0x6a72_0022, VertexFormat::Float32x4);
+
+/// `(width, height, tint, per-clump random)`.
+pub const ATTRIBUTE_SHAPE: MeshVertexAttribute =
+    MeshVertexAttribute::new("ClumpShape", 0x6a72_0023, VertexFormat::Float32x4);
+
+/// A chunk's worth of clumps.
+pub struct Batch {
+    positions: Vec<[f32; 3]>,
+    roots: Vec<[f32; 2]>,
+    corners: Vec<[f32; 4]>,
+    shapes: Vec<[f32; 4]>,
+    indices: Vec<u32>,
+    clumps: u32,
+}
+
+impl Batch {
+    pub fn clumps(&self) -> u32 {
+        self.clumps
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.clumps == 0
+    }
+
+    /// Bytes of vertex and index data.
+    pub fn byte_size(&self) -> usize {
+        self.positions.len() * 12
+            + self.roots.len() * 8
+            + self.corners.len() * 16
+            + self.shapes.len() * 16
+            + self.indices.len() * 4
+    }
+
+    /// One root per clump.
+    pub fn roots(&self) -> impl Iterator<Item = Vec2> + '_ {
+        self.roots.iter().step_by(4).map(|&r| Vec2::from(r))
+    }
+
+    /// One world height per clump, in metres.
+    pub fn heights(&self) -> impl Iterator<Item = f32> + '_ {
+        self.shapes.iter().step_by(4).map(|s| s[1])
+    }
+
+    pub fn into_mesh(self) -> Mesh {
+        Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.positions)
+        .with_inserted_attribute(ATTRIBUTE_ROOT, self.roots)
+        .with_inserted_attribute(
+            ATTRIBUTE_CORNER,
+            VertexAttributeValues::Float32x4(self.corners),
+        )
+        .with_inserted_attribute(
+            ATTRIBUTE_SHAPE,
+            VertexAttributeValues::Float32x4(self.shapes),
+        )
+        .with_inserted_indices(Indices::U32(self.indices))
+    }
+}
+
+/// Build the clumps for one chunk.
+///
+/// `chunk` is a chunk coordinate covering `CHUNK_METRES` square. `detail`
+/// scales the count for level of detail.
+pub fn build_chunk(field: &GrassField, chunk: IVec2, detail: f32, seed: u32) -> Batch {
+    let side = crate::blade::CHUNK_METRES;
+    let origin = chunk.as_vec2() * side;
+    let target = (side * side * PER_SQUARE_METRE * detail.clamp(0.0, 1.0))
+        .round()
+        .max(0.0) as usize;
+
+    let mut batch = Batch {
+        positions: Vec::with_capacity(target * 4),
+        roots: Vec::with_capacity(target * 4),
+        corners: Vec::with_capacity(target * 4),
+        shapes: Vec::with_capacity(target * 4),
+        indices: Vec::with_capacity(target * 6),
+        clumps: 0,
+    };
+    if target == 0 {
+        return batch;
+    }
+
+    let mut placed: Vec<Placed> = Vec::with_capacity(target);
+    let strata = (target as f32).sqrt().ceil().max(1.0) as i32;
+    let stride = side / strata as f32;
+    let chunk_seed = seed ^ hash_2d(chunk.x, chunk.y, 0x51A5_5EED);
+
+    for sy in 0..strata {
+        for sx in 0..strata {
+            let hash = hash_2d(sx, sy, chunk_seed);
+            // Jittered hard. Clumps are meant to pile up, so the stratification
+            // is only here to stop them leaving holes — the remaining lattice
+            // disappears under the overlap.
+            let jitter = Vec2::new(unit(hash), unit(hash.wrapping_mul(0x9e37_79b9)));
+            let jitter = Vec2::splat(0.5) + (jitter - Vec2::splat(0.5)) * JITTER;
+            let row = if sy % 2 == 0 { 0.0 } else { 0.5 };
+            let root = origin + (Vec2::new(sx as f32 + row, sy as f32) + jitter) * stride;
+
+            // Two gates: the simulation's own density map, and a Perlin field
+            // of this layer's own that thins and thickens the planting.
+            let thickness = 1.0 - DENSITY_SWING
+                + DENSITY_SWING
+                    * 2.0
+                    * fbm(
+                        root.x / DENSITY_METRES,
+                        root.y / DENSITY_METRES,
+                        chunk_seed ^ 0x4D65_1F0B,
+                        3,
+                    );
+            if unit(hash.wrapping_mul(0x85eb_ca6b)) > field.density_at_world(root) * thickness {
+                continue;
+            }
+
+            // Size and colour drift across the field together, so a region
+            // reads as taller and greener rather than as random plants.
+            let drift = fbm(
+                root.x / VARIATION_METRES,
+                root.y / VARIATION_METRES,
+                chunk_seed ^ 0x2B7E_1516,
+                3,
+            );
+            let a = unit(hash.wrapping_mul(0xc2b2_ae35));
+            let height = lerp(SIZE.0, SIZE.1, (a * 0.55 + drift * 0.45).clamp(0.0, 1.0));
+            let width = height * lerp(0.95, 1.35, unit(hash.wrapping_mul(0x27d4_eb2f)));
+
+            let variant = (hash.wrapping_mul(0x1656_67b1) as usize) % VARIANTS;
+            let column = (variant % COLUMNS) as f32;
+            let row_index = (variant / COLUMNS) as f32;
+            let tint = (unit(hash.wrapping_mul(0x7feb_352d)) * 0.6 + drift * 0.4).clamp(0.0, 1.0);
+            let random = unit(hash.wrapping_mul(0x846c_a68b));
+
+            placed.push(Placed {
+                root,
+                width,
+                height,
+                column,
+                row: row_index,
+                tint,
+                random,
+            });
+        }
+    }
+
+    // Far to near, along the isometric depth axis.
+    //
+    // Blended sprites have no depth test to fall back on, so they composite in
+    // the order they are drawn — and the order they were *placed* in is the
+    // scan order of the stratification grid, which runs along X and Y. Those
+    // project to diagonals, so a near clump drawn before a far one leaves a
+    // seam, and every such seam lines up into a visible isometric lattice
+    // across the whole field. Sorting is the fix, and it is free: it happens
+    // once when the chunk is built, not per frame.
+    placed.sort_by(|a, b| {
+        let depth = |p: &Placed| p.root.x + p.root.y;
+        depth(a)
+            .partial_cmp(&depth(b))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for clump in &placed {
+        push(&mut batch, clump);
+    }
+
+    batch
+}
+
+/// A clump decided on but not yet written into the mesh.
+struct Placed {
+    root: Vec2,
+    width: f32,
+    height: f32,
+    column: f32,
+    row: f32,
+    tint: f32,
+    random: f32,
+}
+
+fn push(batch: &mut Batch, clump: &Placed) {
+    let (root, width, height) = (clump.root, clump.width, clump.height);
+    let (column, row, tint, random) = (clump.column, clump.row, clump.tint, clump.random);
+    let base = batch.positions.len() as u32;
+    // A rest-pose bounding position per corner. The vertex shader recomputes
+    // the real one, so this exists only to give Bevy an honest bounding box in
+    // the space the shader outputs.
+    let rest = iso::project_to_vertex(root.extend(height));
+
+    // (-1, 0) and (1, 1) are the bottom-left and top-right of the sprite, with
+    // the root on the bottom edge, centred.
+    for corner in [[-1.0, 0.0], [1.0, 0.0], [1.0, 1.0], [-1.0, 1.0]] {
+        batch.positions.push(rest.to_array());
+        batch.roots.push(root.to_array());
+        batch.corners.push([corner[0], corner[1], column, row]);
+        batch.shapes.push([width, height, tint, random]);
+    }
+    batch
+        .indices
+        .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    batch.clumps += 1;
+}
+
+fn unit(hash: u32) -> f32 {
+    crate::noise::unit_from_hash(hash)
+}
+
+// --- material ----------------------------------------------------------------
+
+use bevy::image::{ImageSampler, ImageSamplerDescriptor};
+use bevy::mesh::MeshVertexBufferLayoutRef;
+use bevy::render::render_resource::{
+    AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+    TextureDataOrder, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
+};
+use bevy::shader::ShaderRef;
+use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dKey};
+
+/// Where the clump shader lives.
+pub const SHADER_PATH: &str = "shaders/clump.wgsl";
+
+/// Per-frame constants shared by every clump.
+///
+/// Field order matches `clump.wgsl`; the twelve scalars after the two vectors
+/// round the header to a whole number of sixteen-byte rows.
+#[derive(Clone, Copy, Debug, ShaderType)]
+pub struct ClumpSettings {
+    pub field_origin: Vec2,
+    pub field_inverse_extent: Vec2,
+    pub field_resolution: f32,
+    pub time: f32,
+    pub max_angle: f32,
+    /// How far the top of a clump slides, in sprite heights, at full bend.
+    pub lean: f32,
+    /// How much a fully leaned clump loses in height.
+    ///
+    /// Paired with the lean on purpose. A sheared sprite whose silhouette never
+    /// shortens is the classic way grass ends up looking like rubber; something
+    /// bending over genuinely does get shorter.
+    pub squash: f32,
+    /// Amplitude of the per-clump idle sway, in sprite heights.
+    pub sway: f32,
+    /// How far tint shifts a clump's colour.
+    pub tint_strength: f32,
+    /// Shade multiplier at the darkest tint.
+    pub tint_floor: f32,
+    pub _pad0: f32,
+    pub _pad1: f32,
+}
+
+impl Default for ClumpSettings {
+    fn default() -> Self {
+        Self {
+            field_origin: Vec2::ZERO,
+            field_inverse_extent: Vec2::ONE,
+            field_resolution: 1.0,
+            time: 0.0,
+            max_angle: 84.0_f32.to_radians(),
+            lean: 0.55,
+            squash: 0.22,
+            sway: 0.05,
+            tint_strength: 0.55,
+            tint_floor: 0.80,
+            _pad0: 0.0,
+            _pad1: 0.0,
+        }
+    }
+}
+
+/// The material every clump draws with.
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+pub struct ClumpMaterial {
+    #[uniform(0)]
+    pub settings: ClumpSettings,
+    #[texture(1)]
+    #[sampler(2)]
+    pub atlas: Handle<Image>,
+    #[texture(3, sample_type = "float", filterable = false)]
+    pub bend: Handle<Image>,
+}
+
+impl Material2d for ClumpMaterial {
+    fn vertex_shader() -> ShaderRef {
+        SHADER_PATH.into()
+    }
+
+    fn fragment_shader() -> ShaderRef {
+        SHADER_PATH.into()
+    }
+
+    /// Blended, which opaque geometry never needed.
+    ///
+    /// A baked clump has soft edges and that is the whole point of baking it;
+    /// an alpha test would cut them back into the hard silhouette the sprite
+    /// exists to avoid.
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
+    }
+
+    fn specialize(
+        descriptor: &mut RenderPipelineDescriptor,
+        layout: &MeshVertexBufferLayoutRef,
+        _key: Material2dKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        descriptor.vertex.buffers = vec![layout.0.get_layout(&[
+            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
+            ATTRIBUTE_ROOT.at_shader_location(1),
+            ATTRIBUTE_CORNER.at_shader_location(2),
+            ATTRIBUTE_SHAPE.at_shader_location(3),
+        ])?];
+        descriptor.primitive.cull_mode = None;
+        Ok(())
+    }
+}
+
+/// The baked atlas as a GPU image.
+#[derive(Resource, Debug, Clone)]
+pub struct ClumpAtlas {
+    pub image: Handle<Image>,
+}
+
+impl FromWorld for ClumpAtlas {
+    fn from_world(world: &mut World) -> Self {
+        let atlas = bake(&Style::default(), 0x6A72_A551);
+        let mut images = world.resource_mut::<Assets<Image>>();
+        Self {
+            image: images.add(atlas_image(&atlas)),
+        }
+    }
+}
+
+fn atlas_image(atlas: &Atlas) -> Image {
+    Image {
+        data: Some(atlas.to_rgba8()),
+        data_order: TextureDataOrder::default(),
+        texture_descriptor: TextureDescriptor {
+            label: None,
+            size: Extent3d {
+                width: atlas.width as u32,
+                height: atlas.height as u32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            // The sprite holds sRGB colour, so the hardware should linearise it
+            // on read the same way it does for every other colour texture.
+            format: TextureFormat::Rgba8UnormSrgb,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        },
+        // Linear, unlike everything else in this crate. A clump's edges are
+        // soft by design and nearest sampling would step them back into the
+        // hard silhouette baking them was meant to avoid.
+        sampler: ImageSampler::Descriptor(ImageSamplerDescriptor::linear()),
+        texture_view_descriptor: None,
+        asset_usage: RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+        copy_on_resize: false,
+    }
+}
+
+/// Keep the clump material's view of the field current.
+pub fn upload_clumps(
+    field: Res<GrassField>,
+    wind: Res<crate::wind::WindField>,
+    mut materials: ResMut<Assets<ClumpMaterial>>,
+) {
+    let extent = field.extent().max(1e-3);
+    for (_, material) in materials.iter_mut() {
+        material.settings.field_origin = field.origin();
+        material.settings.field_inverse_extent = Vec2::splat(1.0 / extent);
+        material.settings.field_resolution = field.resolution() as f32;
+        material.settings.time = wind.time;
+        material.settings.max_angle = field.params().max_angle;
     }
 }

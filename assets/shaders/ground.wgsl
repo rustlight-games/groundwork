@@ -33,17 +33,12 @@ const RAMP_SHADOW: i32 = 0;
 const RAMP_BODY: i32 = 1;
 const RAMP_DRY: i32 = 3;
 
-// Metres per cycle of the base grain.
-const GRAIN_METRES: f32 = 0.42;
-
-// Metres per cycle of the warp that breaks the grain off its own lattice.
-const WARP_METRES: f32 = 2.6;
-
-// How far that warp displaces a sample, in metres.
-const WARP_STRENGTH: f32 = 0.55;
-
-// Metres per cell of the fine speckle.
-const SPECKLE_METRES: f32 = 0.055;
+// Metres per cycle of the base wash.
+//
+// Enormous next to a clump, which is about half a metre. The base is the slow
+// change across a field, not texture: at anything approaching clump scale its
+// period becomes visible and the ground reads as noise rather than as ground.
+const GRAIN_METRES: f32 = 14.0;
 
 // Stroke depth below which the ground uses the shadow ramp.
 //
@@ -160,25 +155,19 @@ fn fbm(p: vec2<f32>) -> f32 {
 // long blades, which have direction because each blade genuinely has one, and
 // which therefore cannot weave however many of them there are.
 fn grain(world: vec2<f32>) -> f32 {
-    // Warped before it is sampled. Value noise on an unwarped grid is
-    // *predictable*: its features sit on a lattice at the octave's own scale
-    // and the eye finds that spacing quickly even when the values are random.
-    // Displacing the sample point by a coarser noise breaks the grid without
-    // adding any frequency of its own.
-    let warp = vec2<f32>(
-        value_noise(world / WARP_METRES) - 0.5,
-        value_noise(world / WARP_METRES + vec2<f32>(23.1, -14.6)) - 0.5,
-    ) * WARP_STRENGTH;
-    let p = world + warp;
-
-    // Four octaves at incommensurate ratios, so no two ever line up into a
-    // beat, plus an octave of unfiltered hash for the fine speckle that keeps
-    // it from looking airbrushed.
-    let a = value_noise(p / GRAIN_METRES);
-    let b = value_noise(p / (GRAIN_METRES * 0.437) + vec2<f32>(7.7, -3.1));
-    let c = value_noise(p / (GRAIN_METRES * 2.13) + vec2<f32>(-11.9, 5.4));
-    let speckle = hash21(floor(p / SPECKLE_METRES));
-    return clamp(a * 0.34 + b * 0.26 + c * 0.26 + speckle * 0.14, 0.0, 1.0);
+    // Two very broad octaves and nothing else.
+    //
+    // The base used to carry fine grain, a warp and a speckle, and the result
+    // was that you could *see the noise* — a field of Perlin rather than a
+    // field of grass. Once clumps cover the ground there is nothing for fine
+    // detail here to do except show through as texture belonging to no plant.
+    //
+    // What is left is a slow tonal wash at a scale far larger than any clump,
+    // so it reads as the light and the lie of the land rather than as a
+    // pattern. Anything with a visible period is the wrong answer at this layer.
+    let broad = value_noise(world / GRAIN_METRES);
+    let broader = value_noise(world / (GRAIN_METRES * 2.7) + vec2<f32>(31.4, -18.2));
+    return clamp(broad * 0.42 + broader * 0.58, 0.0, 1.0);
 }
 
 // The 4x4 ordered dither matrix in closed form, keyed to the canvas pixel so

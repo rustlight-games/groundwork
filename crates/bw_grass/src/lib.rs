@@ -109,6 +109,7 @@ impl Plugin for GrassPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(Material2dPlugin::<GrassMaterial>::default())
             .add_plugins(Material2dPlugin::<ground::GroundMaterial>::default())
+            .add_plugins(Material2dPlugin::<clump::ClumpMaterial>::default())
             // Grass draws to a low-resolution canvas rather than to the window.
             // Bundled with the renderer rather than optional: every constant in
             // the vertex shader is expressed in canvas pixels, so grass drawn
@@ -119,6 +120,7 @@ impl Plugin for GrassPlugin {
             .init_resource::<GrassField>()
             // After the field: it sizes its textures from the field's resolution.
             .init_resource::<material::GrassTextures>()
+            .init_resource::<clump::ClumpAtlas>()
             .init_resource::<GrassEvents>()
             .init_resource::<GrassChunks>()
             .configure_sets(
@@ -137,7 +139,7 @@ impl Plugin for GrassPlugin {
                     (wind::advance_wind, disturbance::advance_events).in_set(GrassSet::Sources),
                     disturbance::stamp_disturbances.in_set(GrassSet::Stamp),
                     field::step_field.in_set(GrassSet::Simulate),
-                    material::upload_field.in_set(GrassSet::Upload),
+                    (material::upload_field, clump::upload_clumps).in_set(GrassSet::Upload),
                 ),
             );
     }

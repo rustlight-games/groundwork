@@ -12,13 +12,14 @@ use bevy::prelude::*;
 use bevy::sprite_render::MeshMaterial2d;
 use bw_core::GridPos;
 
-use crate::blade::{self, CHUNK_METRES};
+use crate::blade::CHUNK_METRES;
 use crate::chunk::GrassChunk;
+use crate::clump;
 use crate::disturbance::{GrassEvents, GrassInteractor};
 use crate::field::GrassField;
 use crate::ground;
 use crate::iso;
-use crate::material::{GrassMaterial, GrassSettings, GrassTextures};
+use crate::material::GrassTextures;
 use crate::palette;
 use crate::pixel::{GrassCamera, PixelCanvas};
 
@@ -77,31 +78,45 @@ impl Plugin for GrassScenePlugin {
 }
 
 /// Build a mesh for every chunk in the scene.
+/// Everything `spawn_grass` needs to build the field.
+///
+/// Gathered into one parameter because Bevy will happily take a dozen and the
+/// signature stops being readable long before it stops compiling.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct GrassAssets<'w> {
+    meshes: ResMut<'w, Assets<Mesh>>,
+    clumps: ResMut<'w, Assets<clump::ClumpMaterial>>,
+    grounds: ResMut<'w, Assets<ground::GroundMaterial>>,
+    atlas: Res<'w, clump::ClumpAtlas>,
+    textures: Res<'w, GrassTextures>,
+}
+
 fn spawn_grass(
     mut commands: Commands,
     scene: Res<GrassScene>,
     field: Res<GrassField>,
-    textures: Res<GrassTextures>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<GrassMaterial>>,
-    mut grounds: ResMut<Assets<ground::GroundMaterial>>,
+    mut assets: GrassAssets,
 ) {
     // The ground first, so that whatever shows between the blades is a colour
     // that belongs to the field rather than the window's clear colour.
     commands.spawn((
-        Mesh2d(meshes.add(ground::ground_mesh(scene.half_extent))),
-        MeshMaterial2d(grounds.add(ground::GroundMaterial {
+        Mesh2d(assets.meshes.add(ground::ground_mesh(scene.half_extent))),
+        MeshMaterial2d(assets.grounds.add(ground::GroundMaterial {
             settings: ground::GroundSettings::default(),
-            state: textures.state.clone(),
+            state: assets.textures.state.clone(),
         })),
         Transform::default(),
         Name::new("ground"),
     ));
 
-    let material = materials.add(GrassMaterial {
-        settings: GrassSettings::default(),
-        bend: textures.bend.clone(),
-        state: textures.state.clone(),
+    // Clumps, not ribbons. Every scrap of detail in the field is a baked
+    // sprite now — see `crate::clump` — and the ribbon path stays in the tree
+    // because its tests and benchmarks still describe the simulation the
+    // clumps are driven by.
+    let material = assets.clumps.add(clump::ClumpMaterial {
+        settings: clump::ClumpSettings::default(),
+        atlas: assets.atlas.image.clone(),
+        bend: assets.textures.bend.clone(),
     });
 
     let radius = (scene.half_extent / CHUNK_METRES).ceil() as i32;
@@ -111,16 +126,16 @@ fn spawn_grass(
     for y in -radius..radius {
         for x in -radius..radius {
             let coord = IVec2::new(x, y);
-            let batch = blade::build_chunk(&field, coord, 1.0, scene.seed);
+            let batch = clump::build_chunk(&field, coord, 1.0, scene.seed);
             if batch.is_empty() {
                 continue;
             }
-            let count = batch.blades();
+            let count = batch.clumps();
             blades += count;
             chunks += 1;
 
             commands.spawn((
-                Mesh2d(meshes.add(batch.into_mesh())),
+                Mesh2d(assets.meshes.add(batch.into_mesh())),
                 MeshMaterial2d(material.clone()),
                 Transform::default(),
                 // Set by hand rather than computed from the mesh. The vertex
@@ -138,13 +153,17 @@ fn spawn_grass(
         }
     }
 
-    info!("grass: {blades} blades across {chunks} chunks");
+    info!("grass: {blades} clumps across {chunks} chunks");
 }
 
 /// Screen-space bounds of a chunk, padded for lean.
 fn chunk_bounds(coord: IVec2) -> Aabb {
     let origin = coord.as_vec2() * CHUNK_METRES;
-    let tallest = blade::LENGTH_RANGE.1;
+    // Sized from the clumps, which are much larger than a blade ever was and
+    // overhang their chunk in every direction. Padding for a blade instead left
+    // clumps near a chunk edge culled with it, which showed as faint diagonal
+    // seams across the whole field on the chunk lattice.
+    let tallest = clump::SIZE.1 * 1.4;
 
     let mut min = Vec3::splat(f32::MAX);
     let mut max = Vec3::splat(f32::MIN);
@@ -288,7 +307,7 @@ mod tests {
         // The failure this prevents: chunks popping out of view at the screen
         // edge because their bounds only covered the upright rest pose.
         let bounds = chunk_bounds(IVec2::ZERO);
-        let upright = iso::project_to_vertex(Vec3::new(0.0, 0.0, blade::LENGTH_RANGE.1));
+        let upright = iso::project_to_vertex(Vec3::new(0.0, 0.0, clump::SIZE.1));
         assert!(
             bounds.max().y > upright.y,
             "no headroom above the tallest blade"
