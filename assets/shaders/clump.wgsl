@@ -40,6 +40,8 @@ const DEPTH_PER_HEIGHT: f32 = 0.5;
 // --- atlas layout, mirrored from clump.rs -----------------------------------
 const COLUMNS: f32 = 6.0;
 const ROWS: f32 = 8.0;
+const CELL_TEXELS: u32 = 64u;
+const MIP_LEVELS: u32 = 3u;
 
 const TAU: f32 = 6.2831855;
 
@@ -267,9 +269,24 @@ fn vertex(vertex: Vertex) -> ClumpOutput {
 
     // Into the atlas cell. `up` runs bottom-to-top in the world and the sprite
     // is stored top-down, so v is flipped.
+    // Inset from the cell's edge, because the sheet has no padding between
+    // variants and the atlas now has mipmaps.
+    //
+    // A bilinear tap at a cell boundary reaches one texel into whatever is next
+    // door, and at the coarsest mip level one texel is four of level zero's —
+    // so the further a clump is drawn from full size, the more of its
+    // neighbour's leaves bleed into its edge. Nothing showed this before the
+    // mip chain went in, because at one level the bleed was a single texel of a
+    // mostly transparent margin.
+    //
+    // Half a texel of the coarsest level, which is two of the finest. The
+    // sprites only cover about half their cell, so this costs nothing visible
+    // and is much cheaper than repacking the sheet with gutters.
+    let inset = 0.5 * f32(1u << (MIP_LEVELS - 1u)) / f32(CELL_TEXELS);
     let cell = vec2<f32>(1.0 / COLUMNS, 1.0 / ROWS);
     let corner = vec2<f32>((across * 0.5) + 0.5, 1.0 - up);
-    out.uv = (vec2<f32>(vertex.corner.z, vertex.corner.w) + corner) * cell;
+    let safe = clamp(corner, vec2<f32>(inset), vec2<f32>(1.0 - inset));
+    out.uv = (vec2<f32>(vertex.corner.z, vertex.corner.w) + safe) * cell;
 
     // Tint darkens rather than brightens: the atlas already holds the lit
     // colour, and a clump that varies upward would blow past the palette.
