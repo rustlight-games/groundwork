@@ -115,8 +115,19 @@ impl Default for GroundSettings {
             // target's spread. The speckle came from pixels dropping onto the
             // shadow ramp, which `SHADOW_BELOW` controls; the swing is what
             // gives the surface relief at all.
-            shade_low: 0.015,
-            shade_high: 0.135,
+            // Widened hard, from 0.015..0.135. That span was three of the
+            // ramp's sixteen steps: the ground had a palette of sixty-four
+            // colours available and used three of them, so wherever it showed
+            // through it showed through as one flat tone whatever the noise
+            // underneath was doing. All the care in the noise was being thrown
+            // away at the quantiser.
+            //
+            // It still stops short of the top. The ground is the floor of a
+            // canopy and the blades have to stay the brightest thing in the
+            // frame, or gaps stop reading as gaps and start reading as light
+            // getting in.
+            shade_low: 0.02,
+            shade_high: 0.55,
             // Around the scale of a small clearing, so a screenful contains
             // several light and dark regions rather than one gradient.
             patch_metres: 11.0,

@@ -47,6 +47,38 @@ const RAMP_DRY: i32 = 3;
 // rather than as a continuous patch with an edge.
 const SHADOW_BELOW: f32 = 0.13;
 
+// How far the ground's features are squashed along the isometric depth axis.
+//
+// The projection already flattens the ground plane two to one — a circle drawn
+// flat on it reaches the screen as an ellipse twice as wide as it is tall — so
+// noise sampled isotropically in world space is *already* foreshortened
+// correctly. This is deliberately on top of that, and it is a style choice
+// rather than a correction: features squashed harder than the geometry strictly
+// implies read as lying flatter, which is the exaggeration hand-painted
+// isometric art almost always makes. One would be geometrically honest and
+// looks like it is standing up.
+const ISO_SQUASH: f32 = 0.55;
+
+const INV_SQRT2: f32 = 0.70710678;
+
+// Metres per cycle of the soil field, and the tone above which it wins.
+//
+// Much tighter than the undulation. A dirt patch is a place where the turf
+// happens not to have taken — a metre or two across, with its own edge — not a
+// region of the map, so its scale sits between a clump and the lie of the land.
+// Broad soil would read as a desert on one side of the field.
+const SOIL_METRES: f32 = 2.4;
+const SOIL_ABOVE: f32 = 0.655;
+
+// How much of the fine speckle is mixed into the soil field before it is
+// thresholded.
+//
+// Without it a patch is a smooth blob with a clean contour, which is what a
+// thresholded Perlin always gives and never what bare ground looks like. The
+// speckle breaks the boundary into grain at exactly the scale the ground's own
+// grain already runs at, so the edge dissolves into stipple instead of ending.
+const SOIL_GRAIN: f32 = 0.30;
+
 // Width of the stipple that softens that boundary, in units of variation.
 const RAMP_STIPPLE: f32 = 0.09;
 
@@ -154,6 +186,20 @@ fn fbm(p: vec2<f32>) -> f32 {
 // world axes, so no two ever line up — a set of axis-aligned lattices at the
 // same scale would reappear as a grid, and in this projection a grid becomes the
 // isometric crosshatch this layer has been rid of twice already.
+// World position in the frame the ground is *seen* in.
+//
+// The two axes are the isometric ones: across the screen, and into it. Noise
+// sampled here is squashed along the second by [`ISO_SQUASH`], so its features
+// lie down on the ground plane instead of standing up out of it. The scale
+// factor keeps a metre a metre, so [`SOIL_METRES`] and `patch_metres` still mean
+// what they say.
+fn iso_frame(world: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(
+        (world.x - world.y) * INV_SQRT2,
+        (world.x + world.y) * INV_SQRT2 * ISO_SQUASH,
+    );
+}
+
 fn gaussian(p: vec2<f32>) -> f32 {
     var total = 0.0;
     var q = p;
@@ -208,7 +254,8 @@ fn fragment(in: GroundOutput) -> @location(0) vec4<f32> {
     // The lie of the land: Perlin, at a scale far larger than any plant. This is
     // the ground's whole shape — the lighter sweep where it rises, the darker
     // pool in a hollow — and it is the only thing here with structure.
-    let undulation = fbm(in.world / max(settings.patch_metres, 0.01));
+    let iso = iso_frame(in.world);
+    let undulation = fbm(iso / max(settings.patch_metres, 0.01));
 
     // Then very small random variation on top, and nothing else. It carries no
     // shape of its own; its only job is to stop the undulation reading as an
@@ -233,6 +280,19 @@ fn fragment(in: GroundOutput) -> @location(0) vec4<f32> {
     // the world.
     if (tone + dither * RAMP_STIPPLE < SHADOW_BELOW) {
         ramp = RAMP_SHADOW;
+    }
+
+    // Bare earth, on its own tighter field.
+    //
+    // Last, so it wins over both greens: soil is a different substance rather
+    // than a darker shade of the same one, and where it shows there is no turf
+    // left to be in shadow. It carries the same `shade` as everything else, so a
+    // patch lightens and darkens with the ground it sits in rather than being a
+    // flat brown decal — the ramp changes the substance, the step keeps the
+    // lighting.
+    let soil = fbm(iso / SOIL_METRES) + speckle * SOIL_GRAIN;
+    if (soil + dither * RAMP_STIPPLE > SOIL_ABOVE) {
+        ramp = RAMP_DRY;
     }
     let level = clamp(
         shade * f32(RAMP_STEPS) - 0.5 + dither * settings.dither,

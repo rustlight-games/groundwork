@@ -46,13 +46,22 @@
 //! | [`SHADOW`] | nearly along the key, catching little of it | Cool, dark. Deep canopy |
 //! | [`BODY`] | oblique to the key | The bulk of the field |
 //! | [`HIGHLIGHT`] | close to across the key, catching most of it | Warm. Blades in the sun |
-//! | [`DRY`] | oblique, straw albedo | Trampled grass |
+//! | [`DRY`] | oblique, soil albedo | Bare earth showing through |
 //!
 //! Only [`DRY`] is a different material. The other three are the same leaf at
 //! three orientations, which is why they read as one plant — and it is also why
 //! they can all sit on the target's single ramp while still meaning different
 //! things to the shader. What separates them is where they sit *along* it:
 //! [`SHADOW`] holds the target's darkest greens, [`HIGHLIGHT`] its lightest.
+//!
+//! [`DRY`] is the field's only non-green, and it is lit by the same rig as
+//! everything else — which is the entire reason a patch of dirt in the middle of
+//! a meadow does not read as a hole. Its albedo is soil rather than straw. Straw
+//! is what it held while it stood for trampled grass, and straw is a yellow only
+//! a little off the greens around it; against the art target's saturated
+//! chartreuse it disappeared. Bare ground has to be a different *hue* to read as
+//! a different substance at all. Crushed grass, when it lands, wants this ramp
+//! too — dead grass and the dirt under it are neighbours in colour.
 //!
 //! A blade picks a ramp from how much key it is actually catching and stays on
 //! it; shading only moves it up and down that ramp. That is what lets the rig
@@ -231,7 +240,7 @@ const FITTED: BakeParams = BakeParams {
         Vec3::new(0.119, 0.223, 0.001), // shadow: the cool, green end of the target
         Vec3::new(0.095, 0.169, 0.021), // body
         Vec3::new(0.157, 0.259, 0.002), // highlight: the warm, lime end
-        Vec3::new(0.197, 0.170, 0.078), // dry: straw, and not fitted — see below
+        Vec3::new(0.176, 0.108, 0.052), // dry: bare earth, and not fitted — see below
     ],
     blend: [0.48, 0.75, 0.85, 0.75],
     exposure: 0.380,
