@@ -73,6 +73,7 @@ use bw_grass::{blade, light, palette, pixel};
 use bw_render::BattleCamera;
 
 mod atlas;
+mod card;
 mod harness;
 mod mirror;
 mod motion;
@@ -91,6 +92,7 @@ fn main() {
     // than after the timings have finished.
     stage(&mut report, "style", style);
     stage(&mut report, "atlas", atlas::run);
+    stage(&mut report, "card", card::run);
     stage(&mut report, "physics", physics);
     stage(&mut report, "aesthetics", aesthetics);
     stage(&mut report, "motion", motion::run);

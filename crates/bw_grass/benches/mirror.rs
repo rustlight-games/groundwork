@@ -36,11 +36,28 @@ use bw_grass::field::GrassField;
 use bw_grass::iso;
 
 /// Mirrored from `clump.wgsl`.
-pub const STIFFNESS_MIN: f32 = 0.30;
-pub const STIFFNESS_MAX: f32 = 1.70;
+pub const COMPLIANCE_MIN: f32 = 0.30;
+pub const COMPLIANCE_MAX: f32 = 1.70;
 pub const STICTION: f32 = 0.16;
 pub const FULL_LEAN: f32 = 0.62;
 pub const ALPHA_CUT: f32 = 0.45;
+pub const MAX_TIP_ANGLE: f32 = 1.4835;
+
+/// Rows of vertices up a card. Mirrored from `clump::CARD_ROWS`.
+///
+/// Two would be a plain quad, and a plain quad is why `root_stiffness` could
+/// never have worked: `up` takes only the values zero and one, `pow` fixes both
+/// of them whatever the exponent, and the rasteriser fills a straight line in
+/// between. `grass.card.stiffness_effect` is that fact as a number, and it read
+/// zero for as long as this was two.
+pub const CARD_ROWS: usize = clump::CARD_ROWS;
+
+/// Points along the drawn centreline that [`profile`] reports.
+///
+/// More than the card has rows, deliberately. What matters is the line the
+/// *rasteriser* draws, not the vertices it draws it from, and the difference
+/// between the two is exactly the thing being measured.
+const PROFILE_SAMPLES: usize = 24;
 
 /// A clump as the vertex shader sees it.
 #[derive(Clone, Copy, Debug)]
@@ -48,6 +65,8 @@ pub struct Clump {
     pub root: Vec2,
     pub width: f32,
     pub height: f32,
+    /// Already snapped to a palette rung when the chunk was built.
+    pub shade: f32,
     pub random: f32,
 }
 
@@ -88,7 +107,7 @@ fn smoothstep(low: f32, high: f32, value: f32) -> f32 {
 /// Settings the shader is driven with, mirrored from `ClumpSettings::default`.
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
-    pub lean: f32,
+    pub bend_angle: f32,
     pub squash: f32,
     pub root_stiffness: f32,
     pub max_angle: f32,
@@ -98,12 +117,20 @@ impl Settings {
     /// Read the shipped defaults, so the mirror cannot be tuned separately from
     /// the thing it mirrors.
     pub fn shipped(field: &GrassField) -> Self {
+        Self {
+            max_angle: field.params().max_angle,
+            ..Self::shipped_defaults()
+        }
+    }
+
+    /// The same, without a field to read the angular cap from.
+    pub fn shipped_defaults() -> Self {
         let settings = clump::ClumpSettings::default();
         Self {
-            lean: settings.lean,
+            bend_angle: settings.bend_angle,
             squash: settings.squash,
             root_stiffness: settings.root_stiffness,
-            max_angle: field.params().max_angle,
+            max_angle: settings.max_angle,
         }
     }
 }
@@ -115,28 +142,104 @@ impl Settings {
 pub fn response(clump: &Clump, field: &GrassField, settings: &Settings) -> (Vec2, f32) {
     let bend = field.bend_at(clump.root);
     let strength = (bend.length() / settings.max_angle.max(1e-4)).clamp(0.0, 1.0);
-    let stiffness = STIFFNESS_MIN + (STIFFNESS_MAX - STIFFNESS_MIN) * hash11(clump.random + 4.1);
-    let responsive = smoothstep(STICTION, FULL_LEAN, strength);
     let direction = if strength > 1e-4 {
         bend.normalize()
     } else {
         Vec2::ZERO
     };
-    (direction, responsive * stiffness)
+    (direction, taken(strength, clump.random))
+}
+
+/// The share of the field's bend a plant of this randomness takes.
+///
+/// Split out of [`response`] so the geometry benchmarks can drive a clump to a
+/// chosen bend without building a field that happens to produce it.
+pub fn taken(strength: f32, random: f32) -> f32 {
+    let compliance = COMPLIANCE_MIN + (COMPLIANCE_MAX - COMPLIANCE_MIN) * hash11(random + 4.1);
+    smoothstep(STICTION, FULL_LEAN, strength.clamp(0.0, 1.0)) * compliance
+}
+
+/// Where one row of the card sits, in world metres from the root.
+///
+/// `x` is horizontal displacement along the bend direction and `y` is height.
+/// This is the whole of the card's shape, and it is the function that changes
+/// when the card does. Mirrored from the loop in `clump.wgsl`, midpoint rule and
+/// all — approximating it with the closed-form arc would be a different curve
+/// from the one the GPU draws, which is the one being measured.
+fn row(clump: &Clump, settings: &Settings, share: f32, exponent: f32, up: f32) -> Vec2 {
+    let bands = ((CARD_ROWS - 1) as f32 * up).round() as usize;
+    let step = clump.height / (CARD_ROWS - 1) as f32;
+    let tip = (settings.bend_angle * share).min(MAX_TIP_ANGLE);
+    let (mut along, mut lift) = (0.0, 0.0);
+    for band in 0..bands {
+        let mid = (band as f32 + 0.5) / (CARD_ROWS - 1) as f32;
+        let angle = tip * mid.powf(exponent);
+        along += angle.sin() * step;
+        lift += angle.cos() * step;
+    }
+    Vec2::new(along, lift * (1.0 - settings.squash * share.min(1.0)))
+}
+
+/// The drawn centreline, sampled evenly up the sprite.
+///
+/// Interpolated between card rows the way the rasteriser does, so a card with
+/// two rows reports a straight line however curved its intent was.
+pub fn profile_with(clump: &Clump, share: f32, settings: &Settings, exponent: f32) -> Vec<Vec2> {
+    let segments = (CARD_ROWS - 1) as f32;
+    (0..PROFILE_SAMPLES)
+        .map(|index| {
+            let up = index as f32 / (PROFILE_SAMPLES - 1) as f32;
+            let scaled = up * segments;
+            let low = scaled.floor().min(segments - 1.0);
+            let t = scaled - low;
+            let a = row(clump, settings, share, exponent, low / segments);
+            let b = row(clump, settings, share, exponent, (low + 1.0) / segments);
+            a.lerp(b, t)
+        })
+        .collect()
+}
+
+/// [`profile_with`] at the shipped settings.
+pub fn profile_with_exponent(clump: &Clump, share: f32, exponent: f32) -> Vec<Vec2> {
+    profile_with(clump, share, &Settings::shipped_defaults(), exponent)
+}
+
+/// [`profile_with_exponent`] at the shipped exponent.
+///
+/// `share` is how much of the field's bend the plant is admitting — one being a
+/// plant giving the wind everything it has. Driven directly rather than through
+/// a field and a [`taken`] roll, because the shape of the card is the thing
+/// being measured and a particular plant's compliance only scales it. Measuring
+/// through a roll made every number depend on what `hash11` happened to return
+/// for one clump, which is how `lean_shortening` came to be reported at a
+/// nineteen-degree bend and read as a regression when the card started
+/// shortening correctly.
+pub fn profile(clump: &Clump, share: f32) -> Vec<Vec2> {
+    let exponent = Settings::shipped_defaults().root_stiffness;
+    profile_with_exponent(clump, share, exponent)
+}
+
+/// Vertex and index bytes one clump occupies.
+///
+/// Root at full precision, corner as four bytes, shape as four halves, and
+/// sixteen-bit indices — a chunk never reaches sixty-five thousand vertices.
+pub fn bytes_per_clump() -> f64 {
+    let vertices = CARD_ROWS * 2;
+    let bands = CARD_ROWS - 1;
+    (vertices * (8 + 4 + 8) + bands * 6 * 2) as f64
 }
 
 /// Place one clump for one frame.
 pub fn place(clump: &Clump, field: &GrassField, settings: &Settings) -> Placement {
-    let (direction, taken) = response(clump, field, settings);
+    let (direction, share) = response(clump, field, settings);
 
-    let lean = direction * (taken * settings.lean * clump.height);
-    let squash = 1.0 - settings.squash * taken;
-
-    // The top edge, where `up` is one, so the height weighting is one too.
+    // The top row, where `up` is one and the centreline has been walked all the
+    // way to the tip.
+    let tip_offset = row(clump, settings, share, settings.root_stiffness, 1.0);
     let top = Vec3::new(
-        clump.root.x + lean.x,
-        clump.root.y + lean.y,
-        clump.height * squash,
+        clump.root.x + direction.x * tip_offset.x,
+        clump.root.y + direction.y * tip_offset.x,
+        tip_offset.y,
     );
     let base = Vec3::new(clump.root.x, clump.root.y, 0.0);
 
@@ -167,8 +270,28 @@ pub fn sample(field: &GrassField, chunks: i32, seed: u32) -> Vec<Clump> {
                     root,
                     width: shape[0],
                     height: shape[1],
+                    shade: shape[2],
                     random: shape[3],
                 });
+            }
+        }
+    }
+    out
+}
+
+/// Which atlas variant each of [`sample`]'s clumps draws, in the same order.
+///
+/// Separate rather than folded into [`Clump`] because the vertex stage never
+/// sees it — the cell is chosen when the chunk is built and only the fragment
+/// stage cares. Tone measurement does care, because a variant's own brightness
+/// is half of what a clump contributes to the field's tonal spread.
+pub fn sample_variants(field: &GrassField, chunks: i32, seed: u32) -> Vec<usize> {
+    let mut out = Vec::new();
+    for y in 0..chunks {
+        for x in 0..chunks {
+            let batch = clump::build_chunk(field, bevy::math::IVec2::new(x, y), 1.0, seed);
+            for (column, row) in batch.cells() {
+                out.push(row * clump::COLUMNS + column);
             }
         }
     }
@@ -183,11 +306,14 @@ pub fn sample(field: &GrassField, chunks: i32, seed: u32) -> Vec<Clump> {
 /// that nothing changed.
 pub fn assert_matches_shader(source: &str) {
     for (name, ours) in [
-        ("STIFFNESS_MIN", STIFFNESS_MIN),
-        ("STIFFNESS_MAX", STIFFNESS_MAX),
+        ("COMPLIANCE_MIN", COMPLIANCE_MIN),
+        ("COMPLIANCE_MAX", COMPLIANCE_MAX),
         ("STICTION", STICTION),
         ("FULL_LEAN", FULL_LEAN),
         ("ALPHA_CUT", ALPHA_CUT),
+        ("MAX_TIP_ANGLE", MAX_TIP_ANGLE),
+        ("SHAPE_METRES", clump::SHAPE_METRES),
+        ("CARD_BANDS", (clump::CARD_ROWS - 1) as f32),
     ] {
         let marker = format!("const {name}: f32 = ");
         let start = source

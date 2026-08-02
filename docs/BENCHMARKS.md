@@ -132,6 +132,7 @@ bench target of its own.
 | `stability.rs` | Stability | Does it move, or does it merely change |
 | `motion.rs` | Motion | Does wind read as wind, contact as contact, a blast as a blast |
 | `atlas.rs` | Style | Does the sprite sheet read as drawn artwork |
+| `card.rs` | Card | Does the bend bend, what does a fragment cost, is the tone wide enough |
 | `texture_match.rs` | Resemblance | How close is a frame to the art target |
 | `mirror.rs` | — | A CPU model of the clump shader's vertex stage |
 | `harness.rs` | — | Sampled timing, standard scenes, signal analysis |
@@ -183,6 +184,42 @@ each looks innocent from the others:
 
 `grass.stability.rest_drift` is the sharpest of them: with no wind and nothing
 touching it, a settled field must stop.
+
+### The card section, and why a dead parameter needed a benchmark
+
+`card.rs` exists because of a specific failure: `ClumpSettings::root_stiffness`
+was documented for months as the exponent that keeps a plant's base planted
+while its tip curls over, and it did nothing at all. A clump was four vertices,
+`up` took the values zero and one, and `pow` fixes both of those for every
+exponent — so the parameter was applied to precisely the two inputs on which it
+is the identity, and the rasteriser drew a straight line between them.
+
+Nothing in the project could see it. Every correctness test passed, the field
+was bit-identical, and the shader's own comment asserted the opposite.
+`grass.card.stiffness_effect` is the guard: it places a clump at full bend and
+compares it against the same clump with the exponent forced flat. It read
+exactly `0.0000`, and could not have read anything else.
+
+The section carries three families, and each one answers a question that lives
+in the gap between what the code says and what the picture does:
+
+- **Geometry** — `stiffness_effect`, `base_lean_share`, `length_error`. Each is
+  paired with what a shear would have given (`shear_lean_share`,
+  `shear_length_error`), so the table carries the old behaviour without needing
+  a baseline run to remember it.
+- **Overdraw** — the fragment cost, which nothing priced before. `layers_per_pixel`
+  is depth complexity from geometry; `early_z_rejected` runs an actual depth test
+  over a real chunk in the order the index buffer presents it. It is reported
+  beside `early_z_other_order` because a rejection rate only means something
+  next to what the other draw order would have given.
+- **Tone** — `clump_spread` against `target_spread`. The second is a property of
+  the reference plate and never moves; the first is what the renderer produces.
+  Measured *between* clumps as well as per pixel, because a clump is thirty
+  pixels at the battle camera and nothing inside one survives to the eye.
+
+`grass.tone.clump_spread` read **0.000** when it was first written — every clump
+in the field landing in one of the art target's ten tone buckets. That is the
+kind of thing a suite exists to find.
 
 ### Physics
 

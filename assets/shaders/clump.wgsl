@@ -5,20 +5,39 @@
 // edges, a shaded interior, bright tips — was drawn once when the atlas was
 // baked, so nothing here pays for it per frame.
 //
-// What this shader does is place the quad, bend it, and tint it.
+// What this shader does is place the card, bend it, and shade it.
 //
-// ## The bend is a shear, not a rotation
+// ## The bend is an integrated centreline, not a shear
 //
-// A clump's root is planted. The bottom edge of the quad never moves and the
-// top edge slides in the direction the bend field says, by an amount that grows
-// with height up the sprite. That is the same rooted deformation the blades
-// used, applied to a whole plant at once, and it is why a gust reads as grass
-// leaning rather than as sprites sliding across the ground.
+// A clump's root is planted: the bottom row of the card never moves. Above it,
+// the card walks up its own length one band at a time, turning a little further
+// from vertical at each step, and the position of a row is the sum of the steps
+// below it. That is the discrete form of integrating a tangent along a stem, and
+// three properties fall out of it for free that a shear had to fake or could not
+// have at all:
 //
-// Shearing a sprite is normally how grass ends up looking like rubber — the
-// silhouette never shortens as it leans. Here it does not, because the shear is
-// paired with a vertical squash proportional to how far it has leaned, which is
-// what actually happens to the height of something bending over.
+// - **The plant keeps its length.** An arc walked at a fixed step length is the
+//   same length whatever it is bent to. A rooted plant pivots; it does not
+//   stretch.
+// - **The silhouette shortens as it leans.** That is the cosine, and it is what
+//   a sheared rectangle cannot do — which is why there used to be a large ad-hoc
+//   squash term bolted on to imitate it.
+// - **Curvature can vary up the stem.** A shear cannot: it is affine, so the
+//   displacement is linear in height by construction, and any attempt to weight
+//   it differently is undone by the rasteriser interpolating between the two
+//   ends. That is exactly what happened to `root_stiffness` — see below.
+//
+// ## Why the card has four rows
+//
+// It had two, which is a quad, and a quad is where `root_stiffness` went to die.
+// The exponent was applied to `up`, `up` was zero at the bottom and one at the
+// top, and `pow(0, k)` and `pow(1, k)` are zero and one for every k in
+// existence. So the parameter was applied to precisely the two inputs on which
+// it is the identity, the rasteriser drew a straight line between them, and the
+// comment here claimed for months that the base was visibly planted.
+//
+// `grass.card.stiffness_effect` measures it directly and read exactly 0.0000.
+// With four rows it does not, and cannot again.
 
 #import bevy_sprite::mesh2d_functions as mesh_functions
 
@@ -45,12 +64,34 @@ const MIP_LEVELS: u32 = 3u;
 
 const TAU: f32 = 6.2831855;
 
-// How much of the field's bend a clump takes, limpest to stiffest.
+// How much of the field's bend a clump takes, stiffest to limpest.
 //
 // A very wide spread. Neighbours that answer the wind alike move as one
 // surface, and an undulating surface is water however green it is.
-const STIFFNESS_MIN: f32 = 0.30;
-const STIFFNESS_MAX: f32 = 1.70;
+//
+// Named compliance rather than stiffness, which is what it was called and is the
+// exact opposite of what it does — a *larger* value here means the plant gives
+// the wind *more*. A misnamed multiplier is a sign inversion waiting for
+// someone to tune it, and this one sits at the centre of how the field moves.
+const COMPLIANCE_MIN: f32 = 0.30;
+const COMPLIANCE_MAX: f32 = 1.70;
+
+// Rows of vertices up a card, and the bands between them. Mirrored from
+// clump.rs.
+const CARD_ROWS: u32 = 4u;
+const CARD_BANDS: f32 = 3.0;
+
+// Full-scale metres of the packed size attribute. Mirrored from clump.rs.
+const SHAPE_METRES: f32 = 2.0;
+// Full-scale multiplier of the packed shade attribute. Mirrored from clump.rs.
+const SHADE_SCALE: f32 = 2.0;
+
+// Furthest the card's tip may turn from vertical.
+//
+// The bend angle is scaled by a compliance that reaches 1.7, so the limpest
+// plants in the strongest field would otherwise fold past horizontal and draw
+// themselves upside down. This is the backstop, not the working range.
+const MAX_TIP_ANGLE: f32 = 1.4835; // 85 degrees
 
 // Bend below which a clump does not move at all, as a fraction of the cap.
 //
@@ -109,21 +150,24 @@ const ALPHA_CUT: f32 = 0.45;
 struct ClumpSettings {
     field_origin: vec2<f32>,
     field_inverse_extent: vec2<f32>,
+    // The key light's direction across the ground.
+    key_direction: vec2<f32>,
     field_resolution: f32,
     time: f32,
     max_angle: f32,
-    // How far the top of a clump slides, in sprite heights, at full bend.
-    lean: f32,
-    // How much a fully leaned clump loses in height.
+    // Tangent angle at the tip, in radians, at full response.
+    bend_angle: f32,
+    // Residual foreshortening on top of what the centreline already gives.
     squash: f32,
     // Amplitude of the per-clump idle sway, in sprite heights.
     sway: f32,
-    // How far tint shifts a clump's colour, in 0..1.
-    tint_strength: f32,
-    // Shade multiplier at the darkest tint.
-    tint_floor: f32,
+    // Exponent on how far up the card the bend accumulates.
     root_stiffness: f32,
-    _pad1: f32,
+    // Palette rungs a clump brightens by when it leans into the key.
+    wind_light_rungs: f32,
+    // Luminance ratio between neighbouring palette rungs.
+    tone_ratio: f32,
+    _pad: f32,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> settings: ClumpSettings;
@@ -131,13 +175,17 @@ struct ClumpSettings {
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var atlas_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var field_bend: texture_2d<f32>;
 
+// No POSITION. Every component of it was overwritten below before being read,
+// so it was twelve bytes a vertex fetched from memory once a frame and thrown
+// away — and the bounding box it would have given Bevy is wrong anyway, because
+// this shader moves vertices further than their rest pose reaches. The chunk's
+// AABB is set by hand in scene.rs.
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
-    @location(0) position: vec3<f32>,
     @location(1) root: vec2<f32>,
-    // corner x, corner y, atlas column, atlas row
+    // across (0 or 1), up (0..1), atlas column / 255, atlas row / 255
     @location(2) corner: vec4<f32>,
-    // width, height, tint, per-clump random
+    // width and height over SHAPE_METRES, shade over SHADE_SCALE, random
     @location(3) shape: vec4<f32>,
 }
 
@@ -181,11 +229,14 @@ fn hash11(x: f32) -> f32 {
 
 @vertex
 fn vertex(vertex: Vertex) -> ClumpOutput {
-    let across = vertex.corner.x;
+    // The packed attributes arrive normalised to 0..1. Unpacking is two
+    // multiplies and recovers every value exactly: the byte channels only ever
+    // hold multiples of 255/3, 255/5 and 255/7.
+    let across = vertex.corner.x * 2.0 - 1.0;
     let up = vertex.corner.y;
-    let width = vertex.shape.x;
-    let height = vertex.shape.y;
-    let tint = vertex.shape.z;
+    let width = vertex.shape.x * SHAPE_METRES;
+    let height = vertex.shape.y * SHAPE_METRES;
+    let shade = vertex.shape.z * SHADE_SCALE;
     let random = vertex.shape.w;
 
     let uv = (vertex.root - settings.field_origin) * settings.field_inverse_extent;
@@ -200,7 +251,7 @@ fn vertex(vertex: Vertex) -> ClumpOutput {
     // surface that undulates is water. Grass is a field of separate stiff
     // plants, and the difference between the two is almost entirely how much
     // their neighbours disagree with them.
-    let stiffness = STIFFNESS_MIN + (STIFFNESS_MAX - STIFFNESS_MIN) * hash11(random + 4.1);
+    let compliance = COMPLIANCE_MIN + (COMPLIANCE_MAX - COMPLIANCE_MIN) * hash11(random + 4.1);
 
     // Grass does not respond to a light breeze at all. Below this the plant
     // simply does not move — stems are stiff and there is friction in the
@@ -212,31 +263,49 @@ fn vertex(vertex: Vertex) -> ClumpOutput {
     if (strength > 1e-4) {
         direction = normalize(bend);
     }
-    // The lean, in world metres, applied only to the top of the sprite.
+
+    // How much of the wind this particular plant is giving in to.
     //
     // There is no idle sway term. There used to be — a sine per clump — and it
     // was the single thing that made a still field read as a water surface:
     // continuous, smooth, everywhere at once. Grass at rest is *still*. All the
     // motion should come from the wind field, which already gusts.
-    let lean = direction * (responsive * stiffness * settings.lean * height);
+    let taken = responsive * compliance;
+    let tip_angle = min(settings.bend_angle * taken, MAX_TIP_ANGLE);
 
-    // How much of the lean this height takes.
+    // Walk the centreline from the root to this vertex's row.
     //
-    // Emphatically *not* linear in `up`. A linear shear puts half the lean at
-    // half the height, which means the whole sprite slides sideways together
-    // and the plant reads as sliding across the ground rather than bending out
-    // of it — even though the root vertex itself never moves. A grass plant is
-    // stiff near the ground and limp at the tip, so almost none of the motion
-    // belongs in the bottom third.
+    // Each band is one step of fixed length turned a little further from
+    // vertical, so the arc is always the plant's own height however far it is
+    // bent — and the height it *reaches* falls out of the cosine rather than
+    // being multiplied in afterwards.
     //
-    // `root_stiffness` is the exponent: at one this is the old linear shear,
-    // and around two and a half the base is visibly planted.
-    let weight = pow(up, settings.root_stiffness);
+    // The exponent is what makes this different from a rotation. At one the
+    // plant bends in a constant-curvature arc; above one the lower bands turn
+    // almost not at all and the curl gathers in the tip, which is what a plant
+    // with a stiff stem and a limp head actually does. The loop runs at most
+    // three times, and only for the rows above the root.
+    let bands = i32(round(up * CARD_BANDS));
+    let step_length = height / CARD_BANDS;
+    var along = 0.0;
+    var lift = 0.0;
+    for (var band = 0; band < bands; band = band + 1) {
+        // Sampled at the band's midpoint, which is the midpoint rule and is
+        // second-order accurate — noticeably straighter near the root than
+        // taking the angle at either end would be.
+        let mid = (f32(band) + 0.5) / CARD_BANDS;
+        let angle = tip_angle * pow(mid, settings.root_stiffness);
+        along = along + sin(angle) * step_length;
+        lift = lift + cos(angle) * step_length;
+    }
 
-    let squash = 1.0 - settings.squash * responsive * stiffness;
+    // Whatever foreshortening the plan view of a centreline cannot know about:
+    // the camera looks down as well as along, so a plant tipping away from it
+    // loses a little more height than the cosine accounts for.
+    let squash = 1.0 - settings.squash * min(taken, 1.0);
     var world = vec3<f32>(
-        vertex.root + lean * weight,
-        up * height * squash,
+        vertex.root + direction * along,
+        lift * squash,
     );
 
     // Widen across the screen's horizontal, so a sprite always faces the
@@ -286,11 +355,34 @@ fn vertex(vertex: Vertex) -> ClumpOutput {
     let cell = vec2<f32>(1.0 / COLUMNS, 1.0 / ROWS);
     let corner = vec2<f32>((across * 0.5) + 0.5, 1.0 - up);
     let safe = clamp(corner, vec2<f32>(inset), vec2<f32>(1.0 - inset));
-    out.uv = (vec2<f32>(vertex.corner.z, vertex.corner.w) + safe) * cell;
+    let sheet = vec2<f32>(round(vertex.corner.z * 255.0), round(vertex.corner.w * 255.0));
+    out.uv = (sheet + safe) * cell;
 
-    // Tint darkens rather than brightens: the atlas already holds the lit
-    // colour, and a clump that varies upward would blow past the palette.
-    out.shade = mix(settings.tint_floor, 1.0, mix(1.0, tint, settings.tint_strength));
+    // Light travelling through the canopy.
+    //
+    // A field does not only move when a gust crosses it — it *changes colour*,
+    // because every leaf that turns presents a different face to the sun. That
+    // band of brightness running ahead of the wind is what the eye reads first;
+    // the displacement it is reading is only a couple of pixels.
+    //
+    // Cheap, because everything it needs is already here: which way the plant
+    // is leaning, and how hard. A clump tipping into the key catches more of
+    // it, one tipping away catches less, and the difference is rounded to whole
+    // palette rungs so a lit plant lands on a colour the palette contains.
+    //
+    // Rounded rather than smooth, and that matters twice over: it keeps the
+    // result on-palette, and it means a plant's tone does not creep continuously
+    // as the wind turns. It holds, then steps — which is how the hand-drawn art
+    // this is imitating handles light, and it costs nothing to do it that way.
+    let facing = dot(direction, settings.key_direction) * responsive;
+    let lit = round(facing * settings.wind_light_rungs);
+
+    // Already an exact power of the palette's own rung ratio, chosen when the
+    // chunk was built. So this multiply lands every colour in the sheet on
+    // another rung of its own ramp instead of somewhere between two of them,
+    // and the field gets a wide tonal vocabulary without a single colour the
+    // palette does not contain. See clump.rs.
+    out.shade = shade * pow(settings.tone_ratio, lit);
     return out;
 }
 

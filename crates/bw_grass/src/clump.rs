@@ -113,21 +113,44 @@ impl Default for Style {
         Self {
             leaves: (95, 160),
             length: (0.38, 0.95),
-            width: (0.75, 1.55),
+            // Narrower than they were. A leaf drawn wide closes the gap to its
+            // neighbour, and the gaps are where a canopy gets its depth — the
+            // art target is mostly dark with bright strokes through it, and a
+            // sheet of touching leaves has nowhere for the dark to be.
+            width: (0.58, 1.20),
             fan: 0.62,
             curve: (0.15, 0.85),
             root_shade: 0.0,
-            tip_shade: 0.70,
-            shade_curve: 2.60,
+            // Tips reach the top of their ramp, against 0.70. The reference's
+            // legibility is almost entirely the distance between a leaf's tip
+            // and the canopy behind it, and a tip that stops two thirds of the
+            // way up the ramp cannot open that distance however dark the body
+            // is made.
+            tip_shade: 1.00,
+            shade_curve: 3.40,
             shadow_share: 0.579,
-            highlight_share: 0.220,
-            softness: 0.9,
+            highlight_share: 0.280,
+            // Down from 0.9, and it is the single change that moves the look
+            // furthest.
+            //
+            // The doc above says it: at zero the sprite reads as pixel art and
+            // around a pixel it reads as painted. The art target is pixel art —
+            // hard strokes with hard edges — and a pixel of softness on a leaf
+            // drawn two pixels wide is most of the leaf. It also *costs*
+            // something: soft edges are what put pixels near the alpha
+            // threshold, and pixels near the threshold are what flicker when a
+            // sprite moves a fraction of one.
+            //
+            // So this is the rare dial where the picture and the stability both
+            // want the same direction, which is why it went so far in one step.
+            softness: 0.35,
             sway: 0.35,
         }
     }
 }
 
 /// A baked sheet of clump sprites, RGBA with straight (un-premultiplied) alpha.
+#[derive(Clone)]
 pub struct Atlas {
     pub width: usize,
     pub height: usize,
@@ -912,7 +935,6 @@ use bevy::mesh::{
 use bevy::prelude::*;
 
 use crate::field::GrassField;
-use crate::iso;
 use crate::noise::{fbm, hash_2d};
 
 /// Clumps per square metre at full detail.
@@ -962,8 +984,141 @@ pub const PER_SQUARE_METRE: f32 = 19.5;
 /// where that shows up.
 pub const SIZE: (f32, f32) = (0.36, 0.76);
 
-/// Metres per cycle of the field that varies clump size and tint.
+/// Metres per cycle of the field that varies clump size.
 pub const VARIATION_METRES: f32 = 9.0;
+
+// --- tone --------------------------------------------------------------------
+//
+// The field's single largest measured gap from the art target, and the reason
+// it is a whole block of constants rather than one multiplier.
+//
+// `grass.tone.clump_spread` read **0.000** against the target's 2.409. Not
+// narrow — *absent*. Every clump in the field landed in the same one of the art
+// target's ten tone buckets, because the two things that could have separated
+// them both failed to: the forty-eight atlas variants are the same procedural
+// plant and so have nearly the same mean brightness, and the runtime tint spanned
+// a multiplier of 0.923 to 1.0, which is a quarter of one bucket.
+//
+// This is *the* thing that separates painted grass from generated grass at
+// battlefield distance. A clump is thirty pixels there. Everything that varies
+// inside one is gone; what survives is whole plants disagreeing with each other,
+// and they were not disagreeing at all.
+
+/// Luminance ratio between neighbouring rungs of a palette ramp.
+///
+/// Not a taste — a measurement. All four ramps are built geometrically and come
+/// out at this ratio to within a thousandth of each other, which is what makes
+/// the whole scheme work: a shade that is an integer power of this maps every
+/// colour in the atlas onto *another rung of its own ramp*.
+///
+/// So the field gets a wide, discrete tonal vocabulary out of the multiply it was
+/// already doing, with no second texture fetch, no tonal atlas variants, and no
+/// colour that the palette does not contain. `tone_ratio_matches_the_palette`
+/// fails if the bake ever stops being geometric.
+pub const TONE_RATIO: f32 = 1.0418;
+
+/// Rungs a clump may sit below and above the atlas's own brightness.
+///
+/// Asymmetric, and the ceiling is the reason. The atlas already holds the *lit*
+/// colour, so brightening runs out of palette before darkening does: the
+/// brightest pixel in the sheet sits at 0.688 luminance and the brightest entry
+/// in the palette at 0.812, which is room for two rungs and not three. Downward
+/// there is the whole of the shadow ramp.
+///
+/// Nine levels spanning eight rungs, which is about three and a half of the art
+/// target's tones — wide enough to read as tonal structure, narrow enough that
+/// the field does not separate into light and dark halves.
+pub const TONE_RUNGS_DOWN: i32 = 7;
+pub const TONE_RUNGS_UP: i32 = 1;
+
+/// Divisor that brings a shade multiplier into the packed attribute's 0..1.
+const SHADE_SCALE: f32 = 2.0;
+
+/// Metres per cycle of the tone field that makes readable patches.
+///
+/// Three scales, because one does not work. A single frequency gives either
+/// large flat regions with no internal life or a per-plant fizz with no
+/// structure, and the field needs both at once: patches you can see the shape of
+/// from across the battlefield, variation inside them, and no two neighbours
+/// exactly equal.
+pub const TONE_MACRO_METRES: f32 = 12.0;
+pub const TONE_MESO_METRES: f32 = 3.5;
+
+/// Metres per cycle of the finest continuous tone field.
+///
+/// Added back after the chunk-seam fix, and the reason is worth recording
+/// because it is not obvious. Seeding the tone fields per chunk was a bug and
+/// the field was visibly gridded — but the bug was also *contributing variety*:
+/// every 4 m square got its own independent tone, which is a fourth spatial
+/// scale nobody designed. Fixing the seam removed it, and the field came out
+/// correct and flatter at the same time.
+///
+/// So this is that scale put back deliberately and continuously. About a metre
+/// and a half is close to what the accidental version was doing, and Perlin at
+/// that frequency reads as clumps of grass being a little greener than the
+/// clumps beside them — which is what a meadow does, and what a per-clump
+/// random cannot do because it has no extent.
+pub const TONE_FINE_METRES: f32 = 1.5;
+
+/// How the three scales are mixed. Macro dominates, because macro is what the
+/// battle camera can actually resolve.
+const TONE_MACRO_WEIGHT: f32 = 0.40;
+const TONE_MESO_WEIGHT: f32 = 0.28;
+const TONE_FINE_WEIGHT: f32 = 0.18;
+/// The per-clump term. Small on purpose — it is the only one with no extent, so
+/// it is the only one that reads as noise rather than as the field being patchy.
+const TONE_MICRO_WEIGHT: f32 = 0.14;
+
+/// How far the mixed tone field is stretched about its middle before bucketing.
+///
+/// Summing three noise fields concentrates the result near a half — the central
+/// limit theorem working against the art direction — and left alone it would put
+/// most of the field in the middle two rungs and waste the range at both ends.
+/// This pushes it back out.
+const TONE_CONTRAST: f32 = 1.75;
+
+/// The smooth part of the tone field at a world position, in 0..1.
+///
+/// Macro and meso only — the per-clump term is added by the caller, because it
+/// comes from the clump's own hash rather than from anywhere in the world and
+/// including it here would make the field discontinuous by construction.
+///
+/// Seeded from the *world* seed. That is the whole point of it being a separate
+/// function: it is sampled at world coordinates and has to be continuous across
+/// chunk boundaries, and the surrounding code has a chunk seed sitting right
+/// there which is exactly the wrong one to reach for.
+pub fn tone_at(root: Vec2, world_seed: u32) -> f32 {
+    let coarse = fbm(
+        root.x / TONE_MACRO_METRES,
+        root.y / TONE_MACRO_METRES,
+        world_seed ^ 0x7A10_9E55,
+        1,
+    );
+    let fine = fbm(
+        root.x / TONE_MESO_METRES,
+        root.y / TONE_MESO_METRES,
+        world_seed ^ 0x1D0F_3C77,
+        1,
+    );
+    let grain = fbm(
+        root.x / TONE_FINE_METRES,
+        root.y / TONE_FINE_METRES,
+        world_seed ^ 0x63A1_02B9,
+        1,
+    );
+    let mixed = TONE_MACRO_WEIGHT * coarse + TONE_MESO_WEIGHT * fine + TONE_FINE_WEIGHT * grain
+        // The micro term the caller adds is centred on zero, so the smooth part
+        // has to carry the middle of the range on its own.
+        + TONE_MICRO_WEIGHT * 0.5;
+    0.5 + (mixed - 0.5) * TONE_CONTRAST
+}
+
+/// The shade multiplier for a tone in 0..1, snapped to a palette rung.
+pub fn shade_for_tone(tone: f32) -> f32 {
+    let span = (TONE_RUNGS_DOWN + TONE_RUNGS_UP) as f32;
+    let rung = (tone.clamp(0.0, 1.0) * span).round() - TONE_RUNGS_DOWN as f32;
+    TONE_RATIO.powf(rung)
+}
 
 /// Strata a clump may be jittered across.
 ///
@@ -997,24 +1152,81 @@ const DENSITY_SWING: f32 = 0.45;
 /// re-rolling instead makes every plant jump the moment the camera moves.
 pub const DENSITY: f32 = 1.0;
 
-/// World position of the clump's root, shared by all four corners.
+/// Rows of vertices up a card.
+///
+/// Four, and it used to be two. A two-row card is a quad, and a quad cannot
+/// bend: the only heights it carries are zero and one, the rasteriser fills a
+/// straight line between whatever they are moved to, and every attempt to shape
+/// that line is applied to two values on which it is the identity. That is
+/// exactly what happened to `root_stiffness`, which spent its life documented as
+/// the thing that keeps a plant's base planted while doing nothing whatsoever —
+/// `grass.card.stiffness_effect` measured it at zero, and could not have
+/// measured anything else.
+///
+/// Four rows gives three bands and a piecewise-linear centreline, which is
+/// enough for the curvature to read as a plant bending rather than a picture
+/// shearing. Five was tried and is not worth it: the extra vertex row costs more
+/// bytes than the packed layout saves, and the third band is already short
+/// enough that the eye reads the joint as a curve.
+pub const CARD_ROWS: usize = 4;
+
+/// Vertices a card carries. Two across, [`CARD_ROWS`] up.
+pub const VERTS_PER_CLUMP: usize = CARD_ROWS * 2;
+
+/// Full-scale metres for the packed width and height.
+///
+/// The packed attributes are unsigned normalised, so a size has to be divided by
+/// something to reach 0..1. Twice the tallest clump, which leaves headroom for a
+/// larger [`SIZE`] without a format change and still resolves to three
+/// hundredths of a millimetre.
+pub const SHAPE_METRES: f32 = 2.0;
+
+/// World position of the clump's root, shared by every vertex of the card.
+///
+/// The one attribute still at full precision, because it is the only one used as
+/// a *coordinate*: it indexes the bend field, and a quantised index lands
+/// neighbours in the wrong texel and gives them the wrong wind.
 pub const ATTRIBUTE_ROOT: MeshVertexAttribute =
     MeshVertexAttribute::new("ClumpRoot", 0x6a72_0021, VertexFormat::Float32x2);
 
-/// `(corner x, corner y, atlas column, atlas row)`.
+/// `(across, up, atlas column, atlas row)`, each a byte.
+///
+/// Four numbers that between them take twelve values — two sides, four heights,
+/// six columns, eight rows — and were stored in sixteen bytes of float. A byte
+/// each is still four times more range than any of them uses. The shader reads
+/// them back as `k / 255` and multiplies out, which is exact for every value
+/// here because 255 divides by three.
 pub const ATTRIBUTE_CORNER: MeshVertexAttribute =
-    MeshVertexAttribute::new("ClumpCorner", 0x6a72_0022, VertexFormat::Float32x4);
+    MeshVertexAttribute::new("ClumpCorner", 0x6a72_0022, VertexFormat::Unorm8x4);
 
-/// `(width, height, tint, per-clump random)`.
+/// `(width, height, shade, per-clump random)`, normalised to sixteen bits.
+///
+/// Sixteen bits over [`SHAPE_METRES`] is a resolution of thirty microns, against
+/// a sprite drawn at forty pixels. There is no visual difference and the
+/// attribute halves.
 pub const ATTRIBUTE_SHAPE: MeshVertexAttribute =
-    MeshVertexAttribute::new("ClumpShape", 0x6a72_0023, VertexFormat::Float32x4);
+    MeshVertexAttribute::new("ClumpShape", 0x6a72_0023, VertexFormat::Unorm16x4);
+
+fn pack_unorm16(value: f32) -> u16 {
+    (value.clamp(0.0, 1.0) * 65535.0).round() as u16
+}
+
+fn unpack_unorm16(value: u16) -> f32 {
+    value as f32 / 65535.0
+}
 
 /// A chunk's worth of clumps.
+///
+/// There is deliberately no `POSITION`. Bevy wants one and the vertex shader
+/// overwrites every component of it before doing anything else, so the twelve
+/// bytes a vertex spent carrying a rest pose were read from memory once a frame
+/// and discarded. The one thing they were good for — a bounding box — is set by
+/// hand in `scene::chunk_bounds` anyway, and has to be, because the shader moves
+/// vertices further than their rest pose reaches.
 pub struct Batch {
-    positions: Vec<[f32; 3]>,
     roots: Vec<[f32; 2]>,
-    corners: Vec<[f32; 4]>,
-    shapes: Vec<[f32; 4]>,
+    corners: Vec<[u8; 4]>,
+    shapes: Vec<[u16; 4]>,
     indices: Vec<u32>,
     clumps: u32,
 }
@@ -1028,60 +1240,93 @@ impl Batch {
         self.clumps == 0
     }
 
+    /// Whether the chunk is small enough to index with sixteen bits.
+    ///
+    /// A chunk holds around three hundred clumps and a clump eight vertices, so
+    /// this is true for every chunk the game builds — but it is checked rather
+    /// than assumed, because the failure if it were ever false is silent
+    /// corruption of the geometry rather than a panic.
+    fn short_indices(&self) -> bool {
+        self.roots.len() <= u16::MAX as usize
+    }
+
     /// Bytes of vertex and index data.
     pub fn byte_size(&self) -> usize {
-        self.positions.len() * 12
-            + self.roots.len() * 8
-            + self.corners.len() * 16
-            + self.shapes.len() * 16
-            + self.indices.len() * 4
+        let index = if self.short_indices() { 2 } else { 4 };
+        self.roots.len() * 8
+            + self.corners.len() * 4
+            + self.shapes.len() * 8
+            + self.indices.len() * index
     }
 
     /// One root per clump.
     pub fn roots(&self) -> impl Iterator<Item = Vec2> + '_ {
-        self.roots.iter().step_by(4).map(|&r| Vec2::from(r))
+        self.roots
+            .iter()
+            .step_by(VERTS_PER_CLUMP)
+            .map(|&r| Vec2::from(r))
     }
 
     /// One world height per clump, in metres.
     pub fn heights(&self) -> impl Iterator<Item = f32> + '_ {
-        self.shapes.iter().step_by(4).map(|s| s[1])
+        self.shapes
+            .iter()
+            .step_by(VERTS_PER_CLUMP)
+            .map(|s| unpack_unorm16(s[1]) * SHAPE_METRES)
     }
 
-    /// One `(width, height, tint, random)` per clump, exactly as the vertex
-    /// shader receives it.
+    /// One `(width, height, shade, random)` per clump, decoded to the values the
+    /// vertex shader will reconstruct.
     ///
-    /// `random` is the interesting one: it seeds the per-clump stiffness, which
+    /// Decoded rather than kept alongside in full precision on purpose. What a
+    /// benchmark wants to know is what the *GPU* will do, and the GPU sees the
+    /// quantised numbers — so any analysis built on these is analysing the
+    /// shipped geometry including its packing, rather than an idealised version
+    /// of it that is never drawn.
+    ///
+    /// `random` is the interesting one: it seeds the per-clump compliance, which
     /// is what decides how much of the field's bend a plant takes. Any analysis
     /// that wants to reproduce what a clump will *do* — as opposed to where it
     /// sits — needs it.
     pub fn shapes(&self) -> impl Iterator<Item = [f32; 4]> + '_ {
-        self.shapes.iter().copied().step_by(4)
+        self.shapes.iter().step_by(VERTS_PER_CLUMP).map(|s| {
+            [
+                unpack_unorm16(s[0]) * SHAPE_METRES,
+                unpack_unorm16(s[1]) * SHAPE_METRES,
+                unpack_unorm16(s[2]) * SHADE_SCALE,
+                unpack_unorm16(s[3]),
+            ]
+        })
     }
 
     /// One `(column, row)` atlas cell per clump.
     pub fn cells(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.corners
             .iter()
-            .step_by(4)
+            .step_by(VERTS_PER_CLUMP)
             .map(|c| (c[2] as usize, c[3] as usize))
     }
 
     pub fn into_mesh(self) -> Mesh {
+        let indices = if self.short_indices() {
+            Indices::U16(self.indices.iter().map(|&i| i as u16).collect())
+        } else {
+            Indices::U32(self.indices)
+        };
         Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
         )
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.positions)
         .with_inserted_attribute(ATTRIBUTE_ROOT, self.roots)
         .with_inserted_attribute(
             ATTRIBUTE_CORNER,
-            VertexAttributeValues::Float32x4(self.corners),
+            VertexAttributeValues::Unorm8x4(self.corners),
         )
         .with_inserted_attribute(
             ATTRIBUTE_SHAPE,
-            VertexAttributeValues::Float32x4(self.shapes),
+            VertexAttributeValues::Unorm16x4(self.shapes),
         )
-        .with_inserted_indices(Indices::U32(self.indices))
+        .with_inserted_indices(indices)
     }
 }
 
@@ -1097,11 +1342,10 @@ pub fn build_chunk(field: &GrassField, chunk: IVec2, detail: f32, seed: u32) -> 
         .max(0.0) as usize;
 
     let mut batch = Batch {
-        positions: Vec::with_capacity(target * 4),
-        roots: Vec::with_capacity(target * 4),
-        corners: Vec::with_capacity(target * 4),
-        shapes: Vec::with_capacity(target * 4),
-        indices: Vec::with_capacity(target * 6),
+        roots: Vec::with_capacity(target * VERTS_PER_CLUMP),
+        corners: Vec::with_capacity(target * VERTS_PER_CLUMP),
+        shapes: Vec::with_capacity(target * VERTS_PER_CLUMP),
+        indices: Vec::with_capacity(target * (CARD_ROWS - 1) * 6),
         clumps: 0,
     };
     if target == 0 {
@@ -1111,7 +1355,26 @@ pub fn build_chunk(field: &GrassField, chunk: IVec2, detail: f32, seed: u32) -> 
     let mut placed: Vec<Placed> = Vec::with_capacity(target);
     let strata = (target as f32).sqrt().ceil().max(1.0) as i32;
     let stride = side / strata as f32;
+    // Two seeds, and the difference between them is load-bearing.
+    //
+    // `chunk_seed` decorrelates one chunk's *candidates* from the next, and it
+    // has to, because the strata below are indexed chunk-locally: without it,
+    // stratum (0, 0) of every chunk would draw the same numbers and the field
+    // would be one 4 m tile repeated forever.
+    //
+    // The noise fields underneath are the opposite case. They are sampled at
+    // *world* coordinates and are meant to be continuous across the whole
+    // battlefield, so they must be seeded from the world seed alone. Seeding
+    // them per chunk — which is what this did — restarts every field at every
+    // chunk boundary, and the field acquires a hard 4 m grid.
+    //
+    // That was true of the size and density fields from the beginning and
+    // nobody could see it, because a clump being a few centimetres shorter than
+    // its neighbour is not a visible edge. It became glaring the moment tone
+    // started spanning eight palette rungs: the grid was suddenly drawn in
+    // light and dark squares. `grass.tone.chunk_seam` is the guard.
     let chunk_seed = seed ^ hash_2d(chunk.x, chunk.y, 0x51A5_5EED);
+    let world_seed = seed;
 
     for sy in 0..strata {
         for sx in 0..strata {
@@ -1132,7 +1395,7 @@ pub fn build_chunk(field: &GrassField, chunk: IVec2, detail: f32, seed: u32) -> 
                     * fbm(
                         root.x / DENSITY_METRES,
                         root.y / DENSITY_METRES,
-                        chunk_seed ^ 0x4D65_1F0B,
+                        world_seed ^ 0x4D65_1F0B,
                         3,
                     );
             // The stable rank. Drawn from the clump's own hash and never
@@ -1150,7 +1413,7 @@ pub fn build_chunk(field: &GrassField, chunk: IVec2, detail: f32, seed: u32) -> 
             let drift = fbm(
                 root.x / VARIATION_METRES,
                 root.y / VARIATION_METRES,
-                chunk_seed ^ 0x2B7E_1516,
+                world_seed ^ 0x2B7E_1516,
                 3,
             );
             let a = unit(hash.wrapping_mul(0xc2b2_ae35));
@@ -1164,9 +1427,27 @@ pub fn build_chunk(field: &GrassField, chunk: IVec2, detail: f32, seed: u32) -> 
             let width = height * lerp(0.95, 1.35, unit(hash.wrapping_mul(0x27d4_eb2f)));
 
             let variant = (hash.wrapping_mul(0x1656_67b1) as usize) % VARIANTS;
-            let column = (variant % COLUMNS) as f32;
-            let row_index = (variant / COLUMNS) as f32;
-            let tint = (unit(hash.wrapping_mul(0x7feb_352d)) * 0.6 + drift * 0.4).clamp(0.0, 1.0);
+            let column = (variant % COLUMNS) as u8;
+            let row_index = (variant / COLUMNS) as u8;
+
+            // Tone, from three scales that do not share a seed with anything
+            // else.
+            //
+            // Deliberately *not* driven off `drift`, which shapes the heights.
+            // Tying tone to size is the cheapest way to get variation and the
+            // quickest way to make it look generated: every property changing
+            // along the same contour is what turns procedural regions into
+            // visible zones. A real meadow is patchy in colour and patchy in
+            // height and the two patches do not line up.
+            //
+            // One octave each. Two fields at separated frequencies already give
+            // the two scales this wants, and stacking octaves on top of them
+            // only fills in the gap between — which the *other* field is
+            // already covering. Three octaves on the macro field cost a third
+            // of the chunk build and moved no measurement at all.
+            let tone =
+                tone_at(root, world_seed) + TONE_MICRO_WEIGHT * TONE_CONTRAST * unit_signed(hash);
+            let shade = shade_for_tone(tone);
             let random = unit(hash.wrapping_mul(0x846c_a68b));
 
             placed.push(Placed {
@@ -1175,25 +1456,37 @@ pub fn build_chunk(field: &GrassField, chunk: IVec2, detail: f32, seed: u32) -> 
                 height,
                 column,
                 row: row_index,
-                tint,
+                shade,
                 random,
             });
         }
     }
 
-    // Far to near, along the isometric depth axis.
+    // Near to far, along the isometric depth axis.
     //
-    // Blended sprites have no depth test to fall back on, so they composite in
-    // the order they are drawn — and the order they were *placed* in is the
-    // scan order of the stratification grid, which runs along X and Y. Those
-    // project to diagonals, so a near clump drawn before a far one leaves a
-    // seam, and every such seam lines up into a visible isometric lattice
-    // across the whole field. Sorting is the fix, and it is free: it happens
-    // once when the chunk is built, not per frame.
+    // Sorting at all is about the lattice. The order clumps are *placed* in is
+    // the scan order of the stratification grid, which runs along X and Y —
+    // and those project to diagonals, so an unsorted chunk leaves seams that
+    // line up into a visible isometric lattice across the whole field. Sorting
+    // is free: it happens once when the chunk is built, not per frame.
+    //
+    // The *direction* used to be far to near, which is what blending requires
+    // — blended fragments composite in draw order and the far ones have to go
+    // down first. These sprites stopped being blended some time ago. They are
+    // alpha-clipped and write depth, so the hardware sorts them per fragment
+    // and the draw order cannot change the picture at all.
+    //
+    // What it changes is the cost. Depth rejection needs something already in
+    // the buffer to reject against, and drawing far to near guarantees there
+    // never is: every clump is nearer than everything drawn before it, so every
+    // fragment passes and the field pays for all fifteen layers of it. Reversed,
+    // the nearest plants land first and the ones behind them are killed by the
+    // depth test before their shader runs. `grass.overdraw.early_z_rejected` is
+    // the number, and it went from nothing to better than half.
     placed.sort_by(|a, b| {
         let depth = |p: &Placed| p.root.x + p.root.y;
-        depth(a)
-            .partial_cmp(&depth(b))
+        depth(b)
+            .partial_cmp(&depth(a))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     for clump in &placed {
@@ -1208,32 +1501,45 @@ struct Placed {
     root: Vec2,
     width: f32,
     height: f32,
-    column: f32,
-    row: f32,
-    tint: f32,
+    column: u8,
+    row: u8,
+    /// Already snapped to a palette rung — see [`shade_for_tone`].
+    shade: f32,
     random: f32,
 }
 
 fn push(batch: &mut Batch, clump: &Placed) {
-    let (root, width, height) = (clump.root, clump.width, clump.height);
-    let (column, row, tint, random) = (clump.column, clump.row, clump.tint, clump.random);
-    let base = batch.positions.len() as u32;
-    // A rest-pose bounding position per corner. The vertex shader recomputes
-    // the real one, so this exists only to give Bevy an honest bounding box in
-    // the space the shader outputs.
-    let rest = iso::project_to_vertex(root.extend(height));
+    let base = batch.roots.len() as u32;
+    let root = clump.root.to_array();
+    let shape = [
+        pack_unorm16(clump.width / SHAPE_METRES),
+        pack_unorm16(clump.height / SHAPE_METRES),
+        pack_unorm16(clump.shade / SHADE_SCALE),
+        pack_unorm16(clump.random),
+    ];
+    let (column, row) = (clump.column, clump.row);
 
-    // (-1, 0) and (1, 1) are the bottom-left and top-right of the sprite, with
-    // the root on the bottom edge, centred.
-    for corner in [[-1.0, 0.0], [1.0, 0.0], [1.0, 1.0], [-1.0, 1.0]] {
-        batch.positions.push(rest.to_array());
-        batch.roots.push(root.to_array());
-        batch.corners.push([corner[0], corner[1], column, row]);
-        batch.shapes.push([width, height, tint, random]);
+    // Rows from the root up. `up` is stored as a byte and read back as a
+    // fraction of 255, which is exact here because 255 divides by three — so the
+    // shader sees precisely 0, 1/3, 2/3 and 1 rather than something a texel
+    // away from them, and the atlas rows line up with the geometry rows.
+    for step in 0..CARD_ROWS {
+        let up = (step * 255 / (CARD_ROWS - 1)) as u8;
+        for across in [0u8, 255u8] {
+            batch.roots.push(root);
+            batch.corners.push([across, up, column, row]);
+            batch.shapes.push(shape);
+        }
     }
-    batch
-        .indices
-        .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+
+    // One quad per band, sharing the row of vertices between them, so the bands
+    // cannot separate however hard the card bends.
+    for band in 0..(CARD_ROWS - 1) as u32 {
+        let low = base + band * 2;
+        batch
+            .indices
+            .extend_from_slice(&[low, low + 1, low + 3, low, low + 3, low + 2]);
+    }
     batch.clumps += 1;
 }
 
@@ -1270,11 +1576,26 @@ pub const SHADER_PATH: &str = "shaders/clump.wgsl";
 pub struct ClumpSettings {
     pub field_origin: Vec2,
     pub field_inverse_extent: Vec2,
+    /// The key light's direction across the ground. See [`key_ground_direction`].
+    pub key_direction: Vec2,
     pub field_resolution: f32,
     pub time: f32,
     pub max_angle: f32,
-    /// How far the top of a clump slides, in sprite heights, at full bend.
-    pub lean: f32,
+    /// Tangent angle at the tip, in radians, when a clump gives the wind
+    /// everything it has.
+    ///
+    /// An angle rather than the sideways slide it used to be, because the card
+    /// is now a centreline integrated from a tangent rather than a rectangle
+    /// pushed sideways. The two are related but not interchangeable: at this
+    /// angle and the shipped exponent the tip reaches about three tenths of the
+    /// plant's height, which is where the old `lean` put it, and the vertical
+    /// shortening now falls out of the cosine instead of being faked.
+    ///
+    /// It does not act alone. `root_stiffness` decides how much of this angle
+    /// each band gets, so raising the exponent straightens the plant and *also*
+    /// shortens its reach. `the_tip_reaches_about_a_third_of_its_height` pins
+    /// the pair together so one cannot be retuned without the other.
+    pub bend_angle: f32,
     /// How much a fully leaned clump loses in height.
     ///
     /// Paired with the lean on purpose. A sheared sprite whose silhouette never
@@ -1289,32 +1610,38 @@ pub struct ClumpSettings {
     /// once. Grass at rest is still. Liveliness belongs to the wind field,
     /// which already gusts.
     pub sway: f32,
-    /// How far tint shifts a clump's colour.
-    pub tint_strength: f32,
-    /// Shade multiplier at the darkest tint.
+    /// Exponent on how far up a sprite the bend accumulates.
     ///
-    /// This pair is the field's only source of *large-scale* tone. Everything
-    /// else varies within a sprite, and a sprite is thirty pixels: shade one
-    /// leaf differently from its neighbour and the difference is gone by the
-    /// time it reaches the eye. What survives at viewing distance is whole
-    /// clumps disagreeing with each other.
+    /// One is a constant-curvature arc; higher keeps the base upright and pushes
+    /// the curl into the tip, which is what a stiff-stemmed plant does.
     ///
-    /// Together they currently put every clump within eight percent of every
-    /// other, and that is measurably too narrow: scored against the art target's
-    /// share column with `palette::tests::score_the_capture`, the rendered field
-    /// spans 1.33 tones against the target's 2.41. Right average brightness, in
-    /// a band half as wide as it should be. Widening it is the obvious next
-    /// move and is deliberately not made here — it is a visible change to the
-    /// look, and this pass was colour.
-    pub tint_floor: f32,
-    /// Exponent on how far up a sprite the lean is applied.
-    ///
-    /// One is a linear shear, and linear is wrong: it puts half the lean at
-    /// half the height, so the sprite slides as a unit and the plant reads as
-    /// moving across the ground rather than bending out of it. Grass is stiff
-    /// near the ground, so the exponent pushes the motion into the top.
+    /// This was a live parameter for exactly as long as the card has had rows to
+    /// apply it to, which is to say since the card stopped being a quad. On a
+    /// quad it was applied to `up` values of zero and one, and `pow` fixes both
+    /// of those for every exponent — so it was documented as the thing that
+    /// keeps a plant planted while provably doing nothing.
+    /// `grass.card.stiffness_effect` is the guard against it going quiet again.
     pub root_stiffness: f32,
-    pub _pad1: f32,
+    /// Palette rungs a clump brightens by when it leans into the key light.
+    ///
+    /// The cheapest strong cue in the whole renderer, and the one thing that
+    /// makes a gust read as *weather* rather than as sprites being displaced. A
+    /// real field does not merely move when the wind crosses it — it changes
+    /// colour, because every leaf that turns presents a different face to the
+    /// sun, and the eye reads the travelling band of light long before it reads
+    /// the displacement.
+    ///
+    /// Whole rungs, on the same ladder as the per-clump tone, so a lit clump
+    /// lands on a colour the palette already contains rather than somewhere
+    /// between two of them. One rung is about 4% of luminance: small enough
+    /// that no single plant looks wrong, and the gust front is a coherent band
+    /// hundreds of plants wide, which is what makes it visible.
+    pub wind_light_rungs: f32,
+    /// Luminance ratio between neighbouring palette rungs. Mirrored from
+    /// [`TONE_RATIO`] so the shader does not carry a second copy of it.
+    pub tone_ratio: f32,
+    /// Rounds the block to four sixteen-byte rows.
+    pub _pad: f32,
 }
 
 impl Default for ClumpSettings {
@@ -1322,18 +1649,35 @@ impl Default for ClumpSettings {
         Self {
             field_origin: Vec2::ZERO,
             field_inverse_extent: Vec2::ONE,
+            key_direction: key_ground_direction(),
             field_resolution: 1.0,
             time: 0.0,
             max_angle: 84.0_f32.to_radians(),
-            lean: 0.30,
-            squash: 0.22,
+            bend_angle: 55.0_f32.to_radians(),
+            // Much smaller than the 0.22 it replaced, because most of the job
+            // is now done properly. A card whose centreline is integrated from
+            // a tangent shortens on its own — that is what a cosine is — and
+            // this is only the residue: the extra foreshortening of something
+            // tipping away from an isometric camera, which the plan view of a
+            // centreline cannot know about.
+            squash: 0.09,
             sway: 0.0,
-            tint_strength: 0.55,
-            tint_floor: 0.86,
-            root_stiffness: 2.6,
-            _pad1: 0.0,
+            root_stiffness: 1.9,
+            wind_light_rungs: 1.5,
+            tone_ratio: TONE_RATIO,
+            _pad: 0.0,
         }
     }
+}
+
+/// The key light's direction across the ground, as the vertex shader wants it.
+///
+/// Flattened and renormalised rather than passed as three components: a clump
+/// leans in the ground plane, so only the ground part of the key can decide
+/// whether it is leaning into the light or away from it.
+pub fn key_ground_direction() -> Vec2 {
+    let key = crate::light::key().direction.truncate();
+    key.normalize_or_zero()
 }
 
 /// The material every clump draws with.
@@ -1384,7 +1728,6 @@ impl Material2d for ClumpMaterial {
         _key: Material2dKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         descriptor.vertex.buffers = vec![layout.0.get_layout(&[
-            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
             ATTRIBUTE_ROOT.at_shader_location(1),
             ATTRIBUTE_CORNER.at_shader_location(2),
             ATTRIBUTE_SHAPE.at_shader_location(3),
@@ -1483,4 +1826,201 @@ pub fn upload_clumps(
         material.settings.time = wind.time;
         material.settings.max_angle = field.params().max_angle;
     }
+}
+
+#[cfg(test)]
+mod card_tests {
+    use super::*;
+
+    /// The whole tone scheme rests on the palette being a geometric ramp.
+    ///
+    /// If the bake ever stops being one, [`TONE_RATIO`] stops mapping a colour
+    /// onto another rung and starts landing it between two — which is precisely
+    /// the off-palette mush the scheme exists to avoid, and nothing about the
+    /// picture would announce it.
+    #[test]
+    fn tone_ratio_matches_the_palette() {
+        for ramp in 0..crate::palette::RAMPS {
+            let luma = |step: usize| {
+                let entry = crate::palette::entry(ramp, step);
+                crate::palette::encode_srgb(0.2126 * entry.x + 0.7152 * entry.y + 0.0722 * entry.z)
+            };
+            let steps = crate::palette::RAMP_STEPS;
+            // Geometric mean of the per-step ratios, which is the whole ramp's
+            // ratio however unevenly the individual steps are spaced.
+            let ratio = (luma(steps - 1) / luma(0)).powf(1.0 / (steps - 1) as f32);
+            assert!(
+                (ratio - TONE_RATIO).abs() < 0.004,
+                "ramp {ramp} steps by {ratio}, TONE_RATIO says {TONE_RATIO}"
+            );
+        }
+    }
+
+    /// Every shade a clump can be given is a whole number of rungs.
+    #[test]
+    fn every_shade_lands_on_a_palette_rung() {
+        for index in 0..=64 {
+            let shade = shade_for_tone(index as f32 / 64.0);
+            let rungs = shade.ln() / TONE_RATIO.ln();
+            assert!(
+                (rungs - rungs.round()).abs() < 1e-3,
+                "shade {shade} is {rungs} rungs, which is not a whole number"
+            );
+            assert!((-(TONE_RUNGS_DOWN as f32)..=TONE_RUNGS_UP as f32).contains(&rungs.round()));
+        }
+    }
+
+    /// The tone field must actually reach both ends of its range.
+    ///
+    /// A guard against the quiet failure mode of summing noise fields: three of
+    /// them averaged together concentrate hard on the middle, and a range that
+    /// is never reached is the same as a range that does not exist.
+    #[test]
+    fn the_tone_field_uses_most_of_its_range() {
+        let field = GrassField::new(64, 0.28, 0x6A72_A551);
+        let mut seen = std::collections::BTreeSet::new();
+        for y in 0..3 {
+            for x in 0..3 {
+                let batch = build_chunk(&field, IVec2::new(x, y), 1.0, 0x51A5_5EED);
+                for shape in batch.shapes() {
+                    let rungs = (shape[2].ln() / TONE_RATIO.ln()).round() as i32;
+                    seen.insert(rungs);
+                }
+            }
+        }
+        let span = TONE_RUNGS_DOWN + TONE_RUNGS_UP + 1;
+        assert!(
+            seen.len() as i32 >= span - 2,
+            "only {} of {span} tone levels appear: {seen:?}",
+            seen.len()
+        );
+    }
+
+    /// `up` is stored as a byte, so the rows have to divide the byte range.
+    ///
+    /// Otherwise the shader reads back heights a fraction off the ones the atlas
+    /// rows were cut at, and every card is textured very slightly wrong.
+    #[test]
+    fn card_rows_divide_the_byte_range_exactly() {
+        assert_eq!(255 % (CARD_ROWS - 1), 0);
+    }
+
+    /// The bend angle and the exponent are one setting, not two.
+    ///
+    /// Raising the exponent straightens the lower bands, which shortens the
+    /// tip's reach as a side effect — so retuning either alone silently changes
+    /// how far the grass leans. This pins the pair to the reach the old shear
+    /// was tuned to, which is where the look was signed off.
+    #[test]
+    fn the_tip_reaches_about_a_third_of_its_height() {
+        let settings = ClumpSettings::default();
+        let bands = (CARD_ROWS - 1) as f32;
+        let (mut along, mut lift) = (0.0f32, 0.0f32);
+        for band in 0..CARD_ROWS - 1 {
+            let mid = (band as f32 + 0.5) / bands;
+            let angle = settings.bend_angle * mid.powf(settings.root_stiffness);
+            along += angle.sin() / bands;
+            lift += angle.cos() / bands;
+        }
+        assert!(
+            (0.26..0.34).contains(&along),
+            "a fully bent clump reaches {along} of its height sideways"
+        );
+        // And it gets shorter doing it, which a shear could not.
+        assert!(
+            (0.86..0.95).contains(&lift),
+            "a fully bent clump stands {lift} of its height"
+        );
+    }
+
+    /// The packed card is smaller than the quad it replaced, despite carrying
+    /// twice the geometry.
+    #[test]
+    fn a_curved_card_costs_less_than_the_flat_one_did() {
+        let field = GrassField::new(64, 0.28, 0x6A72_A551);
+        let batch = build_chunk(&field, IVec2::ZERO, 1.0, 0x51A5_5EED);
+        let per_clump = batch.byte_size() as f32 / batch.clumps() as f32;
+        // The old layout: four vertices of position, root, corner and shape at
+        // full width, plus six 32-bit indices.
+        let quad = (4 * (12 + 8 + 16 + 16) + 6 * 4) as f32;
+        assert!(
+            per_clump < quad,
+            "a card costs {per_clump} bytes against the quad's {quad}"
+        );
+    }
+
+    /// Every clump's tone must be predictable from where it grows.
+    ///
+    /// The failure this guards is invisible until it is not: every
+    /// world-coordinate field here was seeded per chunk, so each 4 m chunk
+    /// evaluated its own independent noise and every field stepped at every
+    /// boundary. Size and density had done it from the beginning and nobody
+    /// could see a clump a centimetre shorter than its neighbour. Tone spans
+    /// eight palette rungs, and the moment it did, the whole battlefield was
+    /// drawn in light and dark squares.
+    ///
+    /// Two obvious ways to write this test do not work, and both were tried:
+    ///
+    /// - Sampling [`tone_at`] either side of a boundary passes always. The bug
+    ///   was never in the field, it was in which seed the caller handed it.
+    /// - Comparing plants across the seam passes too, because the per-clump
+    ///   term is over a rung wide and swamps the discontinuity. Two
+    ///   independently seeded fields also share a mean, so strip averages agree
+    ///   perfectly while the picture has an edge down it.
+    ///
+    /// What does work is checking the invariant directly. The tone a clump gets
+    /// is the world field at its root plus a bounded per-clump term, so
+    /// subtracting the world field from every clump in several chunks must
+    /// leave nothing bigger than that term. If the field is seeded per chunk,
+    /// the residual is the difference between two unrelated noise fields and
+    /// blows the bound immediately.
+    #[test]
+    fn tone_comes_from_the_world_rather_than_the_chunk() {
+        let field = GrassField::new(64, 0.28, 0x6A72_A551);
+        let seed = 0x51A5_5EED;
+        // The per-clump term, plus half a rung for the snap to a palette rung.
+        let allowed = TONE_MICRO_WEIGHT * TONE_CONTRAST * 0.5
+            + 0.5 / (TONE_RUNGS_DOWN + TONE_RUNGS_UP) as f32;
+
+        let mut worst = 0.0f32;
+        for y in -1..2 {
+            for x in -1..2 {
+                let batch = build_chunk(&field, IVec2::new(x, y), 1.0, seed);
+                for (root, shape) in batch.roots().zip(batch.shapes()) {
+                    // Back out the tone this clump was given, from the shade it
+                    // ended up with.
+                    let rungs = shape[2].ln() / TONE_RATIO.ln();
+                    let tone =
+                        (rungs + TONE_RUNGS_DOWN as f32) / (TONE_RUNGS_DOWN + TONE_RUNGS_UP) as f32;
+                    // Clamped tones cannot be inverted — a clump at the top or
+                    // bottom of the range could have wanted anything beyond it.
+                    if rungs <= -TONE_RUNGS_DOWN as f32 + 0.5 || rungs >= TONE_RUNGS_UP as f32 - 0.5
+                    {
+                        continue;
+                    }
+                    worst = worst.max((tone - tone_at(root, seed)).abs());
+                }
+            }
+        }
+
+        assert!(
+            worst <= allowed,
+            "a clump's tone sits {worst:.4} from the world field at its root, \
+             which is more than the {allowed:.4} its own variation allows — \
+             the field is being seeded from something other than the world"
+        );
+    }
+
+    /// Every chunk indexes with sixteen bits, which halves the index buffer.
+    #[test]
+    fn a_chunk_fits_in_short_indices() {
+        let field = GrassField::new(64, 0.28, 0x6A72_A551);
+        let batch = build_chunk(&field, IVec2::ZERO, 1.0, 0x51A5_5EED);
+        assert!(batch.short_indices(), "a chunk overflowed 16-bit indices");
+    }
+}
+
+/// A hash mapped to -0.5..0.5, for terms that vary a field about its middle.
+fn unit_signed(hash: u32) -> f32 {
+    unit(hash.wrapping_mul(0x7feb_352d)) - 0.5
 }

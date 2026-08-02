@@ -652,7 +652,7 @@ fn impact(report: &mut Report) {
         let from = ((life * 0.15) / SIM_STEP as f64) as usize;
         let to = ((life * 0.85) / SIM_STEP as f64) as usize;
         if to > from && to < centroid.len() && centroid[to] > centroid[from] {
-            ((centroid[to] - centroid[from]) as f64 / ((to - from) as f64 * SIM_STEP as f64))
+            (centroid[to] - centroid[from]) as f64 / ((to - from) as f64 * SIM_STEP as f64)
         } else {
             0.0
         }
