@@ -190,7 +190,7 @@ pub const CHUNK_METRES: f32 = 4.0;
 ///
 /// Packed to a byte against this range, so it has to span everything either
 /// layer can produce.
-pub const LENGTH_RANGE: (f32, f32) = (0.08, 0.50);
+pub const LENGTH_RANGE: (f32, f32) = (0.02, 0.50);
 
 /// Blade half-width range at the base, in metres.
 ///
@@ -209,14 +209,21 @@ pub const REST_LEAN_RANGE: (f32, f32) = (0.08, 0.70);
 /// is no longer the mat's job — [`crate::ground`] does that. What is left is
 /// the harder job: individual strokes that have to read *as* strokes.
 ///
-/// Dense, and that is a reversal. It came down by a factor of eight while the
+/// Forty-two is a compromise between two failures that pull opposite ways, and
+/// both were measured. Below about thirty the base shows through as a wash with
+/// marks scattered on it. Above about seventy every mark lands on another mark
+/// and the field averages to one flat tone — a standard deviation of 0.037
+/// against the art target's 0.105, which is *flatter* than the sparse version
+/// despite carrying three times the geometry.
+///
+/// It came down by a factor of eight while the
 /// base layer was drawing grass marks of its own, because two sets of marks
 /// laid over each other average out to one tone. Once the base went back to
 /// being tone — Perlin and grain, no strokes — the marks had to come from
 /// somewhere, and geometry is the only place they can come from without
 /// weaving: a blade has a direction because it *is* one, so no number of them
 /// forms a lattice.
-pub const MAT_PER_SQUARE_METRE: f32 = 78.0;
+pub const MAT_PER_SQUARE_METRE: f32 = 42.0;
 
 /// Short-grass length, in metres. Three to seven pixels at the default camera.
 pub const MAT_LENGTH: (f32, f32) = (0.09, 0.20);
@@ -295,6 +302,34 @@ const ORIENTATION_JITTER: f32 = 0.55;
 /// ground between, instead of one statistically uniform sprawl — the difference
 /// between a place and a texture.
 pub const PARENT_METRES: f32 = 4.5;
+
+// --- cast shadows -----------------------------------------------------------
+
+/// Shadow quads laid down per tuft.
+pub const TUFT_SHADOWS: usize = 2;
+
+/// Shadow length, in metres. Ground-hugging.
+pub const SHADOW_LENGTH: (f32, f32) = (0.025, 0.055);
+
+/// Shadow half-width. The widest thing in the field — a shadow is a patch, not
+/// a stroke.
+pub const SHADOW_WIDTH: (f32, f32) = (0.030, 0.048);
+
+/// How far a shadow is thrown from its tuft, per metre of plant height.
+///
+/// From the key's elevation: a 38° sun throws a shadow about 1.28 times the
+/// height of what casts it. Using the rig's own number rather than a pleasing
+/// one is what keeps the shadows agreeing with the way the blades are lit.
+pub const SHADOW_THROW: f32 = 1.28;
+
+/// Direction a shadow falls, in the ground plane.
+///
+/// Directly away from the key. `light::key()` points from the scene toward the
+/// sun, so a shadow runs along its negated ground projection.
+pub fn shadow_direction() -> Vec2 {
+    let key = crate::light::key().direction;
+    -Vec2::new(key.x, key.y).normalize()
+}
 
 /// Length the field's own length map is quoted against, for turning it into a
 /// multiplier rather than an absolute.
@@ -638,6 +673,45 @@ fn build_tufts(
     }
 }
 
+/// The shadow a tuft throws.
+///
+/// Ordinary blades, laid flat and tinted to the bottom of the range so they
+/// take the same path through the shader everything else does — short means
+/// low in the canopy means little light, and a low tint puts them on the
+/// shadow ramp. No special case anywhere downstream.
+///
+/// Only the tall layer casts. A cast shadow is only legible when the thing
+/// casting it is clearly taller than what surrounds it, and short grass
+/// shadowing short grass is just a darker mat.
+fn push_tuft_shadow(batch: &mut BladeBatch, centre: Vec2, height: f32, hash: u32) {
+    let direction = shadow_direction();
+    let throw = height * SHADOW_THROW;
+
+    for index in 0..TUFT_SHADOWS {
+        let h = hash
+            .wrapping_mul(0x5EED_5AD0)
+            .wrapping_add((index as u32).wrapping_mul(0x9e37_79b9));
+        let a = unit_from_hash(h);
+        let b = unit_from_hash(h.wrapping_mul(0xc2b2_ae35));
+        // Spread along the throw, so the shadow reads as a smear away from the
+        // plant rather than as a blob beside it.
+        let along = (index as f32 + 0.5) / TUFT_SHADOWS as f32;
+        let across = (a - 0.5) * TUFT_RADIUS * 1.4;
+        let sideways = Vec2::new(-direction.y, direction.x) * across;
+
+        batch.push_blade(Blade {
+            root: centre + direction * (throw * along) + sideways,
+            length: lerp(SHADOW_LENGTH.0, SHADOW_LENGTH.1, b),
+            width: lerp(SHADOW_WIDTH.0, SHADOW_WIDTH.1, a),
+            // Lying along the throw, flat to the ground.
+            rest_angle: direction.y.atan2(direction.x),
+            rest_lean: REST_LEAN_RANGE.1,
+            tint: 0.01 * a,
+            random: unit_from_hash(h.wrapping_mul(0x846c_a68b)),
+        });
+    }
+}
+
 /// Fan one tuft's blades out from a shared centre.
 fn push_tuft(
     batch: &mut BladeBatch,
@@ -669,6 +743,9 @@ fn push_tuft(
         + tuft_tint_bias(centre, seed) * 0.35)
         .clamp(0.0, 1.0);
     let scale = field.length_at_world(centre) / REFERENCE_LENGTH;
+
+    // The shadow first, so the plant draws over its own root end of it.
+    push_tuft_shadow(batch, centre, TUFT_LENGTH.1 * plant * scale, hash);
 
     // Mostly narrow, occasionally wide. See `FAN_ARC`.
     let fan = lerp(
@@ -702,13 +779,16 @@ fn push_tuft(
         let rest_lean = lerp(
             TUFT_LEAN.0,
             TUFT_LEAN.1,
-            (across.abs() * 1.7 + b * 0.45).clamp(0.0, 1.0),
+            (across.abs() * 1.2 + b * 0.85).clamp(0.0, 1.0),
         );
 
         // Middle blades run longest. A tuft whose blades are all one length
         // reads as a brush; tapering toward the edges gives it a crown.
         let taper = 1.0 - across.abs() * 0.55;
-        let length = (lerp(TUFT_LENGTH.0, TUFT_LENGTH.1, c) * plant * taper * scale)
+        // Squared, so most blades in a tuft are short and a few run long.
+        // An even spread of lengths gives a tuft a flat crown; real ones are
+        // mostly low with a couple of stems standing out.
+        let length = (lerp(TUFT_LENGTH.0, TUFT_LENGTH.1, c * c) * plant * taper * scale)
             .clamp(LENGTH_RANGE.0, LENGTH_RANGE.1);
 
         batch.push_blade(Blade {
@@ -718,12 +798,15 @@ fn push_tuft(
             rest_angle,
             rest_lean,
             // Varied around the tuft's tint, not independently of it.
-            tint: (tuft_tint + (c - 0.5) * 0.28).clamp(0.0, 1.0),
+            // Wide around the tuft's own tint. Blades of one plant differ in
+            // colour as much as they differ in length — a fan of identically
+            // tinted strokes reads as a decal however varied its geometry.
+            tint: (tuft_tint + (a - 0.5) * 0.55).clamp(0.0, 1.0),
             random: unit_from_hash(blade_hash.wrapping_mul(0x846c_a68b)),
         });
     }
 
-    count
+    TUFT_SHADOWS + count
 }
 
 /// Jittered stratified points across one chunk, with the hash that made each.
@@ -889,7 +972,8 @@ mod tests {
     #[test]
     fn blade_count_per_tuft_stays_in_range() {
         let batch = build_chunk(&field(), IVec2::ZERO, 1.0, 1);
-        let fan = batch.tuft_blades() as f32 / batch.tufts() as f32;
+        // A tuft emits its fan *and* the shadow it throws.
+        let fan = batch.tuft_blades() as f32 / batch.tufts() as f32 - TUFT_SHADOWS as f32;
         assert!(
             (TUFT_BLADES.0 as f32..=TUFT_BLADES.1 as f32).contains(&fan),
             "{fan} fan blades per tuft"
@@ -916,13 +1000,15 @@ mod tests {
         // blades sit within TUFT_RADIUS of the centre, so that is the margin.
         let batch = build_chunk(&field(), IVec2::new(2, -3), 1.0, 1);
         let origin = Vec2::new(2.0, -3.0) * CHUNK_METRES;
+        // Shadows reach furthest, so they set the margin.
+        let margin = TUFT_RADIUS * 1.7 + TUFT_LENGTH.1 * SHADOW_THROW;
         for root in batch.roots() {
             assert!(
-                root.x >= origin.x - TUFT_RADIUS && root.x <= origin.x + CHUNK_METRES + TUFT_RADIUS,
+                root.x >= origin.x - margin && root.x <= origin.x + CHUNK_METRES + margin,
                 "{root:?}"
             );
             assert!(
-                root.y >= origin.y - TUFT_RADIUS && root.y <= origin.y + CHUNK_METRES + TUFT_RADIUS,
+                root.y >= origin.y - margin && root.y <= origin.y + CHUNK_METRES + margin,
                 "{root:?}"
             );
         }
@@ -932,11 +1018,15 @@ mod tests {
     fn a_tufts_blades_stay_with_their_tuft() {
         // The property that makes a tuft a plant. If roots drifted this would
         // silently become even scatter with extra steps.
+        //
+        // The shadow is exempt, and has to be: a cast shadow is thrown *away*
+        // from what casts it, so it lands outside the tuft's radius by
+        // construction. It is checked separately below.
         let batch = build_chunk(&field(), IVec2::ZERO, 1.0, 5);
         let roots: Vec<Vec2> = batch.roots().collect();
         assert!(batch.tufts() > 5);
         for (centre, span) in batch.tuft_spans() {
-            for root in &roots[span] {
+            for root in &roots[span.start + TUFT_SHADOWS..span.end] {
                 assert!(
                     root.distance(centre) <= TUFT_RADIUS + 1e-4,
                     "{root:?} is {:.3}m from {centre:?}",
@@ -944,6 +1034,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_tuft_throws_its_shadow_away_from_the_key() {
+        // A shadow on the wrong side of the plant is worse than no shadow: it
+        // contradicts the lighting every other surface in the scene agrees on,
+        // and the eye notices that long before it can say why.
+        let batch = build_chunk(&field(), IVec2::ZERO, 1.0, 5);
+        let roots: Vec<Vec2> = batch.roots().collect();
+        let away = shadow_direction();
+        assert!(batch.tufts() > 5);
+        for (centre, span) in batch.tuft_spans() {
+            for root in &roots[span.start..span.start + TUFT_SHADOWS] {
+                let offset = *root - centre;
+                assert!(
+                    offset.dot(away) > 0.0,
+                    "shadow at {root:?} falls toward the key, not away from it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_shadow_direction_opposes_the_key() {
+        // Derived from the rig rather than authored, so it cannot drift if the
+        // sun moves.
+        let key = crate::light::key().direction;
+        let flat = Vec2::new(key.x, key.y).normalize();
+        assert!((shadow_direction() + flat).length() < 1e-5);
     }
 
     #[test]

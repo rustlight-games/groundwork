@@ -73,7 +73,7 @@ const DEPTH_PER_GROUND: f32 = 0.5;
 const DEPTH_PER_HEIGHT: f32 = 0.5;
 
 // --- blade ranges, mirrored from blade.rs -----------------------------------
-const LENGTH_MIN: f32 = 0.08;
+const LENGTH_MIN: f32 = 0.02;
 const LENGTH_MAX: f32 = 0.5;
 const WIDTH_MIN: f32 = 0.01;
 const WIDTH_MAX: f32 = 0.022;
@@ -134,6 +134,13 @@ const POSE_ANGLES: f32 = 24.0;
 // Distinct lean magnitudes between upright and the solver's cap.
 const POSE_STEPS: f32 = 7.0;
 
+// How much of the field's bend a blade takes, softest to stiffest.
+//
+// A wide spread on purpose — see the vertex stage. Narrow it and a tuft moves
+// as one rigid object.
+const STIFFNESS_MIN: f32 = 0.55;
+const STIFFNESS_MAX: f32 = 1.35;
+
 // Smallest a blade may draw, in canvas pixels.
 //
 // Just over one, not exactly one. A ribbon exactly one pixel wide has to
@@ -163,7 +170,7 @@ struct GrassSettings {
     highlight_cut: f32,
     macro_metres: f32,
     macro_strength: f32,
-    _pad0: f32,
+    root_shade: f32,
     _pad1: f32,
     palette: array<vec4<f32>, 64>,
 }
@@ -510,7 +517,20 @@ fn vertex(vertex: Vertex) -> GrassOutput {
     // Every blade starts with its own lean, fanned out from its tuft. Grass
     // does not grow as a bed of nails, and without this the canopy is a uniform
     // vertical brush that only ever moves when the wind moves it.
-    var bend = field.xy + vec2<f32>(cos(rest_angle), sin(rest_angle)) * rest_lean;
+    // Every blade takes a different share of the field's bend.
+    //
+    // Neighbouring blades are not the same plant part: one is a young shoot and
+    // the next is an old stem twice as stiff, so a gust that lays one flat
+    // barely moves the other and they recover at different rates. Without this
+    // a tuft moves as a rigid fan — every blade at the same angle at the same
+    // moment — which is the tell that it is one object wearing several strokes.
+    //
+    // Free: it reuses the per-blade random the mesh already carries, so it
+    // costs one hash and one multiply and no extra vertex data at all.
+    let stiffness = STIFFNESS_MIN
+        + (STIFFNESS_MAX - STIFFNESS_MIN) * hash11(random + 27.5);
+    var bend = field.xy * stiffness
+        + vec2<f32>(cos(rest_angle), sin(rest_angle)) * rest_lean;
 
     // Flattening. The field stores the axis grass was crushed along without a
     // sign, so that a path walked in both directions still reads as flattened
@@ -598,6 +618,16 @@ fn vertex(vertex: Vertex) -> GrassOutput {
 
     var shade = pow(rig_exposure(response), settings.shade_contrast) * settings.shade_gain
         + settings.shade_floor;
+
+    // Every blade darkens toward its own root, whatever its length.
+    //
+    // The canopy term above works in absolute metres, which is right for
+    // separating a tall plant from the mat around it and useless along a short
+    // blade: a mat blade spans nine centimetres, over which the canopy curve
+    // barely moves, so without this it draws one flat colour from root to tip.
+    // Real grass is darkest where it is most shaded by itself, which is at the
+    // bottom of every blade regardless of where that bottom happens to be.
+    shade *= mix(settings.root_shade, 1.0, smoothstep(0.0, 0.85, height));
 
     // Per-blade brightness. Without it every blade on a ramp lands on the same
     // step at the same height and the field comes out in flat bands.

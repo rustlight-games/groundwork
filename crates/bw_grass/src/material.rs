@@ -105,8 +105,14 @@ pub struct GrassSettings {
     pub gust_lift: f32,
     /// Multiplier on the rig's exposure before it picks a palette step.
     pub shade_gain: f32,
-    /// Constant added to the rig's exposure. Lifts the field off the bottom of
-    /// the ramp, where every blade would otherwise land on the same step.
+    /// Constant added to the rig's exposure.
+    ///
+    /// Small. It exists to keep blades off the very bottom of the ramp, and
+    /// every unit of it is range given away: with the short grass now the
+    /// densest thing on screen, the blades' own shade band *is* the frame's
+    /// value distribution, and a high floor compresses it directly. A floor of
+    /// 0.16 measured a standard deviation of 0.045 against the art target's
+    /// 0.105.
     pub shade_floor: f32,
     /// Exponent on the rig's exposure. Below one spreads the dark end of the
     /// ramp out, which is where most of a canopy lives.
@@ -127,9 +133,19 @@ pub struct GrassSettings {
     pub macro_metres: f32,
     /// How far that variation moves a blade's shade, in ramp fractions.
     pub macro_strength: f32,
+    /// How dark a blade is at its own root, as a fraction of its tip.
+    ///
+    /// Every blade darkens toward its base regardless of how tall it is. That
+    /// is separate from canopy occlusion, which works in absolute metres and
+    /// answers a different question — how deep in the canopy a *point* sits.
+    /// Both are needed: without the canopy term the two layers light
+    /// identically, and without this one a short blade spans so little height
+    /// that the canopy term barely moves across it and the blade comes out one
+    /// flat colour from root to tip. With the short grass now the densest layer
+    /// in the field, that was most of what was on screen.
+    pub root_shade: f32,
     /// Padding to close the row. Named rather than anonymous so the layout is
     /// legible from the struct alone.
-    pub _pad0: f32,
     pub _pad1: f32,
     /// The palette, flattened as `ramp * RAMP_STEPS + step`, in linear space.
     pub palette: [Vec4; palette::PALETTE_SIZE],
@@ -161,8 +177,8 @@ impl Default for GrassSettings {
             // runs to the top of the ramp. That gap is what makes a stroke
             // legible against what it is standing in, and closing it is what
             // turns a field of grass into a field of noise.
-            shade_gain: 0.98,
-            shade_floor: 0.16,
+            shade_gain: 1.10,
+            shade_floor: 0.10,
             // Below one. A canopy is mostly in its own shade, so most blades
             // land in the bottom third of the rig's range; spreading that third
             // across the ramp is what stops the field being two colours.
@@ -177,7 +193,7 @@ impl Default for GrassSettings {
             highlight_cut: 0.815,
             macro_metres: 11.0,
             macro_strength: 0.15,
-            _pad0: 0.0,
+            root_shade: 0.30,
             _pad1: 0.0,
             palette: palette::flattened(),
         }

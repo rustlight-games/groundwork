@@ -101,8 +101,14 @@ impl Default for GroundSettings {
             // way. Widen this and it starts competing with the blades for
             // attention, and the picture loses the one thing that lets a stroke
             // read as a stroke — somewhere calm for it to sit against.
-            shade_low: 0.095,
-            shade_high: 0.245,
+            // Range and *harshness* are separate dials, and conflating them
+            // was a mistake worth recording. Cutting the stroke swing to soften
+            // harsh dark speckle flattened the whole field to a third of the
+            // target's spread. The speckle came from pixels dropping onto the
+            // shadow ramp, which `SHADOW_BELOW` controls; the swing is what
+            // gives the surface relief at all.
+            shade_low: 0.015,
+            shade_high: 0.135,
             // Around the scale of a small clearing, so a screenful contains
             // several light and dark regions rather than one gradient.
             patch_metres: 11.0,
@@ -111,7 +117,7 @@ impl Default for GroundSettings {
             // its dither has nothing fine to hide behind and reads as grain in
             // its own right.
             dither: 0.35,
-            stroke_strength: 1.15,
+            stroke_strength: 0.75,
             palette: palette::flattened(),
         }
     }
