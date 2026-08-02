@@ -16,8 +16,14 @@
 //! agonising to diagnose from a screen recording weeks later.
 //!
 //! **Aesthetics** scores the things that make generated grass look generated:
-//! blades clumping instead of spreading, every blade the same height, a palette
-//! with no contrast in it. See `docs/BENCHMARKS.md`.
+//! tufts clumping instead of spreading, every blade the same height, one layer
+//! swallowing the other.
+//!
+//! **Style** scores what makes it pixel art rather than a small render: how big
+//! a palette it is allowed to use, how coloured that palette is, how many
+//! distinct poses a blade can hold, and how many pixels a blade actually
+//! occupies at the camera height the game ships with. Every one of these is
+//! easy to lose while tuning something else. See `docs/BENCHMARKS.md`.
 //!
 //! Every number carries its direction of improvement, so a baseline comparison
 //! does not have to guess which half of the table wants to go up.
@@ -31,14 +37,17 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use bevy::math::{IVec2, Vec2};
+use bevy::math::{IVec2, UVec2, Vec2};
 use bw_bench::{Measurement, Report, Scenario, Unit, blue_noise_score, silhouette_variety};
 use bw_core::{Real, Vec2Fx};
-use bw_grass::blade;
 use bw_grass::disturbance::{GrassInteractor, Shockwave, stamp_interactor, stamp_shockwave};
 use bw_grass::field::{GrassField, SIM_STEP};
 use bw_grass::material::GrassSettings;
 use bw_grass::wind::WindField;
+use bw_grass::{blade, light, palette, pixel};
+use bw_render::BattleCamera;
+
+mod texture_match;
 
 /// Field resolutions per scenario. A grass field covers the ground near the
 /// camera, so these are areas rather than unit counts.
@@ -70,6 +79,8 @@ fn main() {
     performance(&mut report);
     physics(&mut report);
     aesthetics(&mut report);
+    style(&mut report);
+    resemblance(&mut report);
 
     print_table(&report);
     compare_to_baseline(&report);
@@ -426,12 +437,11 @@ fn root_pinning() -> f64 {
     // The shader's bend profile is flat zero below `root_stiffness` and rises
     // from there; the root sits at height zero, so its displacement is the
     // profile evaluated at zero.
-    let profile_at_root = if settings.root_stiffness > 0.0 {
+    if settings.root_stiffness > 0.0 {
         0.0
     } else {
         1.0
-    };
-    profile_at_root as f64
+    }
 }
 
 /// How much more a kick moves the cell next door than a cell ten away.
@@ -605,23 +615,67 @@ fn aesthetics(report: &mut Report) {
     // layout by luck.
     let mut spread = 0.0;
     let mut variety = 0.0;
+    let mut cohesion = 0.0;
+    let mut fan = 0.0;
+    let mut mat_share = 0.0;
     for (index, seed) in bw_bench::SEEDS.iter().enumerate() {
-        let batch = blade::build_chunk(&field, IVec2::new(index as i32, 0), 0.08, *seed as u32);
+        let batch = blade::build_chunk(&field, IVec2::new(index as i32, 0), 1.0, *seed as u32);
+
+        // Blue noise on *tuft centres*, not on blades. Blades within a tuft are
+        // supposed to clump; scoring them would report the feature as a defect.
         let points: Vec<Vec2Fx> = batch
-            .roots()
+            .centres()
+            .iter()
             .map(|p| Vec2Fx::new(Real::from_num(p.x), Real::from_num(p.y)))
             .collect();
         spread += blue_noise_score(&points);
 
         let lengths: Vec<f64> = batch.lengths().map(|l| l as f64).collect();
         variety += silhouette_variety(&lengths);
+
+        let roots: Vec<Vec2> = batch.roots().collect();
+        let angles: Vec<f32> = batch.rest_angles().collect();
+        let (tightness, splay) = tuft_shape(&batch, &roots, &angles);
+        cohesion += tightness;
+        fan += splay;
+
+        mat_share += batch.mat_blades() as f64 / batch.blades().max(1) as f64;
     }
     let seeds = bw_bench::SEEDS.len() as f64;
 
     report.push(Measurement::new(
-        "grass.blade.placement_spread",
+        "grass.tuft.placement_spread",
         "seeds",
         spread / seeds,
+        Unit::Ratio,
+        true,
+    ));
+    // How tightly a tuft's blades sit around its centre, relative to the gap
+    // between tufts. Near 1.0 the tufts have dissolved back into even scatter
+    // and the canopy has lost its grain — a regression that looks like nothing
+    // at all in a screenshot of a single blade.
+    report.push(Measurement::new(
+        "grass.tuft.cohesion",
+        "seeds",
+        cohesion / seeds,
+        Unit::Ratio,
+        false,
+    ));
+    // Angular spread of lean directions within a tuft. Near zero means the
+    // blades are a parallel bundle rather than a fan.
+    report.push(Measurement::new(
+        "grass.tuft.fan_spread",
+        "seeds",
+        fan / seeds,
+        Unit::Ratio,
+        true,
+    ));
+    // The two layers have to stay in proportion. Too little mat and bare ground
+    // shows between the tufts; too much and the tufts stop reading at all.
+    report.push(Measurement::new(
+        "grass.blade.mat_share",
+        "seeds",
+        mat_share / seeds,
         Unit::Ratio,
         true,
     ));
@@ -632,28 +686,395 @@ fn aesthetics(report: &mut Report) {
         Unit::Ratio,
         true,
     ));
+}
 
-    // Contrast between the darkest and lightest part of a blade. Too little and
-    // the canopy reads as one flat green no matter how much geometry is in it.
-    let settings = GrassSettings::default();
-    let to_bytes = |c: bevy::math::Vec4| {
-        [
-            (c.x.clamp(0.0, 1.0) * 255.0) as u8,
-            (c.y.clamp(0.0, 1.0) * 255.0) as u8,
-            (c.z.clamp(0.0, 1.0) * 255.0) as u8,
-        ]
+/// `(cohesion, fan spread)` for one chunk's tufts.
+fn tuft_shape(batch: &blade::BladeBatch, roots: &[Vec2], angles: &[f32]) -> (f64, f64) {
+    let centres = batch.centres();
+    if centres.len() < 4 {
+        return (0.0, 0.0);
+    }
+
+    // Mean gap between neighbouring tufts, as the scale to judge tightness at.
+    let spacing: f32 = centres
+        .iter()
+        .map(|&p| {
+            centres
+                .iter()
+                .filter(|&&q| q != p)
+                .map(|&q| p.distance(q))
+                .fold(f32::MAX, f32::min)
+        })
+        .sum::<f32>()
+        / centres.len() as f32;
+
+    let mut radius = 0.0f32;
+    let mut concentration = 0.0f32;
+    let mut counted = 0.0f32;
+    for (centre, span) in batch.tuft_spans() {
+        if span.is_empty() {
+            continue;
+        }
+        let n = span.len() as f32;
+        radius += roots[span.clone()]
+            .iter()
+            .map(|root| root.distance(centre))
+            .sum::<f32>()
+            / n;
+        let sum: Vec2 = angles[span.clone()]
+            .iter()
+            .map(|&a| Vec2::new(a.cos(), a.sin()))
+            .sum();
+        concentration += sum.length() / n;
+        counted += 1.0;
+    }
+    if counted == 0.0 || spacing <= 0.0 {
+        return (0.0, 0.0);
+    }
+    (
+        (radius / counted / spacing) as f64,
+        (1.0 - concentration / counted) as f64,
+    )
+}
+
+// --- style ------------------------------------------------------------------
+
+/// What makes this pixel art rather than a small render.
+///
+/// None of these are performance and none are physics. They are the properties
+/// that make the thing look drawn, and every one of them is easy to lose while
+/// tuning something else — a palette that drifts grey, a blade that thins to
+/// half a pixel, a pose quantiser that stops quantising.
+fn style(report: &mut Report) {
+    let mut push = |name: &str, scenario: &str, value: f64, unit: Unit, higher: bool| {
+        report.push(Measurement::new(name, scenario, value, unit, higher));
     };
-    report.push(Measurement::new(
-        "grass.blade.luminance_spread",
+
+    // --- the palette --------------------------------------------------------
+    push(
+        "grass.palette.size",
         "palette",
-        bw_bench::luminance_spread(&[
-            to_bytes(settings.base_color),
-            to_bytes(settings.tip_color),
-            to_bytes(settings.crushed_color),
-        ]),
+        palette::PALETTE_SIZE as f64,
+        Unit::Count,
+        false,
+    );
+    push(
+        "grass.palette.luminance_spread",
+        "palette",
+        palette::luminance_spread() as f64,
         Unit::Ratio,
         true,
-    ));
+    );
+    push(
+        "grass.palette.saturation",
+        "palette",
+        palette::saturation() as f64,
+        Unit::Ratio,
+        true,
+    );
+    push(
+        "grass.palette.evenness",
+        "palette",
+        palette::ramp_evenness() as f64,
+        Unit::Ratio,
+        true,
+    );
+    // Structural, like the physics numbers: 1.0 or there is a kink in a ramp.
+    push(
+        "grass.palette.monotonicity",
+        "palette",
+        palette::ramp_monotonicity() as f64,
+        Unit::Ratio,
+        true,
+    );
+    // The rig, visible as colour. A golden key and a blue fill that did not
+    // make sunlit grass warmer than shaded grass would be a rig in name only.
+    push(
+        "grass.palette.key_warmth",
+        "palette",
+        palette::key_warmth() as f64,
+        Unit::Ratio,
+        true,
+    );
+
+    // --- the lighting rig ---------------------------------------------------
+    push(
+        "grass.light.key_to_fill",
+        "rig",
+        (light::KEY_ENERGY / light::FILL_ENERGY) as f64,
+        Unit::Ratio,
+        true,
+    );
+    push(
+        "grass.light.key_offaxis_degrees",
+        "rig",
+        light::key()
+            .direction
+            .dot(light::VIEW)
+            .clamp(-1.0, 1.0)
+            .acos()
+            .to_degrees() as f64,
+        Unit::Count,
+        true,
+    );
+    // The number the character rig was tuned against: a key only 45° off the
+    // camera axis measured a left-to-right luminance ratio of 1.41, and 1.41 is
+    // what "flat" means. Raking the key well round is what carves form, and
+    // this is the measurement that says whether it still does.
+    push(
+        "grass.light.left_right_ratio",
+        "rig",
+        left_right_ratio(),
+        Unit::Ratio,
+        true,
+    );
+
+    // --- quantisation -------------------------------------------------------
+    let (pose_angles, pose_steps) = shader_pose_grid();
+    push(
+        "grass.pose.count",
+        "shader",
+        pose_angles * pose_steps,
+        Unit::Count,
+        false,
+    );
+    push(
+        "grass.pose.angle_step_degrees",
+        "shader",
+        360.0 / pose_angles,
+        Unit::Count,
+        false,
+    );
+
+    // --- pixel readability --------------------------------------------------
+    //
+    // The whole style rests on a blade being a legible number of pixels. Too
+    // few and the field is texture; too many and the pixels stop showing.
+    let (scale, canvas) = pixel::canvas_geometry(UVec2::new(1920, 1080));
+    let view_height = BattleCamera::default().view_height;
+    let pixels_per_unit = canvas.y as f32 / view_height;
+
+    push(
+        "grass.pixel.canvas_height",
+        "1080p",
+        canvas.y as f64,
+        Unit::Count,
+        false,
+    );
+    push(
+        "grass.pixel.scale",
+        "1080p",
+        scale as f64,
+        Unit::Count,
+        false,
+    );
+    push(
+        "grass.pixel.per_metre",
+        "1080p",
+        pixels_per_unit as f64,
+        Unit::Count,
+        false,
+    );
+
+    let field = GrassField::new(256, 0.15, bw_bench::SEEDS[0] as u32);
+    let batch = blade::build_chunk(&field, IVec2::ZERO, 1.0, bw_bench::SEEDS[0] as u32);
+    let layers: Vec<blade::Layer> = batch.layers().collect();
+    let lengths: Vec<f32> = batch.lengths().collect();
+    let widths: Vec<f32> = batch.widths().collect();
+
+    let mean_pixels = |want: blade::Layer, values: &[f32], scale: f32| -> f64 {
+        let picked: Vec<f32> = values
+            .iter()
+            .zip(&layers)
+            .filter(|&(_, &layer)| layer == want)
+            .map(|(&v, _)| v * scale)
+            .collect();
+        if picked.is_empty() {
+            return 0.0;
+        }
+        (picked.iter().sum::<f32>() / picked.len() as f32) as f64
+    };
+
+    push(
+        "grass.pixel.mat_length",
+        "1080p",
+        mean_pixels(blade::Layer::Mat, &lengths, pixels_per_unit),
+        Unit::Count,
+        true,
+    );
+    push(
+        "grass.pixel.tuft_length",
+        "1080p",
+        mean_pixels(blade::Layer::Tuft, &lengths, pixels_per_unit),
+        Unit::Count,
+        true,
+    );
+    // Widths as the shader actually draws them: rounded to whole pixels and
+    // floored, because a stroke that rounds to nothing is a blade that is not
+    // on screen.
+    let drawn_width = |want: blade::Layer| -> f64 {
+        let picked: Vec<f32> = widths
+            .iter()
+            .zip(&layers)
+            .filter(|&(_, &layer)| layer == want)
+            .map(|(&w, _)| (w * 2.0 * pixels_per_unit).round().max(MIN_BLADE_PIXELS))
+            .collect();
+        if picked.is_empty() {
+            return 0.0;
+        }
+        (picked.iter().sum::<f32>() / picked.len() as f32) as f64
+    };
+    push(
+        "grass.pixel.mat_width",
+        "1080p",
+        drawn_width(blade::Layer::Mat),
+        Unit::Count,
+        true,
+    );
+    push(
+        "grass.pixel.tuft_width",
+        "1080p",
+        drawn_width(blade::Layer::Tuft),
+        Unit::Count,
+        true,
+    );
+
+    // How many blades deep the canopy is over an average canvas pixel. Below
+    // about two the ground shows through as speckle; far above three is paying
+    // for coverage nobody can see.
+    let view_width = view_height * 16.0 / 9.0;
+    let ground_area = (view_height * view_width) as f64;
+    let per_square_metre = blade::blades_per_square_metre() as f64;
+    let mat_area = mean_pixels(blade::Layer::Mat, &lengths, pixels_per_unit)
+        * drawn_width(blade::Layer::Mat)
+        * (blade::MAT_PER_SQUARE_METRE as f64);
+    let tuft_area = mean_pixels(blade::Layer::Tuft, &lengths, pixels_per_unit)
+        * drawn_width(blade::Layer::Tuft)
+        * (blade::TUFTS_PER_SQUARE_METRE * blade::mean_tuft_blades()) as f64;
+    let canvas_pixels = (canvas.x as f64) * (canvas.y as f64);
+    push(
+        "grass.pixel.coverage",
+        "1080p",
+        ground_area * (mat_area + tuft_area) / canvas_pixels,
+        Unit::Ratio,
+        true,
+    );
+    push(
+        "grass.pixel.blades_on_screen",
+        "1080p",
+        ground_area * per_square_metre,
+        Unit::Count,
+        false,
+    );
+}
+
+/// Smallest width the shader will draw, mirrored from the shader.
+const MIN_BLADE_PIXELS: f32 = 1.05;
+
+/// Luminance of a blade leaning into the key over one leaning away from it.
+///
+/// The rig's "is it still carving form" number.
+fn left_right_ratio() -> f64 {
+    let key = light::key().direction;
+    // Along the key's *ground* direction, not across it. Tilting a blade
+    // sideways to a light changes nothing about the angle it presents, so
+    // sampling across the key measures the two halves of a symmetry and always
+    // reports exactly 1.0 — a metric that says "the lighting is flat" whatever
+    // the rig is doing, which is worse than having no metric at all.
+    let along = bevy::math::Vec3::new(key.x, key.y, 0.0).normalize();
+    let toward = (bevy::math::Vec3::Z + along * 0.7).normalize();
+    let away = (bevy::math::Vec3::Z - along * 0.7).normalize();
+    let lit = light::exposure(&light::respond(toward, 1.0));
+    let shaded = light::exposure(&light::respond(away, 1.0));
+    (lit.max(shaded) / lit.min(shaded).max(1e-6)) as f64
+}
+
+/// Read the pose grid out of the shader.
+///
+/// Parsed rather than duplicated in Rust: nothing else in the build reads these
+/// two constants, so a copy here would be a second source of truth that could
+/// quietly disagree with the only one that matters.
+fn shader_pose_grid() -> (f64, f64) {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/shaders/grass.wgsl"
+    );
+    let source = std::fs::read_to_string(path).expect("the grass shader must exist");
+    let read = |name: &str| -> f64 {
+        let marker = format!("const {name}: f32 = ");
+        let start = source.find(&marker).expect("missing pose constant") + marker.len();
+        let end = start + source[start..].find(';').expect("unterminated constant");
+        source[start..end]
+            .trim()
+            .parse()
+            .expect("unparsable constant")
+    };
+    (read("POSE_ANGLES"), read("POSE_STEPS"))
+}
+
+// --- resemblance to the art target ------------------------------------------
+
+/// Where a captured frame is looked for.
+///
+/// Produced by `BW_CAPTURE=... cargo run --release -p bw_grass --example
+/// grass_sandbox`. Deliberately not generated here: a benchmark that spun up a
+/// window and a GPU would not run in CI, on a headless box, or twice in a row
+/// without fighting over the display.
+const CAPTURE: &str = "benchmarks/capture/grass.png";
+
+/// The committed art target.
+const REFERENCE: &str = "benchmarks/reference/pixel_grass_target.png";
+
+/// Score the most recent capture against the reference plate.
+///
+/// This is the metric the whole look is aimed at, and the only one in the suite
+/// that measures the finished image rather than the inputs that produced it.
+/// Everything else here can be perfect while the frame still looks wrong.
+fn resemblance(report: &mut Report) {
+    let reference = texture_match::Plate::load(&workspace_path(REFERENCE));
+    let rendered = texture_match::Plate::load(&workspace_path(CAPTURE));
+
+    let (Some(reference), Some(rendered)) = (reference, rendered) else {
+        println!(
+            "\nno capture at {CAPTURE} — skipping the resemblance section.\n\
+             produce one with:\n  \
+             BW_CAPTURE=$PWD/{CAPTURE} BW_CAPTURE_AFTER=3 \\\n    \
+             cargo run --release -p bw_grass --example grass_sandbox"
+        );
+        return;
+    };
+
+    // A capture that is one flat colour is a failed screenshot, not a failed
+    // renderer. Bevy's window capture occasionally lands before the frame is
+    // composited and writes a black image; scoring it would report every metric
+    // collapsing to zero and bury a real regression under a false one.
+    if texture_match::is_degenerate(&rendered) {
+        println!(
+            "\nthe capture at {CAPTURE} is a single flat colour — a failed \
+             screenshot, not a failed render. Skipping the resemblance section; \
+             re-run the capture command."
+        );
+        return;
+    }
+
+    let scored = texture_match::compare(&rendered, &reference);
+    for (name, value) in [
+        ("grass.match.value_hierarchy", scored.value),
+        ("grass.match.chroma", scored.chroma),
+        ("grass.match.detail_spectrum", scored.detail),
+        ("grass.match.local_contrast", scored.contrast),
+        ("grass.match.grain", scored.grain),
+        ("grass.match.cluster_size", scored.clusters),
+        ("grass.match.overall", scored.overall),
+    ] {
+        report.push(Measurement::new(
+            name,
+            "target",
+            value as f64,
+            Unit::Ratio,
+            true,
+        ));
+    }
 }
 
 // --- reporting --------------------------------------------------------------

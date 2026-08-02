@@ -68,6 +68,9 @@ bitflags = "2.13"
 clap = { version = "4.6", features = ["derive"] }
 rayon = "1.12"
 bytemuck = "1.25"
+# Decoding captured frames and the reference plate, for the texture-match
+# benchmark. Bevy already depends on it, so this costs nothing but the line.
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dependencies]
 bw_app.workspace = true

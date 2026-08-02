@@ -57,7 +57,14 @@ pub const DEFAULT_RESOLUTION: usize = 256;
 /// A cell is a small clump of grass, not a blade. Finer than this buys nothing:
 /// bending is a soft, spatially smooth effect, and the renderer interpolates
 /// between cells anyway.
-pub const DEFAULT_CELL_SIZE: f32 = 0.15;
+///
+/// Together with [`DEFAULT_RESOLUTION`] this also fixes how much ground the
+/// field *covers* — grass will not grow outside it, because density reads as
+/// zero there. At 0.28 m the field spans about 72 m, comfortably more than the
+/// battle camera can see. Shrinking it without shrinking the camera leaves a
+/// hard diamond edge with bare ground beyond it, which is what happens if these
+/// two numbers are chosen independently.
+pub const DEFAULT_CELL_SIZE: f32 = 0.28;
 
 /// The fixed simulation step, in seconds.
 ///

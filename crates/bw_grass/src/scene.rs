@@ -16,8 +16,11 @@ use crate::blade::{self, CHUNK_METRES};
 use crate::chunk::GrassChunk;
 use crate::disturbance::{GrassEvents, GrassInteractor};
 use crate::field::GrassField;
+use crate::ground;
 use crate::iso;
 use crate::material::{GrassMaterial, GrassSettings, GrassTextures};
+use crate::palette;
+use crate::pixel::{GrassCamera, PixelCanvas};
 
 /// How the scene is laid out.
 #[derive(Resource, Clone, Copy, Debug)]
@@ -34,11 +37,17 @@ pub struct GrassScene {
 impl Default for GrassScene {
     fn default() -> Self {
         Self {
-            // Enough to cover the visible ground diamond at the default zoom
-            // with room to spare. The diamond is much smaller than it looks:
-            // the projection compresses depth, so a screenful of grass is about
-            // seventeen metres across each world axis.
-            half_extent: 10.0,
+            // Enough to cover the visible ground diamond at the battle camera's
+            // height with room to spare. Worth doing the arithmetic rather than
+            // guessing: at thirty-two units of view height on a 16:9 window the
+            // diamond reaches |X − Y| ≤ 28.4 and |X + Y| ≤ 32, so a corner sits
+            // just over thirty metres out along an axis.
+            //
+            // This is the number that decides how much grass exists, and right
+            // now every chunk in it is built at full detail on the first frame
+            // because chunk streaming is not wired up yet. Raising it costs
+            // memory quadratically.
+            half_extent: 32.0,
             seed: 0x6A72_A551,
         }
     }
@@ -54,10 +63,11 @@ pub struct GrassScenePlugin;
 impl Plugin for GrassScenePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GrassScene>()
-            // Soil, so the gaps between blades read as ground rather than as
-            // holes in the world. Even a well-covered canopy shows some of what
-            // is under it, and what shows needs to be the right colour.
-            .insert_resource(ClearColor(Color::srgb(0.086, 0.075, 0.055)))
+            // The darkest entry in the palette, not soil. Gaps in the canopy
+            // have to read as shade *between* blades; anything lighter, or any
+            // colour off the palette, and the field reads as sparse grass on a
+            // backdrop rather than as dense grass with depth in it.
+            .insert_resource(ClearColor(palette::ground()))
             .add_systems(Startup, (spawn_grass, spawn_pointer))
             .add_systems(
                 Update,
@@ -74,7 +84,20 @@ fn spawn_grass(
     textures: Res<GrassTextures>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GrassMaterial>>,
+    mut grounds: ResMut<Assets<ground::GroundMaterial>>,
 ) {
+    // The ground first, so that whatever shows between the blades is a colour
+    // that belongs to the field rather than the window's clear colour.
+    commands.spawn((
+        Mesh2d(meshes.add(ground::ground_mesh(scene.half_extent))),
+        MeshMaterial2d(grounds.add(ground::GroundMaterial {
+            settings: ground::GroundSettings::default(),
+            state: textures.state.clone(),
+        })),
+        Transform::default(),
+        Name::new("ground"),
+    ));
+
     let material = materials.add(GrassMaterial {
         settings: GrassSettings::default(),
         bend: textures.bend.clone(),
@@ -162,14 +185,26 @@ fn spawn_pointer(mut commands: Commands) {
     ));
 }
 
+/// Type alias for the camera query the pickers share.
+type GrassCameras<'w, 's> =
+    Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<GrassCamera>>;
+
 /// Where the cursor is on the ground, if it is over the window.
+///
+/// The extra step through the canvas is not optional. The grass camera renders
+/// into a low-resolution image, so its viewport is the canvas rather than the
+/// window — hand it a raw cursor position and every click lands at roughly a
+/// quarter of the distance from the centre that it should.
 fn cursor_ground_position(
     windows: &Query<&Window>,
-    cameras: &Query<(&Camera, &GlobalTransform)>,
+    cameras: &GrassCameras,
+    canvas: &PixelCanvas,
 ) -> Option<Vec2> {
-    let cursor = windows.iter().find_map(|window| window.cursor_position())?;
+    let window = windows.iter().next()?;
+    let cursor = window.cursor_position()?;
     let (camera, transform) = cameras.iter().next()?;
-    let screen = camera.viewport_to_world_2d(transform, cursor).ok()?;
+    let on_canvas = canvas.window_to_canvas(cursor, window.size());
+    let screen = camera.viewport_to_world_2d(transform, on_canvas).ok()?;
     Some(iso::unproject_ground(screen))
 }
 
@@ -177,13 +212,17 @@ fn cursor_ground_position(
 fn blast_on_click(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
-    cameras: Query<(&Camera, &GlobalTransform)>,
+    cameras: GrassCameras,
+    canvas: Option<Res<PixelCanvas>>,
     mut events: ResMut<GrassEvents>,
 ) {
     if !buttons.just_pressed(MouseButton::Left) {
         return;
     }
-    if let Some(ground) = cursor_ground_position(&windows, &cameras) {
+    let Some(canvas) = canvas.as_deref() else {
+        return;
+    };
+    if let Some(ground) = cursor_ground_position(&windows, &cameras, canvas) {
         events.shockwave(ground);
     }
 }
@@ -192,7 +231,8 @@ fn blast_on_click(
 fn drag_pointer(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
-    cameras: Query<(&Camera, &GlobalTransform)>,
+    cameras: GrassCameras,
+    canvas: Option<Res<PixelCanvas>>,
     mut pointers: Query<&mut GrassInteractor, With<GrassPointer>>,
 ) {
     let Ok(mut pointer) = pointers.single_mut() else {
@@ -203,7 +243,10 @@ fn drag_pointer(
         pointer.current = Vec2::splat(1.0e6);
         return;
     }
-    let Some(ground) = cursor_ground_position(&windows, &cameras) else {
+    let Some(canvas) = canvas.as_deref() else {
+        return;
+    };
+    let Some(ground) = cursor_ground_position(&windows, &cameras, canvas) else {
         return;
     };
     if pointer.current.x > 1.0e5 {
@@ -212,23 +255,6 @@ fn drag_pointer(
         pointer.current = ground;
     }
     pointer.move_to(ground);
-}
-
-/// A camera framed for looking at grass.
-///
-/// `view_height` is in metres of world height, so it can be reasoned about
-/// against the blades: at nine metres a knee-high blade is a comfortable
-/// thirty-odd pixels tall on a 1080p window.
-pub fn grass_camera(view_height: f32) -> impl Bundle {
-    (
-        Camera2d,
-        Projection::Orthographic(OrthographicProjection {
-            scaling_mode: bevy::camera::ScalingMode::FixedVertical {
-                viewport_height: view_height,
-            },
-            ..OrthographicProjection::default_2d()
-        }),
-    )
 }
 
 #[cfg(test)]

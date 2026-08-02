@@ -18,8 +18,8 @@ use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use bw_grass::disturbance::GrassEvents;
 use bw_grass::disturbance::GrassInteractor;
 use bw_grass::field::GrassField;
-use bw_grass::scene::{GrassPointer, grass_camera};
-use bw_grass::{GrassPlugin, GrassScenePlugin, GrassSet, WindField};
+use bw_grass::scene::GrassPointer;
+use bw_grass::{GrassPlugin, GrassScenePlugin, GrassSet, WindField, grass_camera};
 
 fn main() {
     App::new()
@@ -56,16 +56,19 @@ fn main() {
         .run();
 }
 
-/// Metres of world visible vertically. Close enough to read one blade.
+/// Metres of world visible vertically.
 #[derive(Resource)]
 struct Zoom(f32);
 
+/// The height the game frames the battlefield at.
+const RTS_HEIGHT: f32 = 32.0;
+
 fn setup(mut commands: Commands) {
-    // Five metres of visible height makes a knee-high blade about sixty pixels
-    // tall, which is the point at which you can actually watch one bend and
-    // spring back rather than judging the field as a texture.
-    commands.spawn(grass_camera(5.0));
-    commands.insert_resource(Zoom(5.0));
+    // Start where the game starts, so what the sandbox shows is what ships.
+    // Scroll in to inspect individual blades; the pixel canvas rescales with
+    // the zoom, so blades stay a whole number of pixels wide at any height.
+    commands.spawn(grass_camera(RTS_HEIGHT));
+    commands.insert_resource(Zoom(RTS_HEIGHT));
 }
 
 /// Mouse wheel zooms, so the same scene serves both close inspection and
@@ -82,7 +85,7 @@ fn zoom(
     if change == 0.0 {
         return;
     }
-    zoom.0 = (zoom.0 * (1.0 + change * 0.08)).clamp(1.5, 26.0);
+    zoom.0 = (zoom.0 * (1.0 + change * 0.08)).clamp(3.0, 64.0);
     for mut projection in &mut cameras {
         *projection = bw_render_projection(zoom.0);
     }
@@ -216,11 +219,16 @@ fn report(
         .get(&FrameTimeDiagnosticsPlugin::FPS)
         .and_then(|d| d.smoothed())
         .unwrap_or(0.0);
+    // Peak as well as mean compaction. A mean over sixty-five thousand cells
+    // hides a small trodden patch completely — it reads 0.000 while a very
+    // visible dark blob sits in the middle of the field.
+    let peak = field.compaction().iter().cloned().fold(0.0f32, f32::max);
     info!(
-        "{fps:.0} fps | wind {:.1} m/s | mean bend {:.1} deg | max bend {:.1} deg | crushed {:.3}",
+        "{fps:.0} fps | wind {:.1} m/s | mean bend {:.1} deg | max bend {:.1} deg | crushed {:.3} peak {:.3}",
         wind.speed,
         field.mean_bend().to_degrees(),
         field.max_bend().to_degrees(),
         field.mean_compaction(),
+        peak,
     );
 }

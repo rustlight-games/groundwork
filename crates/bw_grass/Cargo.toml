@@ -19,6 +19,13 @@ rayon.workspace = true
 
 [dev-dependencies]
 bw_bench.workspace = true
+# The benchmark reports how many pixels a blade occupies, which only means
+# anything against the height the game actually frames the battlefield at. A
+# copy of that number here would be a second source of truth that drifts.
+bw_render.workspace = true
+# The texture-match benchmark decodes a captured frame and the committed
+# reference plate.
+image.workspace = true
 
 [[example]]
 name = "grass_sandbox"

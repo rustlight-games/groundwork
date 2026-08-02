@@ -18,24 +18,35 @@ pub struct BattleCamera {
 
 impl Default for BattleCamera {
     fn default() -> Self {
-        // Close enough that knee-high grass is legible. The battlefield view
-        // will pull back once there is a battle to frame.
-        Self { view_height: 9.0 }
+        // Pitched against Warcraft III's default melee camera, which is the
+        // reference this game's art is aimed at. That camera sits 1650 units
+        // out at a 70° field of view and shows roughly 24 × 13 terrain tiles;
+        // at the conventional two metres to a tile that is about 1400 m² of
+        // ground.
+        //
+        // This projection is orthographic and 2:1 dimetric, so a `view_height`
+        // of h shows h units vertically and 16h/9 horizontally on a widescreen
+        // window, and the ground under it works out to h × 16h/9 square metres.
+        // Thirty-two gives about 1800 m² — deliberately wider than Warcraft,
+        // because an auto-battler is watched rather than driven and the whole
+        // engagement wants to be on screen at once.
+        Self { view_height: 32.0 }
     }
 }
 
+/// Zoom policy for the battle camera.
+///
+/// Deliberately does **not** spawn one. The camera that frames the battle is
+/// also the camera that draws grass into its pixel canvas, and that bundle
+/// belongs to `bw_grass`; a camera spawned here as well would render the scene
+/// twice, once straight to the window with none of the pixel pipeline applied.
+/// The composition root spawns it — see `bw_app`.
 pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_camera)
-            .add_systems(Update, apply_zoom);
+        app.add_systems(Update, apply_zoom);
     }
-}
-
-fn spawn_camera(mut commands: Commands) {
-    let camera = BattleCamera::default();
-    commands.spawn((Camera2d, projection_for(camera.view_height), camera));
 }
 
 /// An orthographic projection framing `view_height` metres vertically.

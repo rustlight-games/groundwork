@@ -9,8 +9,8 @@
 pub mod registries;
 
 use bevy::prelude::*;
-use bw_grass::{GrassPlugin, GrassScenePlugin};
-use bw_render::RenderPlugin;
+use bw_grass::{GrassPlugin, GrassScenePlugin, grass_camera};
+use bw_render::{BattleCamera, RenderPlugin};
 use bw_ui::UiPlugin;
 
 pub use bw_ui::GameState;
@@ -22,8 +22,19 @@ pub struct GamePlugin;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((UiPlugin, RenderPlugin, GrassPlugin, GrassScenePlugin))
-            .add_systems(Startup, finish_boot);
+            .add_systems(Startup, (spawn_camera, finish_boot));
     }
+}
+
+/// Spawn the one camera the game has.
+///
+/// Composed here rather than inside either plugin because it is two crates'
+/// business at once: `bw_grass` decides that it renders into a low-resolution
+/// canvas with multisampling and tonemapping off, and `bw_render` decides how
+/// much ground it frames. Only the composition root knows both.
+fn spawn_camera(mut commands: Commands) {
+    let framing = BattleCamera::default();
+    commands.spawn((grass_camera(framing.view_height), framing));
 }
 
 /// Leave the boot screen.
