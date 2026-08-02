@@ -100,6 +100,76 @@ const JACOBI_RELAXATION: f32 = 0.75;
 /// small field was measurably *slower* threaded than serial before this.
 const ROWS_PER_TASK: usize = 8;
 
+/// One writable row of the per-cell state `finalise` advances.
+///
+/// Exists only to give the six-deep tuple that `zip` produces a set of names.
+struct Row<'a> {
+    theta: &'a mut [Vec2],
+    omega: &'a mut [Vec2],
+    dose: &'a mut [f32],
+    fast_memory: &'a mut [Vec2],
+    slow_memory: &'a mut [Vec2],
+    compaction: &'a mut [f32],
+    axis: &'a mut [Vec2],
+}
+
+/// One relaxed cell on the field's border, where a neighbour is missing.
+///
+/// Split out of the sweep so the interior — which is everything but four lines
+/// of cells — can run without a single branch in it. Two rows and two columns
+/// pay for a function call; sixty-five thousand cells stop paying for five
+/// tests each.
+#[allow(clippy::too_many_arguments)]
+fn edge_relaxed(
+    x: usize,
+    y: usize,
+    resolution: usize,
+    solve: &[Vec2],
+    coupling_x: &[f32],
+    coupling_y: &[f32],
+    rhs: &[Vec2],
+    diagonal: &[f32],
+) -> Vec2 {
+    let index = y * resolution + x;
+    let mut neighbours = Vec2::ZERO;
+    let mut neighbour_diagonal = 0.0;
+    if x > 0 {
+        let coefficient = coupling_x[index - 1];
+        neighbours += solve[index - 1] * coefficient;
+        neighbour_diagonal += coefficient;
+    }
+    if x + 1 < resolution {
+        let coefficient = coupling_x[index];
+        neighbours += solve[index + 1] * coefficient;
+        neighbour_diagonal += coefficient;
+    }
+    if y > 0 {
+        let coefficient = coupling_y[index - resolution];
+        neighbours += solve[index - resolution] * coefficient;
+        neighbour_diagonal += coefficient;
+    }
+    if y + 1 < resolution {
+        let coefficient = coupling_y[index];
+        neighbours += solve[index + resolution] * coefficient;
+        neighbour_diagonal += coefficient;
+    }
+    let candidate = (rhs[index] + neighbours) / (diagonal[index] + neighbour_diagonal);
+    solve[index].lerp(candidate, JACOBI_RELAXATION)
+}
+
+/// Rows per task, sized so there is about one task per thread.
+///
+/// A fixed row count is the wrong shape for this: at 8 rows a 512-cell field
+/// dispatches 64 tasks onto 16 threads, which is 48 more scheduling handoffs
+/// than the work needs, and a 128-cell field dispatches 16 tasks over a loop
+/// that exits early on almost every cell. Sizing from the thread count keeps
+/// the number of handoffs at one per thread whatever the field is.
+fn rows_per_task(resolution: usize) -> usize {
+    resolution
+        .div_ceil(rayon::current_num_threads().max(1))
+        .max(ROWS_PER_TASK)
+}
+
 /// The bend field.
 #[derive(Resource, Clone, Debug)]
 pub struct GrassField {
@@ -351,6 +421,15 @@ impl GrassField {
         &self.compaction
     }
 
+    /// Contact dose per cell, in severity-seconds.
+    ///
+    /// The channel that responds the instant a cell is touched, which makes it
+    /// the right one for asking *when* a cell was contacted and how hard.
+    /// Compaction deliberately lags behind it and answers a different question.
+    pub fn dose(&self) -> &[f32] {
+        &self.dose
+    }
+
     pub fn density(&self) -> &[f32] {
         &self.density
     }
@@ -512,6 +591,12 @@ impl GrassField {
     }
 
     /// One fixed step.
+    ///
+    /// The six phases below are public so the benchmark can price them one at a
+    /// time — a step that got slower is not actionable until you know *which*
+    /// part of it did, and wrapping the whole thing in a timer only ever says
+    /// "the grass got slower". They are not an alternative entry point: they
+    /// carry state between them and must run in exactly this order.
     pub fn step(&mut self, dt: f32, wind: &WindField) {
         if dt <= 0.0 {
             return;
@@ -525,19 +610,31 @@ impl GrassField {
         self.steps_taken += 1;
     }
 
-    /// Evaluate wind onto its coarse lattice.
-    fn bake_wind(&mut self, wind: &WindField) {
+    /// Evaluate wind onto its coarse lattice. Phase one of [`step`](Self::step).
+    ///
+    /// Threaded by row. A wind sample is a handful of sines and the lattice is
+    /// a sixteenth of the field, so this is the cheapest of the six phases —
+    /// but it was also the last serial one, and a phase that is 5% of a step is
+    /// 5% of a step.
+    pub fn bake_wind(&mut self, wind: &WindField) {
         let spacing = WIND_DOWNSAMPLE as f32 * self.cell_size;
-        for j in 0..self.wind_resolution {
-            for i in 0..self.wind_resolution {
-                let world = self.origin + Vec2::new(i as f32, j as f32) * spacing;
-                self.wind_coarse[j * self.wind_resolution + i] = wind.velocity_at(world);
-            }
-        }
+        let resolution = self.wind_resolution;
+        let origin = self.origin;
+
+        self.wind_coarse
+            .par_chunks_mut(resolution)
+            .with_min_len(rows_per_task(resolution))
+            .enumerate()
+            .for_each(|(j, row)| {
+                for (i, cell) in row.iter_mut().enumerate() {
+                    *cell = wind.velocity_at(origin + Vec2::new(i as f32, j as f32) * spacing);
+                }
+            });
     }
 
     /// Build the per-cell diagonal and right-hand side of the implicit system.
-    fn build_system(&mut self, dt: f32, wind: &WindField) {
+    /// Phase two of [`step`](Self::step).
+    pub fn build_system(&mut self, dt: f32, wind: &WindField) {
         let p = self.params;
         let inverse_dt = 1.0 / dt;
         let inverse_dt2 = inverse_dt * inverse_dt;
@@ -575,7 +672,7 @@ impl GrassField {
             .par_chunks_mut(resolution)
             .zip(rhs.par_chunks_mut(resolution))
             .zip(solve.par_chunks_mut(resolution))
-            .with_min_len(ROWS_PER_TASK)
+            .with_min_len(rows_per_task(resolution))
             .enumerate()
             .for_each(|(y, ((diagonal_row, rhs_row), solve_row))| {
                 for x in 0..resolution {
@@ -670,7 +767,9 @@ impl GrassField {
     /// Once per step rather than once per Jacobi sweep, because they depend
     /// only on the previous state. Six sweeps would otherwise recompute the
     /// same numbers six times.
-    fn build_coupling(&mut self) {
+    ///
+    /// Phase three of [`step`](Self::step).
+    pub fn build_coupling(&mut self) {
         let p = self.params;
         // The correlation length relates coupling to structural stiffness by
         // l^2 = kappa / k, and the 1/h^2 of the Laplacian cancels the h^2 in
@@ -705,9 +804,16 @@ impl GrassField {
         coupling_x
             .par_chunks_mut(resolution)
             .zip(coupling_y.par_chunks_mut(resolution))
-            .with_min_len(ROWS_PER_TASK)
+            .with_min_len(rows_per_task(resolution))
             .enumerate()
             .for_each(|(y, (row_x, row_y))| {
+                // Deliberately still branchy, unlike the solve. Peeling the
+                // last row and column out was tried here too and made this
+                // phase 18% *slower*: it runs once per step rather than six
+                // times, so there is little branch cost to remove, and the
+                // peeled version stops the two writes being one contiguous
+                // sweep. Recorded rather than quietly reverted, because the
+                // trick is right next door and looks like it should apply.
                 for x in 0..resolution {
                     let index = y * resolution + x;
                     row_x[x] = if x + 1 < resolution {
@@ -731,7 +837,9 @@ impl GrassField {
     /// changing — the result is identical to the serial version, not merely
     /// close to it. (Gauss-Seidel would converge in fewer sweeps but reads its
     /// own output, which is exactly what cannot be threaded this way.)
-    fn solve_jacobi(&mut self) {
+    ///
+    /// Phase four of [`step`](Self::step).
+    pub fn solve_jacobi(&mut self) {
         let resolution = self.resolution;
         for _ in 0..JACOBI_ITERATIONS {
             {
@@ -744,48 +852,68 @@ impl GrassField {
                     coupling_y,
                     rhs,
                     diagonal,
-                    density,
                     ..
                 } = self;
 
                 solve_next
                     .par_chunks_mut(resolution)
-                    .with_min_len(ROWS_PER_TASK)
+                    .with_min_len(rows_per_task(resolution))
                     .enumerate()
                     .for_each(|(y, row)| {
-                        for (x, out) in row.iter_mut().enumerate() {
-                            let index = y * resolution + x;
-                            if density[index] <= 0.0 {
-                                *out = Vec2::ZERO;
-                                continue;
-                            }
+                        let base = y * resolution;
+                        let last = resolution - 1;
 
-                            let mut neighbours = Vec2::ZERO;
-                            let mut neighbour_diagonal = 0.0;
-                            if x > 0 {
-                                let coefficient = coupling_x[index - 1];
-                                neighbours += solve[index - 1] * coefficient;
-                                neighbour_diagonal += coefficient;
+                        // A row on the field's edge is missing a neighbour, so
+                        // it keeps the branchy path. There are two of them.
+                        if y == 0 || y == last {
+                            for (x, out) in row.iter_mut().enumerate() {
+                                *out = edge_relaxed(
+                                    x, y, resolution, solve, coupling_x, coupling_y, rhs, diagonal,
+                                );
                             }
-                            if x + 1 < resolution {
-                                let coefficient = coupling_x[index];
-                                neighbours += solve[index + 1] * coefficient;
-                                neighbour_diagonal += coefficient;
-                            }
-                            if y > 0 {
-                                let coefficient = coupling_y[index - resolution];
-                                neighbours += solve[index - resolution] * coefficient;
-                                neighbour_diagonal += coefficient;
-                            }
-                            if y + 1 < resolution {
-                                let coefficient = coupling_y[index];
-                                neighbours += solve[index + resolution] * coefficient;
-                                neighbour_diagonal += coefficient;
-                            }
+                            return;
+                        }
 
-                            let candidate =
-                                (rhs[index] + neighbours) / (diagonal[index] + neighbour_diagonal);
-                            *out = solve[index].lerp(candidate, JACOBI_RELAXATION);
+                        row[0] = edge_relaxed(
+                            0, y, resolution, solve, coupling_x, coupling_y, rhs, diagonal,
+                        );
+                        row[last] = edge_relaxed(
+                            last, y, resolution, solve, coupling_x, coupling_y, rhs, diagonal,
+                        );
+
+                        // The interior: every cell has all four neighbours, so
+                        // there is nothing to branch on and the compiler can
+                        // vectorise the whole span. This is the loop the step
+                        // spends most of its time in, and the five branches it
+                        // used to carry were re-deciding the same answer for
+                        // every one of 65,000 cells on each of six sweeps.
+                        //
+                        // The density test went with them, and that is safe
+                        // rather than sloppy: `build_system` gives a dead cell a
+                        // diagonal of one, a right-hand side of zero and a
+                        // starting value of zero, and `build_coupling` gives
+                        // every edge touching one a coefficient of zero. The
+                        // arithmetic below therefore already produces exactly
+                        // the zero the test was writing by hand.
+                        for (x, out) in row.iter_mut().enumerate().take(last).skip(1) {
+                            let index = base + x;
+                            let west = coupling_x[index - 1];
+                            let east = coupling_x[index];
+                            let south = coupling_y[index - resolution];
+                            let north = coupling_y[index];
+
+                            let neighbours = solve[index - 1] * west
+                                + solve[index + 1] * east
+                                + solve[index - resolution] * south
+                                + solve[index + resolution] * north;
+                            // Parenthesised to sum the four coefficients before
+                            // the diagonal, matching the order the branchy
+                            // version accumulated them in. Float addition is not
+                            // associative, and this has to stay bit-identical or
+                            // every aesthetic number in the suite moves with it.
+                            let denominator = diagonal[index] + (west + east + south + north);
+                            *out = solve[index]
+                                .lerp((rhs[index] + neighbours) / denominator, JACOBI_RELAXATION);
                         }
                     });
             }
@@ -794,118 +922,191 @@ impl GrassField {
     }
 
     /// Commit the solved angles and advance every memory channel.
-    fn finalise(&mut self, dt: f32) {
+    /// Phase five of [`step`](Self::step).
+    ///
+    /// Threaded by row, like the other three hot loops, and for the same reason
+    /// they are: every cell here depends only on itself. Nothing reads a
+    /// neighbour, so splitting the field into rows and handing them to different
+    /// threads produces the identical answer rather than merely a close one —
+    /// which matters, because a solver whose result depended on how many cores
+    /// ran it would be the end of reproducible benchmarking.
+    ///
+    /// It was serial until the benchmark broke a step into its six phases and
+    /// showed this one taking 36% of it on one core while the rest of the
+    /// machine sat idle. That is also the whole argument for measuring phases
+    /// rather than steps: the total had been the same shape for a long time and
+    /// said nothing about where it went.
+    pub fn finalise(&mut self, dt: f32) {
         let p = self.params;
-        for index in 0..self.theta.len() {
-            if self.density[index] <= 0.0 {
-                continue;
-            }
+        let resolution = self.resolution;
 
-            let previous = self.theta[index];
-            let solved = soft_cap(self.solve[index], p.max_angle);
-            self.theta[index] = solved;
-            // Any impulse is already folded into the solve, so the resulting
-            // velocity is simply how far the grass actually moved.
-            self.omega[index] = (solved - previous) / dt;
+        // Destructured so the borrow checker can see that the seven buffers
+        // being written are different fields from the five being read.
+        let Self {
+            theta,
+            omega,
+            dose,
+            fast_memory,
+            slow_memory,
+            compaction,
+            axis,
+            density,
+            solve,
+            contact_weight,
+            contact_axis,
+            contact_severity,
+            ..
+        } = self;
 
-            // Everything below is the memory machinery: seven exponentials per
-            // cell, for grass that remembers being trodden on. The overwhelming
-            // majority of a field has never been touched and has nothing to
-            // remember, and running it anyway was most of the cost of a step.
-            if self.contact_severity[index] <= 0.0
-                && self.dose[index] <= 0.0
-                && self.compaction[index] <= 0.0
-                && self.fast_memory[index] == Vec2::ZERO
-                && self.slow_memory[index] == Vec2::ZERO
-                && self.axis[index] == Vec2::ZERO
-            {
-                continue;
-            }
+        // Zipped rather than gathered into a `Vec` of row structs. That was the
+        // first shape of this, and it read far better — but it allocated once
+        // per step, and on a small field, where `finalise` is a fast scan that
+        // exits early on almost every cell, the allocation and the rayon
+        // dispatch together cost more than the loop did. It made the small
+        // scenario 33% slower while making the large one 25% faster.
+        theta
+            .par_chunks_mut(resolution)
+            .zip(omega.par_chunks_mut(resolution))
+            .zip(dose.par_chunks_mut(resolution))
+            .zip(fast_memory.par_chunks_mut(resolution))
+            .zip(slow_memory.par_chunks_mut(resolution))
+            .zip(compaction.par_chunks_mut(resolution))
+            .zip(axis.par_chunks_mut(resolution))
+            .with_min_len(rows_per_task(resolution))
+            .enumerate()
+            .for_each(
+                |(y, ((((((theta, omega), dose), fast), slow), compaction), axis))| {
+                    // Named immediately, because a six-deep tuple pattern is
+                    // unreadable everywhere except the line that destructures it.
+                    let row = Row {
+                        theta,
+                        omega,
+                        dose,
+                        fast_memory: fast,
+                        slow_memory: slow,
+                        compaction,
+                        axis,
+                    };
+                    let base = y * resolution;
+                    for x in 0..resolution {
+                        let index = base + x;
+                        if density[index] <= 0.0 {
+                            continue;
+                        }
 
-            let weight = self.contact_weight[index];
-            // How hard this cell is being contacted *right now*, in 0..=1, and
-            // deliberately independent of the timestep. Folding `dt` in here
-            // would make severity mean "how much contact happened this step",
-            // which at sixty steps a second is always a tiny number — and every
-            // activation threshold downstream would then be silently tied to
-            // the frame rate.
-            let severity = 1.0 - (-self.contact_severity[index]).exp();
-            let contact_axis = if weight > 1e-6 {
-                self.contact_axis[index] / weight
-            } else {
-                Vec2::ZERO
-            };
+                        let previous = row.theta[x];
+                        let solved = soft_cap(solve[index], p.max_angle);
+                        row.theta[x] = solved;
+                        // Any impulse is already folded into the solve, so the
+                        // resulting velocity is simply how far the grass moved.
+                        row.omega[x] = (solved - previous) / dt;
 
-            // Dose is a leaky integral of severity: a hundred footfalls in one
-            // place add up, and a single one fades. This is where `dt` belongs,
-            // and only here.
-            self.dose[index] = self.dose[index] * (-dt / p.dose_decay).exp() + severity * dt;
+                        // Everything below is the memory machinery: seven
+                        // exponentials per cell, for grass that remembers being
+                        // trodden on. The overwhelming majority of a field has never
+                        // been touched and has nothing to remember, and running it
+                        // anyway was most of the cost of a step.
+                        if contact_severity[index] <= 0.0
+                            && row.dose[x] <= 0.0
+                            && row.compaction[x] <= 0.0
+                            && row.fast_memory[x] == Vec2::ZERO
+                            && row.slow_memory[x] == Vec2::ZERO
+                            && row.axis[x] == Vec2::ZERO
+                        {
+                            continue;
+                        }
 
-            let fast_activation =
-                smoothstep_between(p.fast_activation.0, p.fast_activation.1, severity);
-            let slow_activation =
-                smoothstep_between(p.slow_activation.0, p.slow_activation.1, self.dose[index]);
+                        let weight = contact_weight[index];
+                        // How hard this cell is being contacted *right now*, in
+                        // 0..=1, and deliberately independent of the timestep.
+                        // Folding `dt` in here would make severity mean "how much
+                        // contact happened this step", which at sixty steps a second
+                        // is always a tiny number — and every activation threshold
+                        // downstream would then be silently tied to the frame rate.
+                        let severity = 1.0 - (-contact_severity[index]).exp();
+                        let axis_target = if weight > 1e-6 {
+                            contact_axis[index] / weight
+                        } else {
+                            Vec2::ZERO
+                        };
 
-            self.fast_memory[index] = relax_vec2(
-                self.fast_memory[index],
-                solved,
-                fast_activation,
-                dt,
-                p.fast_set,
-                p.fast_recover,
+                        // Dose is a leaky integral of severity: a hundred footfalls
+                        // in one place add up, and a single one fades. This is where
+                        // `dt` belongs, and only here.
+                        row.dose[x] = row.dose[x] * (-dt / p.dose_decay).exp() + severity * dt;
+
+                        let fast_activation =
+                            smoothstep_between(p.fast_activation.0, p.fast_activation.1, severity);
+                        let slow_activation = smoothstep_between(
+                            p.slow_activation.0,
+                            p.slow_activation.1,
+                            row.dose[x],
+                        );
+
+                        row.fast_memory[x] = relax_vec2(
+                            row.fast_memory[x],
+                            solved,
+                            fast_activation,
+                            dt,
+                            p.fast_set,
+                            p.fast_recover,
+                        );
+                        row.slow_memory[x] = relax_vec2(
+                            row.slow_memory[x],
+                            solved,
+                            slow_activation,
+                            dt,
+                            p.slow_set,
+                            p.slow_recover,
+                        );
+
+                        let desired = 1.0 - (-p.dose_to_compaction * row.dose[x]).exp();
+                        row.compaction[x] = relax_f32(
+                            row.compaction[x],
+                            desired,
+                            slow_activation,
+                            dt,
+                            p.compaction_set,
+                            p.compaction_recover,
+                        );
+                        row.axis[x] = relax_vec2(
+                            row.axis[x],
+                            axis_target * desired,
+                            slow_activation,
+                            dt,
+                            p.axis_set,
+                            p.axis_recover,
+                        );
+
+                        // Alignment can never exceed how crushed the grass is: an
+                        // axis stronger than its compaction would render as blades
+                        // laid flat in a patch that is standing up.
+                        let alignment = row.axis[x].length();
+                        if alignment > row.compaction[x] {
+                            row.axis[x] *= row.compaction[x] / alignment.max(1e-6);
+                        }
+
+                        // Snap what has faded to nothing all the way to zero.
+                        // Exponential decay never actually arrives, and without this
+                        // a cell trodden on once stays on the expensive path
+                        // forever — which over a long battle is every cell.
+                        settle(&mut row.fast_memory[x]);
+                        settle(&mut row.slow_memory[x]);
+                        settle(&mut row.axis[x]);
+                        if row.compaction[x] < QUIET {
+                            row.compaction[x] = 0.0;
+                        }
+                        if row.dose[x] < QUIET {
+                            row.dose[x] = 0.0;
+                        }
+                    }
+                },
             );
-            self.slow_memory[index] = relax_vec2(
-                self.slow_memory[index],
-                solved,
-                slow_activation,
-                dt,
-                p.slow_set,
-                p.slow_recover,
-            );
-
-            let desired = 1.0 - (-p.dose_to_compaction * self.dose[index]).exp();
-            self.compaction[index] = relax_f32(
-                self.compaction[index],
-                desired,
-                slow_activation,
-                dt,
-                p.compaction_set,
-                p.compaction_recover,
-            );
-            self.axis[index] = relax_vec2(
-                self.axis[index],
-                contact_axis * desired,
-                slow_activation,
-                dt,
-                p.axis_set,
-                p.axis_recover,
-            );
-
-            // Alignment can never exceed how crushed the grass is: an axis
-            // stronger than its compaction would render as blades laid flat in
-            // a patch that is standing up.
-            let alignment = self.axis[index].length();
-            if alignment > self.compaction[index] {
-                self.axis[index] *= self.compaction[index] / alignment.max(1e-6);
-            }
-
-            // Snap what has faded to nothing all the way to zero. Exponential
-            // decay never actually arrives, and without this a cell trodden on
-            // once stays on the expensive path forever — which over a long
-            // battle is every cell.
-            settle(&mut self.fast_memory[index]);
-            settle(&mut self.slow_memory[index]);
-            settle(&mut self.axis[index]);
-            if self.compaction[index] < QUIET {
-                self.compaction[index] = 0.0;
-            }
-            if self.dose[index] < QUIET {
-                self.dose[index] = 0.0;
-            }
-        }
     }
 
-    fn clear_accumulators(&mut self) {
+    /// Zero the per-step contact and impulse accumulators.
+    /// Phase six of [`step`](Self::step).
+    pub fn clear_accumulators(&mut self) {
         self.contact_polar.fill(Vec2::ZERO);
         self.contact_axis.fill(Vec2::ZERO);
         self.contact_weight.fill(0.0);
@@ -962,6 +1163,27 @@ impl GrassField {
     pub fn upload_bytes(&self) -> usize {
         // One RGBA32F bend texture and one R32F state texture.
         self.theta.len() * (4 + 1) * size_of::<f32>()
+    }
+
+    /// Interleave bend and flattening axis into RGBA texels.
+    ///
+    /// Lives here rather than inside the upload system so that the packing —
+    /// which is a full pass over the field every frame, and therefore a real
+    /// cost rather than a rounding error — can be benchmarked without the
+    /// benchmark keeping its own copy of the loop and slowly disagreeing with
+    /// the one that ships.
+    pub fn pack_bend(&self, texels: &mut [f32]) {
+        for (index, texel) in texels.chunks_exact_mut(4).enumerate() {
+            texel[0] = self.theta[index].x;
+            texel[1] = self.theta[index].y;
+            texel[2] = self.axis[index].x;
+            texel[3] = self.axis[index].y;
+        }
+    }
+
+    /// Copy compaction into single-channel texels.
+    pub fn pack_state(&self, texels: &mut [f32]) {
+        texels.copy_from_slice(&self.compaction);
     }
 
     /// Largest bend anywhere, in radians.

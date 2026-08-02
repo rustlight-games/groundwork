@@ -623,12 +623,25 @@ pub fn key_warmth() -> f32 {
 
 /// The sRGB transfer function, exactly as the GPU applies it.
 fn srgb_to_linear(value: u8) -> f32 {
-    let v = value as f32 / 255.0;
-    if v <= 0.04045 {
-        v / 12.92
+    decode_srgb(value as f32 / 255.0)
+}
+
+/// The same curve on a 0..1 float, for callers that are already there.
+///
+/// Anything that *averages* stored colour needs this: the mean of two sRGB
+/// numbers is not the sRGB of their mean, and filtering without it darkens
+/// every edge it touches.
+pub fn decode_srgb(value: f32) -> f32 {
+    if value <= 0.04045 {
+        value / 12.92
     } else {
-        ((v + 0.055) / 1.055).powf(2.4)
+        ((value + 0.055) / 1.055).powf(2.4)
     }
+}
+
+/// Back again.
+pub fn encode_srgb(value: f32) -> f32 {
+    linear_to_srgb(value)
 }
 
 fn linear_to_srgb(value: f32) -> f32 {

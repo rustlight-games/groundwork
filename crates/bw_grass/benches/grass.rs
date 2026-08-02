@@ -2,31 +2,56 @@
 //!
 //! `cargo bench -p bw_grass`
 //!
-//! Three kinds of measurement, all in one table because they trade against each
-//! other and looking at any one alone is misleading.
+//! Seven kinds of measurement, all in one table because they trade against each
+//! other and looking at any one alone is misleading. Smoother grass is slower
+//! grass; denser grass matches the reference better and costs more; a stiller
+//! field scores perfectly on flicker.
 //!
-//! **Performance** is the obvious half: what a step costs, what a chunk costs,
-//! what it all weighs.
+//! | Section | Module | Answers |
+//! |---|---|---|
+//! | Performance | [`perf`] | What does it cost — per phase, under load, at the margin |
+//! | Stability | [`stability`] | Does it move, or does it merely change |
+//! | Motion | [`motion`] | Does wind read as wind, contact as contact, a blast as a blast |
+//! | Physics | this file | Properties no correctness test notices going wrong |
+//! | Aesthetics | this file | The things that make generated grass look generated |
+//! | Style | this file, [`atlas`] | What makes it drawn rather than rendered |
+//! | Resemblance | [`texture_match`] | How close the frame is to the art target |
 //!
-//! **Physics** is the half that catches the failures nobody notices. A solver
-//! that quietly gains energy, a field that responds differently to a shove from
-//! the north than from the east, a blast that comes out egg-shaped because
-//! something crept into screen space — none of these break a test that only
-//! asks whether the grass moved. They are also exactly the failures that are
-//! agonising to diagnose from a screen recording weeks later.
+//! ## The one design goal behind all of it
 //!
-//! **Aesthetics** scores the things that make generated grass look generated:
-//! tufts clumping instead of spreading, every blade the same height, one layer
-//! swallowing the other.
+//! **Grass is background.** The model is StarCraft's creep: a surface that
+//! reacts, spreads, and reads as alive on a budget small enough that the rest
+//! of the game never notices it. That goal is what decides which numbers are
+//! headlines and which are diagnostics:
 //!
-//! **Style** scores what makes it pixel art rather than a small render: how big
-//! a palette it is allowed to use, how coloured that palette is, how many
-//! distinct poses a blade can hold, and how many pixels a blade actually
-//! occupies at the camera height the game ships with. Every one of these is
-//! easy to lose while tuning something else. See `docs/BENCHMARKS.md`.
+//! - `grass.step.*.frame_share` and `grass.pressure.battle.frame_share` are the
+//!   numbers a change ships or does not ship on.
+//! - `grass.step.trampled_multiplier` says whether a battle is affordable, not
+//!   just an empty meadow.
+//! - Every timing carries a p95 and a jitter, because background systems fail
+//!   by hitching, and a mean hides exactly that.
+//!
+//! ## Every stability metric is paired with a motion metric
+//!
+//! The most important structural rule in the suite. A field that does not move
+//! has no flicker, no jerk, no chatter and no churn, and would sweep the
+//! stability section. `grass.stability.motion_share`,
+//! `grass.stability.tip_travel_pixels` and `grass.wind.dynamic_area` are what
+//! stop that reading as a win: an improvement that also drops those has not
+//! improved anything, it has switched the wind off.
+//!
+//! ## What is measured where
+//!
+//! Nothing here needs a GPU except the resemblance section, which scores a
+//! screenshot and skips itself with instructions when there is not one. That is
+//! deliberate: a suite that needs a window does not run in CI, on a headless
+//! box, or twice in the same minute. Where a measurement genuinely depends on
+//! what the shader does, the shader's vertex stage is mirrored in [`mirror`] and
+//! the mirror is checked against the WGSL every run.
 //!
 //! Every number carries its direction of improvement, so a baseline comparison
 //! does not have to guess which half of the table wants to go up.
+//! See `docs/BENCHMARKS.md`.
 
 // Timing is the entire point of this file, and `Instant` is the only way to get
 // it. The workspace-wide ban exists to keep wall-clock time out of the
@@ -38,7 +63,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use bevy::math::{IVec2, UVec2, Vec2};
-use bw_bench::{Measurement, Report, Scenario, Unit, blue_noise_score, silhouette_variety};
+use bw_bench::{Measurement, Report, Unit, blue_noise_score, silhouette_variety};
 use bw_core::{Real, Vec2Fx};
 use bw_grass::disturbance::{GrassInteractor, Shockwave, stamp_interactor, stamp_shockwave};
 use bw_grass::field::{GrassField, SIM_STEP};
@@ -47,43 +72,41 @@ use bw_grass::wind::WindField;
 use bw_grass::{blade, light, palette, pixel};
 use bw_render::BattleCamera;
 
+mod atlas;
+mod harness;
+mod mirror;
+mod motion;
+mod perf;
+mod stability;
 mod texture_match;
 
-/// Field resolutions per scenario. A grass field covers the ground near the
-/// camera, so these are areas rather than unit counts.
-fn resolution(scenario: Scenario) -> usize {
-    match scenario {
-        Scenario::Small => 128,
-        Scenario::Medium => 256,
-        Scenario::Large => 512,
-    }
-}
-
-fn calm() -> WindField {
-    WindField {
-        speed: 0.0,
-        turbulence: 0.0,
-        gust_strength: 0.0,
-        ..Default::default()
-    }
-}
-
-fn uniform_field(resolution: usize) -> GrassField {
-    let mut field = GrassField::new(resolution, 0.15, bw_bench::SEEDS[0] as u32);
-    field.make_uniform(0.24, 1.0);
-    field
-}
+use harness::{calm, uniform_field};
 
 fn main() {
     let mut report = Report::new();
-    performance(&mut report);
-    physics(&mut report);
-    aesthetics(&mut report);
-    style(&mut report);
-    resemblance(&mut report);
+    let started = Instant::now();
+    println!("running the grass suite");
 
-    print_table(&report);
+    // Cheap and structural first, so a broken build says so in a second rather
+    // than after the timings have finished.
+    stage(&mut report, "style", style);
+    stage(&mut report, "atlas", atlas::run);
+    stage(&mut report, "physics", physics);
+    stage(&mut report, "aesthetics", aesthetics);
+    stage(&mut report, "motion", motion::run);
+    stage(&mut report, "stability", stability::run);
+    stage(&mut report, "performance", perf::run);
+    // Last, because it is the only section that can be absent.
+    stage(&mut report, "resemblance", resemblance);
+
+    let baseline = Report::load(&workspace_path("benchmarks/baseline/grass.ron")).ok();
+    print_table(&report, baseline.as_ref());
     compare_to_baseline(&report);
+    println!(
+        "\n{} measurements in {:.1} s",
+        report.len(),
+        started.elapsed().as_secs_f64()
+    );
 
     let path = workspace_path("benchmarks/grass.ron");
     if let Some(parent) = path.parent() {
@@ -95,6 +118,25 @@ fn main() {
     }
 }
 
+/// Run one section, announcing what it produced and how long it took.
+///
+/// The suite takes minutes, most of it inside two or three sections, and a
+/// silent minute is indistinguishable from a hang. The running total also makes
+/// it obvious which section to look at when the suite itself gets slow.
+fn stage(report: &mut Report, name: &str, body: impl FnOnce(&mut Report)) {
+    use std::io::Write;
+    let before = report.len();
+    let start = Instant::now();
+    print!("  {name:<14}");
+    let _ = std::io::stdout().flush();
+    body(report);
+    println!(
+        "{:>4} measurements   {:>6.1} s",
+        report.len() - before,
+        start.elapsed().as_secs_f64()
+    );
+}
+
 /// Resolve a path against the workspace root.
 ///
 /// `cargo bench` runs with the *package* directory as the working directory, so
@@ -104,119 +146,6 @@ fn workspace_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(relative)
-}
-
-// --- performance ------------------------------------------------------------
-
-fn performance(report: &mut Report) {
-    for scenario in Scenario::ALL {
-        let cells = resolution(scenario);
-        let mut field = uniform_field(cells);
-        let wind = WindField::default();
-
-        // Under load rather than at rest: a field with nothing happening in it
-        // takes the cheap path through every branch, which is not the number
-        // that matters.
-        let mut body = GrassInteractor::default();
-        body.move_to(Vec2::ZERO);
-
-        // Warm up, so the first-touch page faults land outside the measurement.
-        for _ in 0..8 {
-            stamp_interactor(&mut field, &body, SIM_STEP);
-            field.step(SIM_STEP, &wind);
-        }
-
-        let steps = 60;
-        let start = Instant::now();
-        for step in 0..steps {
-            let along = step as f32 * 0.05;
-            body.move_to(Vec2::new(-1.5 + along, 0.0));
-            stamp_interactor(&mut field, &body, SIM_STEP);
-            field.step(SIM_STEP, &wind);
-        }
-        let per_step = start.elapsed().as_secs_f64() / steps as f64;
-
-        report.push(Measurement::new(
-            "grass.field.step",
-            scenario.name(),
-            per_step * 1.0e9,
-            Unit::Nanoseconds,
-            false,
-        ));
-        report.push(Measurement::new(
-            "grass.field.cells_per_second",
-            scenario.name(),
-            (cells * cells) as f64 / per_step,
-            Unit::Count,
-            true,
-        ));
-        // The number that actually decides whether this ships: a step has to
-        // disappear inside a frame next to everything else the game does.
-        report.push(Measurement::new(
-            "grass.field.frame_share_at_60hz",
-            scenario.name(),
-            per_step / (1.0 / 60.0),
-            Unit::Ratio,
-            false,
-        ));
-        report.push(Measurement::new(
-            "grass.field.state_bytes",
-            scenario.name(),
-            field.byte_size() as f64,
-            Unit::Bytes,
-            false,
-        ));
-        report.push(Measurement::new(
-            "grass.field.upload_bytes_per_frame",
-            scenario.name(),
-            field.upload_bytes() as f64,
-            Unit::Bytes,
-            false,
-        ));
-    }
-
-    // Chunk building is a one-off cost per chunk, but it happens while the
-    // player is looking at the game, so a slow one is a visible hitch.
-    let field = uniform_field(256);
-    let chunks = 16;
-    let start = Instant::now();
-    let mut blades = 0u32;
-    let mut bytes = 0usize;
-    for index in 0..chunks {
-        let batch = blade::build_chunk(&field, IVec2::new(index % 4, index / 4), 1.0, 7);
-        blades += batch.blades();
-        bytes += batch.byte_size();
-    }
-    let per_chunk = start.elapsed().as_secs_f64() / chunks as f64;
-
-    report.push(Measurement::new(
-        "grass.chunk.build",
-        "medium",
-        per_chunk * 1.0e9,
-        Unit::Nanoseconds,
-        false,
-    ));
-    report.push(Measurement::new(
-        "grass.chunk.blades",
-        "medium",
-        blades as f64 / chunks as f64,
-        Unit::Count,
-        true,
-    ));
-    report.push(Measurement::new(
-        "grass.chunk.bytes",
-        "medium",
-        bytes as f64 / chunks as f64,
-        Unit::Bytes,
-        false,
-    ));
-    report.push(Measurement::new(
-        "grass.chunk.bytes_per_blade",
-        "medium",
-        bytes as f64 / blades.max(1) as f64,
-        Unit::Bytes,
-        false,
-    ));
 }
 
 // --- physics ----------------------------------------------------------------
@@ -797,6 +726,56 @@ fn style(report: &mut Report) {
         true,
     );
 
+    // --- the palette against the art target ---------------------------------
+    //
+    // The palette is *fitted* to the reference plate rather than picked, so
+    // these are the numbers that say whether the fit still holds. They are
+    // independent of the resemblance section below and much more sensitive: a
+    // screenshot averages the whole frame, while these look at the colours
+    // themselves.
+    push(
+        "grass.palette.chroma_error",
+        "target",
+        palette::chroma_error() as f64,
+        Unit::Ratio,
+        false,
+    );
+    // Does the palette reach as far as the target does? A ramp narrower than
+    // the reference cannot produce its darks or its highlights however the
+    // renderer distributes them.
+    let (low, high) = palette::living_range();
+    let (target_low, target_high) = palette::target_range();
+    push(
+        "grass.palette.range_reach",
+        "target",
+        ((high - low) / (target_high - target_low)) as f64,
+        Unit::Ratio,
+        true,
+    );
+    push(
+        "grass.palette.darkest_error",
+        "target",
+        (low - target_low).abs() as f64,
+        Unit::Ratio,
+        false,
+    );
+    push(
+        "grass.palette.lightest_error",
+        "target",
+        (high - target_high).abs() as f64,
+        Unit::Ratio,
+        false,
+    );
+    // The axis the lighting rig pushes hardest the wrong way: two of three suns
+    // and the whole sky are blue, and the target has almost none.
+    push(
+        "grass.palette.blue_to_green",
+        "target",
+        palette::blue_to_green() as f64,
+        Unit::Ratio,
+        false,
+    );
+
     // --- the lighting rig ---------------------------------------------------
     push(
         "grass.light.key_to_fill",
@@ -1065,6 +1044,11 @@ fn resemblance(report: &mut Report) {
         ("grass.match.local_contrast", scored.contrast),
         ("grass.match.grain", scored.grain),
         ("grass.match.cluster_size", scored.clusters),
+        ("grass.match.feature_scale", scored.scale),
+        ("grass.match.orientation", scored.orientation),
+        ("grass.match.repetition", scored.repetition),
+        ("grass.match.vocabulary", scored.vocabulary),
+        ("grass.match.tone_distribution", scored.tones),
         ("grass.match.overall", scored.overall),
     ] {
         report.push(Measurement::new(
@@ -1075,16 +1059,58 @@ fn resemblance(report: &mut Report) {
             true,
         ));
     }
+
+    // The raw numbers behind the two similarities that are useless without
+    // them. "Feature scale scores 0.6" does not say whether to make the grass
+    // bigger or smaller; two numbers in pixels do.
+    for (name, value, higher) in [
+        (
+            "grass.texture.feature_pixels",
+            scored.scale_pixels.0 as f64,
+            true,
+        ),
+        (
+            "grass.texture.feature_pixels_target",
+            scored.scale_pixels.1 as f64,
+            true,
+        ),
+    ] {
+        report.push(Measurement::new(name, "target", value, Unit::Count, higher));
+    }
+    for (name, value) in [
+        ("grass.texture.repetition", scored.repetition_raw.0 as f64),
+        (
+            "grass.texture.repetition_target",
+            scored.repetition_raw.1 as f64,
+        ),
+    ] {
+        report.push(Measurement::new(name, "target", value, Unit::Ratio, false));
+    }
 }
 
 // --- reporting --------------------------------------------------------------
 
-fn print_table(report: &Report) {
-    println!(
-        "\n{:<42} {:>10} {:>14}  {:<3}",
-        "measurement", "scenario", "value", "dir"
-    );
-    println!("{}", "-".repeat(74));
+/// The whole table, with the baseline beside it when there is one.
+///
+/// Every row, not only the ones that moved. A regression list answers "what
+/// broke"; this answers "where is the system", which is the question anyone
+/// tuning it is actually asking — and it is the only form in which a trade
+/// shows up as a trade, with the cost that bought an improvement sitting a few
+/// lines away from it.
+fn print_table(report: &Report, baseline: Option<&Report>) {
+    let header = if baseline.is_some() {
+        format!(
+            "\n{:<44} {:>9} {:>13} {:>13} {:>9}  {:<4}",
+            "measurement", "scenario", "baseline", "current", "change", "dir"
+        )
+    } else {
+        format!(
+            "\n{:<44} {:>9} {:>13}  {:<4}",
+            "measurement", "scenario", "value", "dir"
+        )
+    };
+    println!("{header}");
+    println!("{}", "-".repeat(if baseline.is_some() { 97 } else { 74 }));
 
     let mut group = String::new();
     for measurement in &report.measurements {
@@ -1100,18 +1126,56 @@ fn print_table(report: &Report) {
             }
             group = prefix;
         }
-        println!(
-            "{:<42} {:>10} {:>14}  {:<3}",
-            measurement.name,
-            measurement.scenario,
-            format_value(measurement.value, measurement.unit),
-            if measurement.higher_is_better {
-                "up"
-            } else {
-                "down"
-            },
-        );
+
+        let direction = if measurement.higher_is_better {
+            "up"
+        } else {
+            "down"
+        };
+        let current = format_value(measurement.value, measurement.unit);
+
+        match baseline.and_then(|b| b.get(&measurement.name, &measurement.scenario)) {
+            Some(previous) => println!(
+                "{:<44} {:>9} {:>13} {:>13} {:>9}  {:<4}",
+                measurement.name,
+                measurement.scenario,
+                format_value(previous.value, previous.unit),
+                current,
+                // Signed as *improvement*, not as raw delta. Half this suite
+                // wants to go down, and a table that printed a 20% drop in
+                // frame time and a 20% drop in wind coherence the same way
+                // would need reading twice on every line.
+                change(
+                    previous.value,
+                    measurement.value,
+                    measurement.higher_is_better
+                ),
+                direction,
+            ),
+            None => println!(
+                "{:<44} {:>9} {:>13} {:>13} {:>9}  {:<4}",
+                measurement.name, measurement.scenario, "—", current, "new", direction,
+            ),
+        }
     }
+}
+
+/// Percentage improvement from `before` to `after`, as a printable string.
+fn change(before: f64, after: f64, higher_is_better: bool) -> String {
+    if before == 0.0 {
+        // Nothing to divide by. A move away from exactly zero is still worth
+        // marking, because several structural metrics are supposed to sit there.
+        return if after == 0.0 {
+            "—".to_string()
+        } else if higher_is_better {
+            "+new".to_string()
+        } else {
+            "worse".to_string()
+        };
+    }
+    let delta = (after - before) / before.abs();
+    let improvement = if higher_is_better { delta } else { -delta };
+    format!("{:+.1}%", improvement * 100.0)
 }
 
 fn format_value(value: f64, unit: Unit) -> String {
@@ -1124,9 +1188,59 @@ fn format_value(value: f64, unit: Unit) -> String {
         Unit::Bytes => format!("{value:.0} B"),
         Unit::Count if value >= 1_000_000.0 => format!("{:.2} M", value / 1.0e6),
         Unit::Count if value >= 1000.0 => format!("{:.1} k", value / 1.0e3),
-        Unit::Count => format!("{value:.0}"),
+        // A whole number is printed whole; anything else keeps its decimals.
+        // `Count` carries both genuine counts — probes, threads, clusters — and
+        // quantities that merely have units, like seconds and pixels, and
+        // rounding the second group to integers was throwing away most of what
+        // they said: a recovery half-life of 1.4 s and one of 0.6 s both
+        // printed as "1".
+        Unit::Count if value.fract().abs() < 1e-9 => format!("{value:.0}"),
+        Unit::Count if value.abs() >= 10.0 => format!("{value:.1}"),
+        Unit::Count => format!("{value:.3}"),
+        // A ratio that is small but not zero is usually the interesting kind —
+        // a flicker share of three parts in a million is a different statement
+        // from one of zero, and four decimal places prints both as "0.0000".
+        Unit::Ratio if value != 0.0 && value.abs() < 1.0e-3 => format!("{value:.2e}"),
         Unit::Ratio => format!("{value:.4}"),
         Unit::TicksPerSecond => format!("{value:.0} tps"),
+    }
+}
+
+/// Which family a measurement belongs to, and therefore how much it is allowed
+/// to move before that counts as a regression.
+///
+/// One tolerance for the whole suite would either cry wolf or miss real
+/// regressions, because the three families are not noisy in the same way at all.
+/// A timing on a laptop under thermal load moves ten percent between runs of
+/// identical code. An aesthetic score averaged over a capture moves a couple.
+/// A structural property — is the world isotropic, does the solver conserve
+/// energy, is every colour on the palette — does not move at all, and when it
+/// does, it is a bug rather than drift.
+fn family(name: &str) -> (&'static str, f64) {
+    const TIMED: [&str; 6] = [
+        "grass.step.",
+        "grass.phase.",
+        "grass.pressure.",
+        "grass.scale.",
+        "grass.build.",
+        "grass.upload.",
+    ];
+    // Properties that are true or are broken. Movement here is never drift.
+    const STRUCTURAL: [&str; 6] = [
+        "grass.physics.direction_isotropy",
+        "grass.physics.energy_monotonicity",
+        "grass.physics.root_pinning",
+        "grass.palette.monotonicity",
+        "grass.wind.divergence",
+        "grass.atlas.off_palette_share",
+    ];
+
+    if STRUCTURAL.iter().any(|prefix| name.starts_with(prefix)) {
+        ("structural", 0.0)
+    } else if TIMED.iter().any(|prefix| name.starts_with(prefix)) {
+        ("performance", 0.15)
+    } else {
+        ("aesthetic", 0.10)
     }
 }
 
@@ -1136,22 +1250,53 @@ fn compare_to_baseline(report: &Report) {
         println!("\nno baseline at {} — nothing to compare", path.display());
         return;
     };
-    // Performance is noisy on a laptop under thermal load; aesthetic and
-    // physical numbers are averages and move less. One tolerance for all of
-    // them would either cry wolf or miss real regressions.
-    let regressions = report.regressions_against(&baseline, 0.10);
-    if regressions.is_empty() {
-        println!("\nno regressions against the baseline");
-        return;
-    }
-    println!("\n{} regressions against the baseline:", regressions.len());
-    for change in regressions {
+
+    let mut total = 0;
+    for (name, tolerance) in [
+        ("structural", 0.0),
+        ("performance", 0.15),
+        ("aesthetic", 0.10),
+    ] {
+        let subset = Report {
+            measurements: report
+                .measurements
+                .iter()
+                .filter(|m| family(&m.name).0 == name)
+                .cloned()
+                .collect(),
+        };
+        let regressions = subset.regressions_against(&baseline, tolerance);
+        if regressions.is_empty() {
+            continue;
+        }
+        total += regressions.len();
         println!(
-            "  {:<42} {:>12.4} -> {:<12.4} ({:+.1}%)",
-            format!("{} [{}]", change.name, change.scenario),
-            change.baseline,
-            change.current,
-            change.relative * 100.0,
+            "\n{} {name} regressions (tolerance {:.0}%):",
+            regressions.len(),
+            tolerance * 100.0
         );
+        for change in regressions {
+            println!(
+                "  {:<46} {:>12.4} -> {:<12.4} ({:+.1}%)",
+                format!("{} [{}]", change.name, change.scenario),
+                change.baseline,
+                change.current,
+                change.relative * 100.0,
+            );
+        }
+    }
+
+    let unseen = report
+        .measurements
+        .iter()
+        .filter(|m| baseline.get(&m.name, &m.scenario).is_none())
+        .count();
+    if total == 0 {
+        println!("\nno regressions against the baseline");
+    }
+    if unseen > 0 {
+        // Stated rather than silent: a run where most of the suite is new is a
+        // run whose "no regressions" line means much less than it looks like.
+        println!("{unseen} measurements are new and were not compared");
     }
 }

@@ -55,7 +55,53 @@ const STIFFNESS_MAX: f32 = 1.70;
 // Grass has stiff stems and a canopy that catches on itself; it ignores a light
 // breeze entirely. Without this every plant answers every ripple in the field
 // and the whole thing flows.
-const STICTION: f32 = 0.17;
+const STICTION: f32 = 0.16;
+
+// Bend at which a plant is giving the wind everything it has, as a fraction of
+// the field's angular cap.
+//
+// This used to be 1.0, and that was a real bug rather than a taste: the cap is
+// 84 degrees, which is what *trampling* reaches, and wind alone tops out at 70.
+// So the top of this curve was a bend the wind could never produce, and the
+// whole of the wind's actual range — a mean around 14 degrees and gust peaks
+// around 26 — landed in the flat foot of the smoothstep just above STICTION.
+// Measured: at a gust peak a plant took 0.03 of the field's bend and its tip
+// moved two thousandths of a pixel. The field was simulating weather nobody
+// could see.
+//
+// Set from the wind's range instead, then pulled back once it was on screen.
+// The first correction went to 0.42, which put a gust peak near full lean and
+// read as too much — grass that whips rather than sways. This is the dial for
+// that: raising it makes the same wind produce a gentler lean, and the foot of
+// the curve does not move either way, so a calm patch stays exactly as still.
+const FULL_LEAN: f32 = 0.62;
+
+// Distinct lean amounts a plant can hold.
+//
+// The pixel-art half of the motion, and the reason it is here rather than in a
+// post-process: on a canvas this size a plant's tip travels one or two pixels
+// across a whole gust, so a *continuously* sliding lean spends most of its time
+// hovering on a pixel boundary and dithering across it. That reads as a pixel
+// vibrating, which is the most visible defect this renderer can produce and is
+// what "the grass flickers" turned out to mean.
+//
+// Snapping the lean to a few levels replaces the dither with a hold and a step,
+// which is how hand-drawn animation moves anyway. Measured: it cut the rate of
+// immediately-reversed pixel steps by an order of magnitude.
+const POSE_STEPS: f32 = 5.0;
+
+// How far a plant's snapping points are offset from its neighbours', at most.
+//
+// Without this every clump in a gust crosses its thresholds on the same frame
+// and the whole field steps together — one surface moving, which is the water
+// the stiction threshold exists to avoid. The offset is per plant and fixed, so
+// neighbours change pose on different frames.
+//
+// Per-clump *stiffness* cannot do this job, which is worth stating because it
+// looks as though it should: stiffness scales a clump's response, and scaling
+// leaves two signals perfectly correlated. Only a difference in *timing*
+// decorrelates them.
+const POSE_JITTER: f32 = 1.0;
 
 // Coverage below which a fragment is thrown away. Mirrored from clump.rs.
 //
@@ -165,7 +211,24 @@ fn vertex(vertex: Vertex) -> ClumpOutput {
     // simply does not move — stems are stiff and there is friction in the
     // canopy, and without a threshold every clump answers every ripple in the
     // field, which is exactly what a liquid does.
-    let responsive = smoothstep(STICTION, 1.0, strength);
+    // Snapped to a pose rather than followed continuously, with each plant's
+    // thresholds offset from its neighbours'.
+    //
+    // The offset goes in before the floor and is *not* taken back out after it,
+    // and that is the whole trick rather than an oversight. Because the offset
+    // is uniform across plants, the fraction of them that round up at a given
+    // wind strength is exactly the fraction of a step that strength sits above
+    // the threshold — so the field's average lean is the continuous lean, to
+    // the last decimal, while no individual plant is following it. Taking the
+    // offset back out afterwards biases every plant downward by half a step and
+    // costs a quarter of the field's motion.
+    //
+    // Zero survives the round trip, which matters more than the average does:
+    // `floor` of anything under one is zero, so a plant below its stiction
+    // threshold is exactly upright rather than nearly upright.
+    let continuous = smoothstep(STICTION, FULL_LEAN, strength);
+    let pose_offset = hash11(random + 9.7) * POSE_JITTER;
+    let responsive = floor(continuous * POSE_STEPS + pose_offset) / POSE_STEPS;
 
     var direction = vec2<f32>(0.0, 0.0);
     if (strength > 1e-4) {

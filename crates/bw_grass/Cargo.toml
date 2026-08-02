@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Grass simulation and rendering"
+# The suite is one binary made of several modules, and without this Cargo also
+# treats every module file under `benches/` as a bench target in its own right —
+# compiling each one a second time as a crate root, where its `crate::` paths
+# refer to itself and do not resolve.
+autobenches = false
 
 [dependencies]
 bw_core.workspace = true

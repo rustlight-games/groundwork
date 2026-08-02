@@ -30,11 +30,18 @@
 //! blades use, and it is deliberate: the references are painted, and a painted
 //! edge is the single clearest difference between the two looks.
 
+use rayon::prelude::*;
+
 use crate::noise::unit_from_hash;
 use crate::palette;
 
 /// Pixels along each edge of one clump cell.
 pub const CELL: usize = 64;
+
+/// Levels in the atlas's mip chain, counting the full-size one.
+///
+/// See `atlas_image` for why there is a chain at all.
+pub const MIP_LEVELS: usize = 3;
 
 /// Clump variants baked into the atlas.
 ///
@@ -145,6 +152,61 @@ impl Atlas {
         out
     }
 
+    /// A half-size copy, for the mip chain.
+    ///
+    /// Two details make this correct rather than merely smaller.
+    ///
+    /// **Filtered premultiplied.** Averaging straight colour across an edge
+    /// weights a barely-covered pixel as heavily as a solid one, which drags
+    /// the average toward whatever colour happens to sit in the transparent
+    /// gaps. Weighting by coverage and dividing back out afterwards is the
+    /// whole reason premultiplied alpha exists.
+    ///
+    /// **Filtered in linear light.** The stored values are sRGB, and the mean
+    /// of two sRGB numbers is not the sRGB of their mean — averaging them
+    /// directly darkens every edge in the sheet, which at this sprite size is
+    /// most of the sheet.
+    ///
+    /// Block-aligned, so it never mixes one variant's cell into its neighbour's:
+    /// [`CELL`] is a power of two, so every level's cell boundary lands on a
+    /// block boundary.
+    pub fn downsample(&self) -> Atlas {
+        let width = (self.width / 2).max(1);
+        let height = (self.height / 2).max(1);
+        let mut pixels = vec![[0.0f32; 4]; width * height];
+
+        for y in 0..height {
+            for x in 0..width {
+                let mut sum = [0.0f32; 4];
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        let source = self.pixels[(y * 2 + dy) * self.width + x * 2 + dx];
+                        let alpha = source[3];
+                        for channel in 0..3 {
+                            sum[channel] += palette::decode_srgb(source[channel]) * alpha;
+                        }
+                        sum[3] += alpha;
+                    }
+                }
+                let alpha = sum[3] * 0.25;
+                let mut out = [0.0f32; 4];
+                if sum[3] > 1e-6 {
+                    for channel in 0..3 {
+                        out[channel] = palette::encode_srgb(sum[channel] / sum[3]);
+                    }
+                }
+                out[3] = alpha;
+                pixels[y * width + x] = out;
+            }
+        }
+
+        Atlas {
+            width,
+            height,
+            pixels,
+        }
+    }
+
     /// Fraction of the atlas that any leaf covers.
     ///
     /// A clump that fills its cell has nothing to overlap into and reads as a
@@ -210,15 +272,42 @@ pub fn bake(style: &Style, seed: u32) -> Atlas {
         pixels: vec![[0.0; 4]; width * height],
     };
 
-    for variant in 0..VARIANTS {
+    // Each variant is drawn into its own cell-sized buffer and then blitted in.
+    //
+    // Threaded because the bake is 30 milliseconds on the startup path and
+    // forty-eight variants are forty-eight independent drawings; going through
+    // private buffers rather than straight into the sheet is what makes them
+    // *provably* independent to the compiler, and costs one copy of 16 KB per
+    // variant. `stamp` already clamps to the cell, so a variant drawn at the
+    // origin of its own buffer is identical to one drawn at its offset in the
+    // sheet — the atlas is unchanged, byte for byte.
+    let cells: Vec<Atlas> = (0..VARIANTS)
+        .into_par_iter()
+        .map(|variant| {
+            let mut cell = Atlas {
+                width: CELL,
+                height: CELL,
+                pixels: vec![[0.0; 4]; CELL * CELL],
+            };
+            draw_clump(
+                &mut cell,
+                0,
+                0,
+                style,
+                seed ^ (variant as u32).wrapping_mul(0x9E37_79B9),
+            );
+            cell
+        })
+        .collect();
+
+    for (variant, cell) in cells.iter().enumerate() {
         let (x0, y0) = Atlas::cell(variant);
-        draw_clump(
-            &mut atlas,
-            x0,
-            y0,
-            style,
-            seed ^ (variant as u32).wrapping_mul(0x9E37_79B9),
-        );
+        for y in 0..CELL {
+            let source = y * CELL;
+            let target = (y0 + y) * width + x0;
+            atlas.pixels[target..target + CELL]
+                .copy_from_slice(&cell.pixels[source..source + CELL]);
+        }
     }
 
     // Composited premultiplied, stored straight.
@@ -1307,8 +1396,30 @@ impl FromWorld for ClumpAtlas {
 }
 
 fn atlas_image(atlas: &Atlas) -> Image {
+    // The mip chain, and it is not an optimisation — it is the fix for a
+    // visible defect.
+    //
+    // A cell is baked at 64 pixels and a clump is drawn at about 31, so every
+    // screen pixel covers roughly four atlas texels. A linear sampler with no
+    // mips takes *one* bilinear tap out of those four, so which texels a pixel
+    // is made of changes the moment the sprite moves a fraction of a pixel —
+    // and a fraction of a pixel is all a leaning plant ever moves. The result
+    // is a sprite whose interior sparkles while its shape sits still, which is
+    // the other half of what "the grass flickers" meant.
+    //
+    // Three levels is enough to cover the whole size range a clump is drawn at
+    // (roughly 20 to 42 pixels) and stops well before a cell is small enough
+    // for filtering to bleed one variant into the next.
+    let mut levels = vec![atlas.to_rgba8()];
+    let mut current = atlas.downsample();
+    for _ in 1..MIP_LEVELS {
+        levels.push(current.to_rgba8());
+        current = current.downsample();
+    }
+    let data: Vec<u8> = levels.concat();
+
     Image {
-        data: Some(atlas.to_rgba8()),
+        data: Some(data),
         data_order: TextureDataOrder::default(),
         texture_descriptor: TextureDescriptor {
             label: None,
@@ -1317,7 +1428,7 @@ fn atlas_image(atlas: &Atlas) -> Image {
                 height: atlas.height as u32,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
+            mip_level_count: MIP_LEVELS as u32,
             sample_count: 1,
             dimension: TextureDimension::D2,
             // The sprite holds sRGB colour, so the hardware should linearise it
@@ -1329,7 +1440,14 @@ fn atlas_image(atlas: &Atlas) -> Image {
         // Linear, unlike everything else in this crate. A clump's edges are
         // soft by design and nearest sampling would step them back into the
         // hard silhouette baking them was meant to avoid.
-        sampler: ImageSampler::Descriptor(ImageSamplerDescriptor::linear()),
+        sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {
+            mipmap_filter: bevy::image::ImageFilterMode::Linear,
+            // Never coarser than the chain actually holds. Past that the
+            // hardware would clamp anyway, but saying so keeps the intent
+            // visible next to the level count it depends on.
+            lod_max_clamp: (MIP_LEVELS - 1) as f32,
+            ..ImageSamplerDescriptor::linear()
+        }),
         texture_view_descriptor: None,
         asset_usage: RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
         copy_on_resize: false,

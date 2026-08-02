@@ -122,15 +122,72 @@ Ask in this order:
 `score-rocks` is for a generator. It writes `benchmarks/grass.ron` and compares
 against `benchmarks/baseline/grass.ron`.
 
-It measures three things at once, because they trade against each other and any
-one of them alone is misleading.
+It is one binary in several modules, and `autobenches = false` is load-bearing:
+without it Cargo compiles every module file under `benches/` a second time as a
+bench target of its own.
 
-**Performance.** Step cost at three field resolutions, expressed both in
-absolute time and as `frame_share_at_60hz` — the fraction of a frame the field
-consumes. That last one is the number that decides whether a change ships.
+| Module | Section | Answers |
+|---|---|---|
+| `perf.rs` | Performance | What does it cost — per phase, under load, at the margin |
+| `stability.rs` | Stability | Does it move, or does it merely change |
+| `motion.rs` | Motion | Does wind read as wind, contact as contact, a blast as a blast |
+| `atlas.rs` | Style | Does the sprite sheet read as drawn artwork |
+| `texture_match.rs` | Resemblance | How close is a frame to the art target |
+| `mirror.rs` | — | A CPU model of the clump shader's vertex stage |
+| `harness.rs` | — | Sampled timing, standard scenes, signal analysis |
 
-**Physics.** Properties that no correctness test notices going wrong, because
-the grass still moves:
+### The design goal the numbers serve
+
+**Grass is background.** The model is StarCraft's creep: a surface that reacts
+and reads as alive on a budget small enough that the rest of the game never
+notices it. That decides which numbers are headlines:
+
+- `grass.step.*.frame_share` and `grass.pressure.battle.frame_share` are what a
+  change ships or does not ship on.
+- `grass.step.trampled_multiplier` says whether a *battle* is affordable rather
+  than an empty meadow. A quiet field takes the cheap path through every branch;
+  the ratio between quiet and saturated is the honest worst case.
+- `grass.pressure.marginal_unit` is the cost of one more unit in the grass, and
+  `units_within_tenth_frame` turns it into a headroom.
+- Every timing reports a median, a p95 and a **jitter** (p95 over median).
+  Background systems fail by hitching, and a mean hides exactly that.
+
+### Performance is measured per phase
+
+A step is six phases and they are wildly unequal — the solver is six Jacobi
+sweeps over the whole grid and everything else is one pass. Timing only the
+total says the grass got slower and nothing else, so `grass.phase.*` prices each
+one, and `grass.phase.*_share` is usually the more useful form when reading a
+regression.
+
+### Every stability metric is paired with a motion metric
+
+The most important structural rule in the suite. A field that does not move has
+no flicker, no jerk, no chatter and no churn, and would sweep the stability
+section outright. `grass.stability.motion_share`,
+`grass.stability.tip_travel_pixels` and `grass.wind.dynamic_area` are what stop
+that reading as a win.
+
+Flicker is measured as the share of temporal power above **8 Hz**. Grass motion
+the eye reads as motion lives below about 3 Hz; above 8 Hz is at most seven
+frames per cycle, and nothing in a stylised field should oscillate that fast.
+It is measured at four stages, because a flicker can be born in any of them and
+each looks innocent from the others:
+
+| Born in | Looks like | Metric |
+|---|---|---|
+| The wind | Everything shimmering at once | `stability.wind_hf_ratio` |
+| The solver | Cells vibrating against their neighbours | `stability.field_hf_ratio`, `jerk_p95` |
+| The pixel grid | Edges crawling; motion that stutters | `stability.pixel_chatter`, `silhouette_churn` |
+| The sampler | Sparkle inside the sprite | `stability.atlas_minification`, `subpixel_*` |
+
+`grass.stability.rest_drift` is the sharpest of them: with no wind and nothing
+touching it, a settled field must stop.
+
+### Physics
+
+Properties that no correctness test notices going wrong, because the grass still
+moves:
 
 | Metric | Range | Catches |
 |---|---|---|
@@ -142,15 +199,56 @@ the grass still moves:
 | `axis_reinforcement` | 0..1, higher | The unsigned flattening axis failing to survive a path walked both ways |
 | `polar_cancellation` | 0..1, higher | Signed direction memory *not* cancelling when it should |
 | `wind.divergence` | 0, lower | Turbulence with sources and sinks, which sucks grass toward fixed points |
-| `wind.gust_contrast` | 0..1, higher | A single global wind vector, where the whole meadow leans as one sheet |
+| `wind.carpetness` | 0..1, lower | Local and global coherence both high — one rigid sheet, which is how grass ends up reading as water |
 
 `direction_isotropy` and `energy_monotonicity` should both read exactly 1.0.
 They are structural properties, not tuning, so treat any movement as a bug
 rather than as drift.
 
-**Aesthetics.** `placement_spread` catches blades clumping instead of spreading,
-`length_variety` catches a canopy with a mown flat top, and `luminance_spread`
-catches a palette flat enough that the grass reads as one material.
+### Aesthetic metrics are bands, not maxima
+
+Almost nothing in the motion and style sections wants to be maximised, and this
+is the main way aesthetic metrics differ from performance ones. Wind coherence
+at 1.0 is a rigid sheet and at 0.0 is static. Contact spill near zero means a
+person walking through grass disturbs their own footprint and nothing around it.
+Each measurement records the direction of its *nearest* failure and says in a
+comment what the other end looks like.
+
+### Resemblance to the art target
+
+`benchmarks/reference/pixel_grass_target.png` is the art target, and nothing in
+`texture_match.rs` compares pixels by position — the shader generates unbounded
+non-tiling grass, so every metric is a *descriptor* computed identically on both
+images. `grass.match.feature_scale` is the one with no substitute: grass drawn
+at twice the right size satisfies every value and frequency statistic in the
+file and looks obviously wrong beside the plate.
+
+This section needs a screenshot and skips itself with instructions when there is
+not one:
+
+```sh
+BW_CAPTURE=$PWD/benchmarks/capture/grass.png BW_CAPTURE_AFTER=3 \
+  cargo run --release -p bw_grass --example grass_sandbox
+```
+
+Everything else runs without a GPU. That is deliberate: a suite that needs a
+window does not run in CI, on a headless box, or twice in the same minute.
+
+### Tolerances
+
+The suite splits its baseline comparison three ways, because the families are
+not noisy in the same way:
+
+- **Performance** — 15%. A timing on a laptop under thermal load moves ten
+  percent between runs of identical code.
+- **Aesthetic** — 10%.
+- **Structural** — 0%. `direction_isotropy`, `energy_monotonicity`,
+  `root_pinning`, `palette.monotonicity`, `wind.divergence` and
+  `atlas.off_palette_share` do not drift. When they move, it is a bug.
+
+The run also prints how many measurements were *new* and therefore not compared,
+because a run where most of the suite is new has a "no regressions" line that
+means much less than it looks like.
 
 ## Current state
 

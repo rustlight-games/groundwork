@@ -322,24 +322,16 @@ pub fn upload_field(
         return;
     }
 
-    let theta = field.theta();
-    let axis = field.axis();
     if let Some(mut image) = images.get_mut(&textures.bend)
         && let Some(data) = image.data.as_mut()
     {
-        let texels: &mut [f32] = bytemuck::cast_slice_mut(data);
-        for (index, texel) in texels.chunks_exact_mut(4).enumerate() {
-            texel[0] = theta[index].x;
-            texel[1] = theta[index].y;
-            texel[2] = axis[index].x;
-            texel[3] = axis[index].y;
-        }
+        field.pack_bend(bytemuck::cast_slice_mut(data));
     }
 
     if let Some(mut image) = images.get_mut(&textures.state)
         && let Some(data) = image.data.as_mut()
     {
-        bytemuck::cast_slice_mut::<u8, f32>(data).copy_from_slice(field.compaction());
+        field.pack_state(bytemuck::cast_slice_mut::<u8, f32>(data));
     }
 
     let extent = field.extent().max(1e-3);
