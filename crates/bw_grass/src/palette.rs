@@ -118,9 +118,9 @@ pub const DRY: usize = 3;
 /// obviously wrong beside the reference, because the sky and fill multiply
 /// whatever blue the albedo offers them straight back up.
 const ALBEDO: [Vec3; RAMPS] = [
-    Vec3::new(0.062, 0.132, 0.012), // shadow: cooler, bluer leaf
-    Vec3::new(0.098, 0.174, 0.007), // body
-    Vec3::new(0.168, 0.228, 0.005), // highlight: yellower leaf
+    Vec3::new(0.050, 0.130, 0.022), // shadow: cooler, bluer leaf
+    Vec3::new(0.078, 0.172, 0.018), // body
+    Vec3::new(0.128, 0.224, 0.015), // highlight: yellower leaf
     Vec3::new(0.150, 0.128, 0.052), // dry: straw
 ];
 
@@ -136,7 +136,7 @@ const ALBEDO: [Vec3; RAMPS] = [
 /// was a field with the right *average* brightness and a third of the target's
 /// range — which is exactly what "flat" looks like when you take it apart.
 /// Brightness is not the problem a flat image has. Reach is.
-const EXPOSURE: f32 = 0.42;
+const EXPOSURE: f32 = 0.37;
 
 /// Sky reaching the deepest step of a ramp. Shared with the shader.
 const OCCLUSION_FLOOR: f32 = light::CANOPY_FLOOR;
@@ -153,13 +153,19 @@ const RIM_WASH: f32 = 0.07;
 
 /// Extra saturation applied after the bake.
 ///
+/// Backed off from where the resemblance metric wanted it. Chasing the plate's
+/// channel ratios drove this high enough that the greens went acidic — a
+/// perfectly defensible number producing a colour nobody wants to look at for
+/// an hour. The metric measures a still frame; a game is played in motion and
+/// at length, and vivid reads as tiring long before it reads as wrong.
+///
 /// The rig's fill and sky are broad-spectrum, so a physically summed result
 /// drifts toward grey — correct, and not what stylised game art looks like.
 /// Pulling saturation back up is the same call as rendering the character
 /// sprites through Blender's Standard view transform instead of AgX, and for
 /// the same reason: AgX desaturates highlights in a way that flatters
 /// photographs and washes out costume golds and foliage greens.
-const SATURATION: f32 = 1.29;
+const SATURATION: f32 = 1.12;
 
 /// The baked palette, `[ramp][step]` with the darkest step first.
 static PALETTE: LazyLock<[[[u8; 3]; RAMP_STEPS]; RAMPS]> = LazyLock::new(bake);
