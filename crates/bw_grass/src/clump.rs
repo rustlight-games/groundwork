@@ -85,13 +85,13 @@ pub struct Style {
 impl Default for Style {
     fn default() -> Self {
         Self {
-            leaves: (16, 30),
+            leaves: (95, 160),
             length: (0.38, 0.95),
-            width: (1.2, 2.4),
+            width: (0.75, 1.55),
             fan: 0.62,
             curve: (0.15, 0.85),
-            root_shade: 0.18,
-            tip_shade: 0.96,
+            root_shade: 0.02,
+            tip_shade: 0.44,
             softness: 0.9,
             sway: 0.35,
         }
