@@ -72,6 +72,25 @@ pub struct Style {
     pub root_shade: f32,
     /// Ramp step a leaf tip reaches.
     pub tip_shade: f32,
+    /// Exponent shaping how a leaf travels from [`Style::root_shade`] to
+    /// [`Style::tip_shade`].
+    ///
+    /// One is linear. Above one the leaf stays dark for most of its length and
+    /// brightens late, which is both what a shaded canopy does and what the art
+    /// target's share column asks for — its three darkest greens are 39% of the
+    /// reference and its brightest is 2%. A linear sweep cannot produce that
+    /// distribution from any pair of endpoints, because it spends equal length
+    /// on every tone by construction.
+    pub shade_curve: f32,
+    /// Fraction of leaves drawn on the shadow ramp.
+    pub shadow_share: f32,
+    /// Fraction of leaves drawn on the highlight ramp.
+    ///
+    /// The rest take the body ramp. Together with [`Style::shade_curve`] these
+    /// are what [`crate::palette::tone_divergence`] is fitted against — the
+    /// palette settles which greens exist, this settles how much of each is
+    /// seen, and the two are entirely independent.
+    pub highlight_share: f32,
     /// Softness of a leaf edge, in pixels.
     ///
     /// The painterly half of the look. At zero the sprite is hard-edged and
@@ -90,15 +109,18 @@ impl Default for Style {
             width: (0.75, 1.55),
             fan: 0.62,
             curve: (0.15, 0.85),
-            root_shade: 0.14,
-            tip_shade: 0.84,
+            root_shade: 0.0,
+            tip_shade: 0.70,
+            shade_curve: 2.60,
+            shadow_share: 0.579,
+            highlight_share: 0.220,
             softness: 0.9,
             sway: 0.35,
         }
     }
 }
 
-/// A baked sheet of clump sprites, RGBA, premultiplied by coverage.
+/// A baked sheet of clump sprites, RGBA with straight (un-premultiplied) alpha.
 pub struct Atlas {
     pub width: usize,
     pub height: usize,
@@ -132,6 +154,47 @@ impl Atlas {
         let covered = self.pixels.iter().filter(|p| p[3] > 0.02).count();
         covered as f32 / self.pixels.len().max(1) as f32
     }
+
+    /// Share of the sprite's visible pixels falling in each of the art target's
+    /// ten tones, darkest first.
+    ///
+    /// This is the other half of matching a reference palette, and the half that
+    /// is easy to skip. [`crate::palette`] settles what colours exist; this
+    /// settles *how much of each one you see*, and the two are independent — a
+    /// palette can sit exactly on the target and still produce an image that
+    /// reads far too bright, because the shading spends most of its pixels at
+    /// the top of the ramp. The reference is 39% dark greens and 2% brightest
+    /// highlight, and nothing in the palette bake knows that.
+    ///
+    /// Measured on pixels above [`ALPHA_CUT`], because that is the silhouette
+    /// the fragment shader actually keeps; the soft rim below it is discarded
+    /// and counting it would score tones that never reach the screen.
+    ///
+    /// Two things it deliberately does not account for. Overlap between clumps
+    /// on screen resolves per fragment against the depth buffer, so which sprite
+    /// wins is placement, not shading — and one clump's tone distribution is the
+    /// same whichever clump is behind it. Per-clump tint darkens by up to a
+    /// seventh, which shifts the whole distribution down by roughly one bucket's
+    /// width; that is a bias, not noise, and the tolerance carries it.
+    pub fn tone_shares(&self) -> [f32; palette::TARGET_TONES] {
+        let mut counts = [0.0f32; palette::TARGET_TONES];
+        let mut total = 0.0f32;
+        for pixel in &self.pixels {
+            let alpha = pixel[3];
+            if alpha < ALPHA_CUT {
+                continue;
+            }
+            let luma = 0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2];
+            counts[palette::target_tone(luma)] += 1.0;
+            total += 1.0;
+        }
+        if total > 0.0 {
+            for count in &mut counts {
+                *count /= total;
+            }
+        }
+        counts
+    }
 }
 
 /// Bake the atlas.
@@ -156,6 +219,31 @@ pub fn bake(style: &Style, seed: u32) -> Atlas {
             style,
             seed ^ (variant as u32).wrapping_mul(0x9E37_79B9),
         );
+    }
+
+    // Composited premultiplied, stored straight.
+    //
+    // [`stamp`] has to accumulate premultiplied — that is what makes "a later
+    // leaf covers an earlier one" a running weighted sum rather than a stack of
+    // blends. But the texture this becomes is `Rgba8UnormSrgb` and is read by a
+    // shader that alpha-*clips*: it uses the alpha to decide whether the
+    // fragment exists and then writes the colour opaquely, never dividing it
+    // back out.
+    //
+    // Leaving it premultiplied is therefore not a slightly-wrong blend, it is a
+    // fragment drawn at `alpha` times its own brightness — and because the store
+    // is sRGB the hardware linearises the *product*, which makes it `alpha^2.2`
+    // in linear light. A fringe pixel at the clip threshold came out six times
+    // too dark. With leaves under two pixels wide and nearly a pixel of edge
+    // softness, most of a sprite is fringe, so the whole field was dragged dark
+    // and grainy and lost its highlights entirely.
+    for pixel in &mut atlas.pixels {
+        if pixel[3] > 1e-4 {
+            let inverse = 1.0 / pixel[3];
+            pixel[0] *= inverse;
+            pixel[1] *= inverse;
+            pixel[2] *= inverse;
+        }
     }
     atlas
 }
@@ -243,9 +331,9 @@ fn draw_leaf(atlas: &mut Atlas, x0: usize, y0: usize, leaf: &Leaf, style: &Style
     // Which ramp this leaf sits on. Mostly the body; a minority run light or
     // dark, which is what stops a clump reading as one flat colour.
     let pick = unit_from_hash(hash.wrapping_mul(0x7feb_352d));
-    let ramp = if pick < 0.22 {
+    let ramp = if pick < style.shadow_share {
         palette::SHADOW
-    } else if pick > 0.74 {
+    } else if pick > 1.0 - style.highlight_share {
         palette::HIGHLIGHT
     } else {
         palette::BODY
@@ -270,7 +358,7 @@ fn draw_leaf(atlas: &mut Atlas, x0: usize, y0: usize, leaf: &Leaf, style: &Style
             continue;
         }
 
-        let shade = lerp(style.root_shade, style.tip_shade, t);
+        let shade = lerp(style.root_shade, style.tip_shade, t.powf(style.shade_curve));
         let step_index =
             ((shade * palette::RAMP_STEPS as f32) as usize).min(palette::RAMP_STEPS - 1);
         let [r, g, b] = palette::channels(ramp, step_index);
@@ -377,6 +465,201 @@ mod tests {
         .expect("the atlas must be writable");
         println!("wrote {path}");
         println!("coverage {:.3}", atlas.coverage());
+        println!();
+        let shares = atlas.tone_shares();
+        println!("      tone     ours   target");
+        for (index, (colour, target)) in palette::TARGET.iter().enumerate() {
+            let [r, g, b] = colour;
+            println!(
+                "  #{r:02x}{g:02x}{b:02x}   {:6.1}%  {:6.1}%",
+                shares[index] * 100.0,
+                target * 100.0
+            );
+        }
+        println!("  divergence {:.3}", palette::tone_divergence(&shares));
+    }
+
+    /// `cargo test -p bw_grass --lib -- --ignored --nocapture fit_the_tones`
+    ///
+    /// Searches the shading half of [`Style`] against the art target's share
+    /// column and prints the result, which is then pasted into
+    /// [`Style::default`]. The colour half of the same job lives in
+    /// `palette::tests::fit_to_the_target`; this is the half that decides how
+    /// much of each colour is actually seen.
+    ///
+    /// Only the five shading knobs move. Leaf count, length, width, fan, curve
+    /// and softness are silhouette, and a search allowed to touch them would
+    /// happily reach the right histogram by growing spindlier plants — the
+    /// distribution is a proxy for the look, and a proxy optimised against
+    /// directly stops being one.
+    #[test]
+    #[ignore = "searches the clump shading against the art target"]
+    fn fit_the_tones() {
+        let write = |v: &[f32]| Style {
+            root_shade: v[0],
+            tip_shade: v[1],
+            shade_curve: v[2],
+            shadow_share: v[3],
+            highlight_share: v[4],
+            ..Style::default()
+        };
+        let bound = |index: usize| match index {
+            0 | 1 => (0.0f32, 1.0f32),
+            2 => (0.4, 4.0),
+            _ => (0.0, 0.85),
+        };
+        let scale = |index: usize| match index {
+            2 => 0.08,
+            _ => 0.02,
+        };
+        let loss = |v: &[f32]| {
+            // A tip darker than the root is not a shading choice, it is a bug.
+            if v[1] <= v[0] {
+                return f32::MAX;
+            }
+            // The body ramp keeps a fifth of the leaves. Left free the search
+            // takes it to nothing — the palette's three living ramps all lie on
+            // the target's single curve and differ mainly in *range*, so the
+            // widest-reaching pair can always cover the histogram on their own.
+            // That scores better and looks worse: within one clump the ramps are
+            // the only hue variation there is, and two of them is a plant made
+            // of a dark green and a light green with nothing in between.
+            if v[3] + v[4] > 0.80 {
+                return f32::MAX;
+            }
+            // Averaged over seeds, like every other measurement here. One seed's
+            // atlas is 48 clumps and its histogram wobbles by a percent or two.
+            let mut total = 0.0;
+            for seed in [0x6A72_A551u32, 0x0000_0001, 0x5EED_1234] {
+                let shares = bake(&write(v), seed).tone_shares();
+                total += palette::tone_divergence(&shares);
+            }
+            total / 3.0
+        };
+
+        let style = Style::default();
+        let mut best = vec![
+            style.root_shade,
+            style.tip_shade,
+            style.shade_curve,
+            style.shadow_share,
+            style.highlight_share,
+        ];
+        let mut best_loss = loss(&best);
+        let start = best_loss;
+        let mut step = 1.0f32;
+        while step > 0.05 {
+            let mut improved = false;
+            for index in 0..best.len() {
+                for direction in [1.0f32, -1.0] {
+                    let (low, high) = bound(index);
+                    let mut candidate = best.clone();
+                    candidate[index] =
+                        (candidate[index] + direction * step * scale(index)).clamp(low, high);
+                    let value = loss(&candidate);
+                    if value < best_loss - 1e-5 {
+                        best = candidate;
+                        best_loss = value;
+                        improved = true;
+                    }
+                }
+            }
+            if !improved {
+                step *= 0.5;
+            }
+        }
+
+        println!("divergence {start:.3} -> {best_loss:.3}");
+        println!("            root_shade: {:.3},", best[0]);
+        println!("            tip_shade: {:.3},", best[1]);
+        println!("            shade_curve: {:.3},", best[2]);
+        println!("            shadow_share: {:.3},", best[3]);
+        println!("            highlight_share: {:.3},", best[4]);
+    }
+
+    #[test]
+    fn the_atlas_tones_match_the_art_target() {
+        // The guard on the fit above. It is loose against the fitted 0.16
+        // because two things sit between this atlas and the screen — per-clump
+        // tint darkens by up to a seventh, and the ground wash fills the gaps —
+        // so being exactly on the target here is not the goal. What it catches
+        // is the failure the eye is worst at: a shading change that quietly
+        // moves the whole field a shade brighter or a shade darker while every
+        // colour in it stays perfectly on palette.
+        for seed in [0x6A72_A551u32, 0x0000_0001, 0x5EED_1234] {
+            let shares = bake(&Style::default(), seed).tone_shares();
+            let divergence = palette::tone_divergence(&shares);
+            assert!(
+                divergence < 0.25,
+                "seed {seed:#x} is off the target's tone distribution: {divergence:.3} {shares:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_clump_shading_reaches_the_dark_end_of_the_target() {
+        // Called out separately because it is a *reachability* failure, not a
+        // distribution one, and total variation is a poor detector of it: an
+        // atlas that never produces the target's two darkest greens at all was
+        // only scoring 0.24 on divergence while missing a quarter of the
+        // reference outright. That was the state before `root_shade` came down
+        // to zero — every leaf started two steps up its ramp, so the darkest
+        // pixel in the whole sheet was the target's *third* tone.
+        let shares = bake(&Style::default(), 0x6A72_A551).tone_shares();
+        assert!(
+            shares[0] > 0.02 && shares[1] > 0.04,
+            "the canopy has no deep shade in it: {shares:?}"
+        );
+    }
+
+    #[test]
+    fn the_ramp_shares_leave_room_for_the_body_ramp() {
+        // The two shares are thresholds on one value and `draw_leaf` tests them
+        // in order, so a pair that sums past one does not fail — it silently
+        // starves the ramp in between. The fit found exactly that and scored
+        // well on it.
+        let style = Style::default();
+        assert!(
+            style.shadow_share + style.highlight_share < 0.9,
+            "the body ramp has been squeezed out"
+        );
+    }
+
+    #[test]
+    fn the_atlas_stores_straight_alpha() {
+        // The sprite is composited premultiplied and stored straight, and the
+        // shader alpha-*clips* rather than blending — it reads the colour and
+        // writes it opaquely, so a premultiplied store is drawn at `alpha` times
+        // its own brightness. Worse, the texture is sRGB, so the hardware
+        // linearises the product and the error compounds to `alpha^2.2`.
+        //
+        // It is invisible in every other measurement. Coverage, silhouette,
+        // determinism and the tone histogram are all computed from this module's
+        // own buffer, where the two conventions are one divide apart; only the
+        // GPU ever saw the difference, as a field dragged dark and grainy with
+        // its highlights gone.
+        //
+        // So: a half-covered pixel must be about as bright as a fully covered
+        // one. Not identical — fringes sit on leaf edges and edges skew a little
+        // darker for real reasons — but nowhere near half.
+        let atlas = bake(&Style::default(), 0x6A72_A551);
+        let mean = |low: f32, high: f32| {
+            let mut total = 0.0f32;
+            let mut count = 0.0f32;
+            for pixel in &atlas.pixels {
+                if pixel[3] >= low && pixel[3] < high {
+                    total += 0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2];
+                    count += 1.0;
+                }
+            }
+            total / count.max(1.0)
+        };
+        let fringe = mean(ALPHA_CUT, 0.60);
+        let core = mean(0.95, 1.01);
+        assert!(
+            fringe > core * 0.75,
+            "the atlas is still premultiplied: fringe {fringe:.3} against core {core:.3}"
+        );
     }
 
     #[test]
@@ -560,13 +843,20 @@ use crate::noise::{fbm, hash_2d};
 /// for the silhouette.
 pub const PER_SQUARE_METRE: f32 = 15.0;
 
-/// World size of a clump sprite, shortest to tallest, in metres.
+/// World height of a clump sprite, shortest to tallest, in metres.
 ///
-/// Seventeen to thirty-six pixels at the battle camera's thirty-four pixels to
+/// Fourteen to twenty-nine pixels at the battle camera's thirty-four pixels to
 /// the metre. Large enough that a clump is a legible plant, small enough that a
 /// screenful is a field of them rather than a dozen shrubs — at twice this they
 /// read as bushes and the ground stops having a scale.
-pub const SIZE: (f32, f32) = (0.60, 1.30);
+///
+/// The tall end came down from 1.30. A clump that stands a metre and a third is
+/// waist-high on a unit, and grass that reaches a soldier's waist is a set
+/// dressing the battle has to be read *through* rather than fought on. It also
+/// stacks: sprites this tall reach far up the screen from roots well behind the
+/// pixel they cover, so the canopy piles into a wall on the far side of the
+/// field rather than a surface.
+pub const SIZE: (f32, f32) = (0.48, 1.02);
 
 /// Metres per cycle of the field that varies clump size and tint.
 pub const VARIATION_METRES: f32 = 9.0;
@@ -651,6 +941,25 @@ impl Batch {
     /// One world height per clump, in metres.
     pub fn heights(&self) -> impl Iterator<Item = f32> + '_ {
         self.shapes.iter().step_by(4).map(|s| s[1])
+    }
+
+    /// One `(width, height, tint, random)` per clump, exactly as the vertex
+    /// shader receives it.
+    ///
+    /// `random` is the interesting one: it seeds the per-clump stiffness, which
+    /// is what decides how much of the field's bend a plant takes. Any analysis
+    /// that wants to reproduce what a clump will *do* — as opposed to where it
+    /// sits — needs it.
+    pub fn shapes(&self) -> impl Iterator<Item = [f32; 4]> + '_ {
+        self.shapes.iter().copied().step_by(4)
+    }
+
+    /// One `(column, row)` atlas cell per clump.
+    pub fn cells(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.corners
+            .iter()
+            .step_by(4)
+            .map(|c| (c[2] as usize, c[3] as usize))
     }
 
     pub fn into_mesh(self) -> Mesh {
@@ -742,6 +1051,12 @@ pub fn build_chunk(field: &GrassField, chunk: IVec2, detail: f32, seed: u32) -> 
             );
             let a = unit(hash.wrapping_mul(0xc2b2_ae35));
             let height = lerp(SIZE.0, SIZE.1, (a * 0.55 + drift * 0.45).clamp(0.0, 1.0));
+            // Held at the atlas cell's own proportions rather than widened to
+            // recover the footprint [`SIZE`] gave up. Widening was tried and is
+            // a trap: the cell is square and holds an upright plant, so a wider,
+            // shorter quad does not draw a squatter tuft, it draws the same tuft
+            // smeared sideways. A screenful of those is a fine even noise with
+            // no plants in it at all.
             let width = height * lerp(0.95, 1.35, unit(hash.wrapping_mul(0x27d4_eb2f)));
 
             let variant = (hash.wrapping_mul(0x1656_67b1) as usize) % VARIANTS;
@@ -873,6 +1188,20 @@ pub struct ClumpSettings {
     /// How far tint shifts a clump's colour.
     pub tint_strength: f32,
     /// Shade multiplier at the darkest tint.
+    ///
+    /// This pair is the field's only source of *large-scale* tone. Everything
+    /// else varies within a sprite, and a sprite is thirty pixels: shade one
+    /// leaf differently from its neighbour and the difference is gone by the
+    /// time it reaches the eye. What survives at viewing distance is whole
+    /// clumps disagreeing with each other.
+    ///
+    /// Together they currently put every clump within eight percent of every
+    /// other, and that is measurably too narrow: scored against the art target's
+    /// share column with `palette::tests::score_the_capture`, the rendered field
+    /// spans 1.33 tones against the target's 2.41. Right average brightness, in
+    /// a band half as wide as it should be. Widening it is the obvious next
+    /// move and is deliberately not made here — it is a visible change to the
+    /// look, and this pass was colour.
     pub tint_floor: f32,
     /// Exponent on how far up a sprite the lean is applied.
     ///
