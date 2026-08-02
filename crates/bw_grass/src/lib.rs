@@ -52,6 +52,7 @@
 
 pub mod blade;
 pub mod chunk;
+pub mod clump;
 pub mod density;
 pub mod disturbance;
 pub mod field;
