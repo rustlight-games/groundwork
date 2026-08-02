@@ -640,10 +640,19 @@ fn impact(report: &mut Report) {
     // How fast the disturbance travels, against the speed the wave was given.
     // Slower means the field is lagging the front and the ring reads as soft.
     let expansion = {
-        let from = (0.15 / SIM_STEP) as usize;
-        let to = (0.9 / SIM_STEP) as usize;
-        if to < centroid.len() && centroid[to] > centroid[from] {
-            ((centroid[to] - centroid[from]) / ((to - from) as f32 * SIM_STEP)) as f64
+        // The window is taken from the blast's own lifetime rather than being
+        // fixed in seconds, which it was — and that broke the moment the blast
+        // was retuned from a slow travelling ring into a fast one. The old
+        // window ran from 0.15 s to 0.9 s, and a front that crosses its whole
+        // radius in 0.16 s has finished expanding before the window opens, so
+        // the metric reported a front speed of exactly zero for a blast that
+        // had got *six times faster*. A measurement that reads zero when the
+        // thing it measures goes up is worse than no measurement.
+        let life = (wave.max_radius / wave.speed.max(1e-3)) as f64;
+        let from = ((life * 0.15) / SIM_STEP as f64) as usize;
+        let to = ((life * 0.85) / SIM_STEP as f64) as usize;
+        if to > from && to < centroid.len() && centroid[to] > centroid[from] {
+            ((centroid[to] - centroid[from]) as f64 / ((to - from) as f64 * SIM_STEP as f64))
         } else {
             0.0
         }
@@ -692,6 +701,32 @@ fn impact(report: &mut Report) {
     section.count(
         "grass.impact.field_peak_energy",
         energy.iter().cloned().fold(0.0f32, f32::max) as f64,
+        true,
+    );
+
+    // The crater, which is most of what a player sees.
+    //
+    // A blast arrives in two frames and is gone in ten, which is far too fast
+    // to read as anything but a flash. What actually says "something went off
+    // here" is the patch of laid-over grass it leaves and the second or so it
+    // takes to stand back up — so the mark is a first-class measurement, not an
+    // afterthought to the kick.
+    let mut crater = Vec::new();
+    let mut cells = 0.0f64;
+    let mut total = 0.0f64;
+    for y in 0..field.resolution() {
+        for x in 0..field.resolution() {
+            if (field.cell_center(x, y) - wave.origin).length() <= wave.max_radius {
+                total += field.compaction()[y * field.resolution() + x] as f64;
+                cells += 1.0;
+            }
+        }
+    }
+    crater.push(total / cells.max(1.0));
+    section.count("grass.impact.crater_compaction", crater[0], true);
+    section.count(
+        "grass.impact.crater_axis",
+        field.axis_at(wave.origin + Vec2::new(2.0, 0.0)).length() as f64,
         true,
     );
 

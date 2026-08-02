@@ -40,8 +40,6 @@ pub const STIFFNESS_MIN: f32 = 0.30;
 pub const STIFFNESS_MAX: f32 = 1.70;
 pub const STICTION: f32 = 0.16;
 pub const FULL_LEAN: f32 = 0.62;
-pub const POSE_STEPS: f32 = 5.0;
-pub const POSE_JITTER: f32 = 1.0;
 pub const ALPHA_CUT: f32 = 0.45;
 
 /// A clump as the vertex shader sees it.
@@ -61,13 +59,11 @@ pub struct Placement {
     /// Screen position of the top-centre of the sprite — the part that leans,
     /// and therefore the part whose motion a viewer actually reads.
     pub tip: Vec2,
-    /// Isometric depth halfway up the sprite.
+    /// Isometric depth of the plant's root.
     ///
-    /// Halfway rather than at the tip because depth is interpolated across the
-    /// quad and what decides which of two overlapping plants wins is the depth
-    /// where they overlap — which is their middles, not their extremes. Taking
-    /// it at the tip would report pops that the depth buffer never sees, and
-    /// miss the ones it does.
+    /// The whole quad sits at this one depth — see the shader. It cannot change
+    /// while the grass moves, which is the entire point, so `depth_pop_rate`
+    /// measuring zero is a structural fact rather than a lucky reading.
     pub depth: f32,
     /// Height of the drawn silhouette, in screen units.
     pub silhouette: f32,
@@ -120,9 +116,7 @@ pub fn response(clump: &Clump, field: &GrassField, settings: &Settings) -> (Vec2
     let bend = field.bend_at(clump.root);
     let strength = (bend.length() / settings.max_angle.max(1e-4)).clamp(0.0, 1.0);
     let stiffness = STIFFNESS_MIN + (STIFFNESS_MAX - STIFFNESS_MIN) * hash11(clump.random + 4.1);
-    let continuous = smoothstep(STICTION, FULL_LEAN, strength);
-    let pose_offset = hash11(clump.random + 9.7) * POSE_JITTER;
-    let responsive = (continuous * POSE_STEPS + pose_offset).floor() / POSE_STEPS;
+    let responsive = smoothstep(STICTION, FULL_LEAN, strength);
     let direction = if strength > 1e-4 {
         bend.normalize()
     } else {
@@ -146,22 +140,12 @@ pub fn place(clump: &Clump, field: &GrassField, settings: &Settings) -> Placemen
     );
     let base = Vec3::new(clump.root.x, clump.root.y, 0.0);
 
-    // Halfway up, where the height weighting bites. `pow(0.5, root_stiffness)`
-    // is well under a half at the shipped exponent, which is the whole point of
-    // the exponent: almost none of the lean belongs in the bottom third.
-    let middle_weight = 0.5f32.powf(settings.root_stiffness);
-    let middle = Vec3::new(
-        clump.root.x + lean.x * middle_weight,
-        clump.root.y + lean.y * middle_weight,
-        0.5 * clump.height * squash,
-    );
-
     let tip = iso::project(top);
     let root = iso::project(base);
     Placement {
         root,
         tip,
-        depth: iso::depth(middle),
+        depth: iso::depth(base),
         silhouette: tip.y - root.y,
     }
 }
@@ -203,8 +187,6 @@ pub fn assert_matches_shader(source: &str) {
         ("STIFFNESS_MAX", STIFFNESS_MAX),
         ("STICTION", STICTION),
         ("FULL_LEAN", FULL_LEAN),
-        ("POSE_STEPS", POSE_STEPS),
-        ("POSE_JITTER", POSE_JITTER),
         ("ALPHA_CUT", ALPHA_CUT),
     ] {
         let marker = format!("const {name}: f32 = ");

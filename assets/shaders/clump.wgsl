@@ -76,32 +76,25 @@ const STICTION: f32 = 0.16;
 // the curve does not move either way, so a calm patch stays exactly as still.
 const FULL_LEAN: f32 = 0.62;
 
-// Distinct lean amounts a plant can hold.
+// There is no pose quantiser here, and there was one briefly.
 //
-// The pixel-art half of the motion, and the reason it is here rather than in a
-// post-process: on a canvas this size a plant's tip travels one or two pixels
-// across a whole gust, so a *continuously* sliding lean spends most of its time
-// hovering on a pixel boundary and dithering across it. That reads as a pixel
-// vibrating, which is the most visible defect this renderer can produce and is
-// what "the grass flickers" turned out to mean.
+// The idea was to snap the lean to five levels with a per-plant offset, on the
+// reasoning that a tip travelling a pixel or two across a whole gust spends its
+// time hovering on a pixel boundary and dithering across it, and that a hold
+// and a step is how hand-drawn animation moves anyway.
 //
-// Snapping the lean to a few levels replaces the dither with a hold and a step,
-// which is how hand-drawn animation moves anyway. Measured: it cut the rate of
-// immediately-reversed pixel steps by an order of magnitude.
-const POSE_STEPS: f32 = 5.0;
-
-// How far a plant's snapping points are offset from its neighbours', at most.
+// It looked awful, and the reason is worth keeping. Quantising a value that is
+// *drifting* does not replace a dither with a step — it replaces a sub-pixel
+// dither with a whole-step one. A plant whose wind strength sits near a
+// threshold flips a third of a pixel back and forth every frame, and that is
+// far more visible than the sub-pixel drift it was meant to cure. Stepped
+// animation only reads as stepped animation if the steps are *held*, and
+// holding needs hysteresis, which needs per-plant state across frames, which a
+// vertex shader does not have.
 //
-// Without this every clump in a gust crosses its thresholds on the same frame
-// and the whole field steps together — one surface moving, which is the water
-// the stiction threshold exists to avoid. The offset is per plant and fixed, so
-// neighbours change pose on different frames.
-//
-// Per-clump *stiffness* cannot do this job, which is worth stating because it
-// looks as though it should: stiffness scales a clump's response, and scaling
-// leaves two signals perfectly correlated. Only a difference in *timing*
-// decorrelates them.
-const POSE_JITTER: f32 = 1.0;
+// It also cost nothing to run and saved nothing, so it was a pure loss. If
+// stepped motion is wanted, the way in is baked pose sprites with the hold
+// baked into them, not a `floor` in here.
 
 // Coverage below which a fragment is thrown away. Mirrored from clump.rs.
 //
@@ -211,24 +204,7 @@ fn vertex(vertex: Vertex) -> ClumpOutput {
     // simply does not move — stems are stiff and there is friction in the
     // canopy, and without a threshold every clump answers every ripple in the
     // field, which is exactly what a liquid does.
-    // Snapped to a pose rather than followed continuously, with each plant's
-    // thresholds offset from its neighbours'.
-    //
-    // The offset goes in before the floor and is *not* taken back out after it,
-    // and that is the whole trick rather than an oversight. Because the offset
-    // is uniform across plants, the fraction of them that round up at a given
-    // wind strength is exactly the fraction of a step that strength sits above
-    // the threshold — so the field's average lean is the continuous lean, to
-    // the last decimal, while no individual plant is following it. Taking the
-    // offset back out afterwards biases every plant downward by half a step and
-    // costs a quarter of the field's motion.
-    //
-    // Zero survives the round trip, which matters more than the average does:
-    // `floor` of anything under one is zero, so a plant below its stiction
-    // threshold is exactly upright rather than nearly upright.
-    let continuous = smoothstep(STICTION, FULL_LEAN, strength);
-    let pose_offset = hash11(random + 9.7) * POSE_JITTER;
-    let responsive = floor(continuous * POSE_STEPS + pose_offset) / POSE_STEPS;
+    let responsive = smoothstep(STICTION, FULL_LEAN, strength);
 
     var direction = vec2<f32>(0.0, 0.0);
     if (strength > 1e-4) {
@@ -264,7 +240,25 @@ fn vertex(vertex: Vertex) -> ClumpOutput {
     // Widen across the screen's horizontal, so a sprite always faces the
     // camera squarely however the ground beneath it runs.
     let screen = project(world) + vec2<f32>(across * width * 0.5, 0.0);
-    let local = vec4<f32>(screen, iso_depth(world), 1.0);
+
+    // Depth comes from where the plant is *rooted*, not from where this vertex
+    // ended up. One number for the whole quad, and the same number every frame.
+    //
+    // It used to be `iso_depth(world)`, which is the leaned, squashed vertex
+    // position, and that is wrong in two ways at once. Along the ground, the
+    // lean shifts a clump's depth as it bends, so a plant leaning toward the
+    // camera can overtake the one in front of it. Up the sprite, `world.z`
+    // makes a clump's top nearer than its base, so two overlapping plants
+    // interleave — the near one's roots losing to the far one's tips. Both are
+    // depths that *change while the grass moves*, which is why the field kept
+    // reshuffling which plant was in front during a gust.
+    //
+    // A grass plant does not move. Its leaves lean over; the plant stays where
+    // it grew, and that is the only thing sort order should depend on. Pinning
+    // depth to the root makes the ordering a property of the field's layout
+    // rather than of the weather, so it is fixed for as long as the chunk is.
+    let planted = vec3<f32>(vertex.root, 0.0);
+    let local = vec4<f32>(screen, iso_depth(planted), 1.0);
 
     var out: ClumpOutput;
     let world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);

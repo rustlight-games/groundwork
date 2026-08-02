@@ -108,6 +108,24 @@ pub struct Shockwave {
     pub speed: f32,
     /// Standard deviation of the front, in metres.
     pub width: f32,
+    /// How long a patch stays pushed outward after the front reaches it, in
+    /// seconds.
+    ///
+    /// The beat that makes a blast an animation rather than an event. Without
+    /// it every cell is kicked once by a passing ring and springs back on its
+    /// own, so the whole thing is over in the time the front takes to cross and
+    /// there is nothing to watch. Holding the grass down behind the front and
+    /// releasing it gives the three beats a stylised impact wants: it goes out,
+    /// it stays out, it comes back — and because the hold is measured from when
+    /// the front *arrived*, the recovery sweeps outward from the centre in the
+    /// same order the blast did.
+    ///
+    /// Long relative to the front's crossing time, and deliberately asymmetric:
+    /// a blast should go out fast and come back slowly. The front clears its
+    /// radius in a quarter of a second and the pressure takes about a second to
+    /// bleed off, so the grass snaps outward and then rises rather than popping
+    /// back into place.
+    pub hold: f32,
     /// Peak angular kick at the front.
     pub strength: f32,
     /// Where the ring gives out, in metres.
@@ -119,8 +137,34 @@ pub struct Shockwave {
     pub seed: u32,
 }
 
+/// Contact severity a blast applies at the centre of its front, per second.
+///
+/// Deliberately light, and that is the whole shape of a blast in grass: the
+/// pressure passes and the grass stands back up. What sells it is the *impulse*
+/// — the field is thrown outward, overshoots, and springs back under its own
+/// elasticity in about a sixth of a second — not a scar.
+///
+/// Severity feeds dose, dose feeds compaction, and compaction is the channel
+/// that takes tens of seconds to recover. Pushing it hard digs a crater the
+/// grass cannot climb out of, which reads as scorched earth rather than as
+/// something going off. A brief mark that fades is the right amount: enough
+/// that the ground remembers for a moment, little enough that it recovers.
+const BLAST_SEVERITY: f32 = 7.0;
+
 /// How far the front's radius wanders, as a fraction of it.
 const RAGGEDNESS: f32 = 0.30;
+
+/// How much harder a blast pushes in some directions than others, as a fraction.
+///
+/// The raggedness that survives a wide front. Perturbing the *radius* only
+/// reads as an irregular edge while the front is thin enough for the wobble to
+/// be visible against it — at three metres of width the perturbation is smaller
+/// than the front itself and washes out completely, which is exactly what
+/// happened when the blast was broadened and is what
+/// `a_shockwave_front_is_ragged` caught. Modulating the strength instead gives
+/// the blast lobes: it flattens harder one way than another, whatever shape the
+/// front is, which is what keeps it from reading as a procedural ring.
+const RAGGED_PUSH: f32 = 0.75;
 
 /// Lobes around the ring. Low, so the front undulates rather than crinkles.
 const RAGGED_LOBES: f32 = 2.4;
@@ -137,12 +181,35 @@ impl Default for Shockwave {
             origin: Vec2::ZERO,
             age: 0.0,
             seed: 0x51A5_5EED,
-            // Comfortably faster than a person, slow enough to watch cross the
-            // field. Much quicker and it is a flicker rather than a wave.
-            speed: 7.0,
-            width: 0.75,
-            strength: 62.0,
-            max_radius: 11.0,
+            // Fast enough that the front is not the point.
+            //
+            // These four numbers are what decide whether a blast reads as an
+            // explosion or as a stone dropped in a pond, and they were set for
+            // the pond. At 7 m/s across an 11 m radius the front took a second
+            // and a half to cross, which is long enough to *watch* — so the eye
+            // followed the ring travelling instead of seeing something go off.
+            // A narrow front made it worse: 0.75 m of width against 11 m of
+            // travel is a ripple by any definition.
+            //
+            // An explosion is the opposite shape. It arrives everywhere at
+            // once, over a patch rather than a line, and it is local — the
+            // grass thirty feet away was not in it. So the front now crosses
+            // its whole radius in about a sixth of a second, and it is three
+            // metres thick, which at that speed means the entire disc is
+            // flattened within a few frames and then springs back under its own
+            // dynamics. That spring-back is the part that reads as force.
+            // Fast enough to arrive, slow enough to see arrive. At 42 m/s the
+            // front crossed its whole radius in a sixth of a second, which is
+            // nine frames — too quick to read as anything but a flash.
+            speed: 24.0,
+            width: 1.6,
+            hold: 0.95,
+            // Raised to compensate for the dwell. A cell feels the front for
+            // `width / speed` seconds, and that fell from 107 ms to 71, so the
+            // same number would have delivered a third less punch than before
+            // rather than more.
+            strength: 190.0,
+            max_radius: 6.5,
         }
     }
 }
@@ -153,9 +220,31 @@ impl Shockwave {
         self.age * self.speed
     }
 
-    /// Whether the ring has run its course.
+    /// Whether the blast has run its course.
+    ///
+    /// Outliving the front by several hold constants, because the front leaving
+    /// is the *middle* of the event now rather than the end of it — the grass
+    /// behind it is still pinned down and has to be let up.
     pub fn finished(&self) -> bool {
-        self.radius() > self.max_radius
+        self.age > self.max_radius / self.speed.max(1e-3) + self.hold * 3.0
+    }
+
+    /// How hard the blast presses a patch `range` metres out, in 0..=1.
+    ///
+    /// Per cell rather than per front, which it was. A travelling ring only
+    /// ever touches one distance at a time so the two were the same thing; a
+    /// blast that holds ground behind its front is pressing on every distance
+    /// at once, each by a different amount.
+    fn falloff(&self, range: f32) -> f32 {
+        if range >= self.max_radius {
+            return 0.0;
+        }
+        // Geometric spreading, but gently. The physically honest `1/r` leaves a
+        // blast invisible within a couple of metres of going off, which reads
+        // as the effect failing rather than as distance.
+        let spread = 1.0 / (1.0 + range * 0.16);
+        let fade = 1.0 - (range / self.max_radius).powi(2);
+        spread * fade.max(0.0)
     }
 
     /// How much punch is left.
@@ -296,15 +385,14 @@ pub fn stamp_interactor(field: &mut GrassField, body: &GrassInteractor, dt: f32)
 
 /// Stamp an expanding ring into the field.
 pub fn stamp_shockwave(field: &mut GrassField, wave: &Shockwave) {
-    let intensity = wave.intensity();
-    if intensity <= 1e-4 {
+    if wave.finished() {
         return;
     }
     let radius = wave.radius();
-    // Three standard deviations captures essentially all of the front, and
-    // bounding the stamp this way keeps the cost proportional to the ring's
-    // circumference rather than to the disc it has swept.
-    let reach = radius + wave.width * 3.0;
+    // The whole disc, not a ring's annulus. The blast holds ground behind its
+    // front, so everything the front has already crossed is still being pressed
+    // and has to be visited.
+    let reach = wave.max_radius;
     let Some((x0, y0, x1, y1)) = field.cell_range(
         wave.origin - Vec2::splat(reach),
         wave.origin + Vec2::splat(reach),
@@ -312,7 +400,6 @@ pub fn stamp_shockwave(field: &mut GrassField, wave: &Shockwave) {
         return;
     };
 
-    let inner = (radius - wave.width * 3.0).max(0.0);
     let variance = 2.0 * wave.width * wave.width;
 
     for y in y0..=y1 {
@@ -320,7 +407,8 @@ pub fn stamp_shockwave(field: &mut GrassField, wave: &Shockwave) {
             let point = field.cell_center(x, y);
             let offset = point - wave.origin;
             let range = offset.length();
-            if range < inner {
+            let intensity = wave.falloff(range);
+            if intensity <= 1e-4 {
                 continue;
             }
 
@@ -333,21 +421,37 @@ pub fn stamp_shockwave(field: &mut GrassField, wave: &Shockwave) {
             // angular field costs one noise sample and turns the ring into
             // something that happened *in* the grass.
             let angle = offset.y.atan2(offset.x);
-            let ragged = radius
-                * (1.0
-                    + RAGGEDNESS
-                        * (fbm(
-                            angle.cos() * RAGGED_LOBES,
-                            angle.sin() * RAGGED_LOBES,
-                            wave.seed,
-                            2,
-                        ) - 0.5));
+            let lobe = fbm(
+                angle.cos() * RAGGED_LOBES,
+                angle.sin() * RAGGED_LOBES,
+                wave.seed,
+                2,
+            ) - 0.5;
+            let ragged = radius * (1.0 + RAGGEDNESS * lobe);
 
+            // Two envelopes, because a blast does two separable things.
+            //
+            // `kick` is the front itself: a Gaussian band that throws the grass
+            // outward as it sweeps past, and is gone the moment it has.
+            //
+            // `press` is the pressure behind it, which is what makes this an
+            // animation rather than an event. A cell reached `since` seconds
+            // ago is still held down, decaying over `hold`, so the field goes
+            // out, stays out, and then stands back up in the same order it went
+            // down — the recovery sweeping outward from the middle exactly as
+            // the blast did. Ahead of the front `press` is the leading edge of
+            // the same Gaussian, so nothing arrives as a step.
             let front = range - ragged;
-            let envelope = (-(front * front) / variance).exp();
-            if envelope <= 1e-3 {
+            let kick = (-(front * front) / variance).exp();
+            let press = if front > 0.0 {
+                kick
+            } else {
+                (front / (wave.speed * wave.hold).max(1e-4)).exp()
+            };
+            if kick <= 1e-3 && press <= 1e-3 {
                 continue;
             }
+            let envelope = kick;
 
             let outward = if range > 1e-6 {
                 offset / range
@@ -371,20 +475,37 @@ pub fn stamp_shockwave(field: &mut GrassField, wave: &Shockwave) {
                 outward.x * sin + outward.y * cos,
             );
 
-            let push = envelope * intensity;
+            // The same angular field that bends the front also decides how hard
+            // it pushes, so the blast has strong and weak sides rather than
+            // merely a wavy edge.
+            let push = envelope * intensity * (1.0 + RAGGED_PUSH * lobe).max(0.0);
 
-            // The kick, which throws the grass outward.
+            // The kick, which throws the grass outward as the front passes.
             field.add_impulse(x, y, outward * (wave.strength * push));
+
+            // The press, which holds it there and then lets it up.
+            let held = press * intensity * (1.0 + RAGGED_PUSH * lobe).max(0.0);
             // And the mark it leaves: a radial axis, which is what makes the
             // aftermath read as a star rather than a smudge.
-            let weight = (push * 0.85).min(1.0);
+            let weight = (held * 0.85).min(1.0);
+            // Severity is a *rate*, and dose integrates it over the time a cell
+            // spends inside the front. Speeding the front up therefore cut the
+            // mark a blast leaves by exactly as much as it shortened the dwell:
+            // peak compaction came out at 0.003, which is nothing.
+            //
+            // That matters more than it sounds, because the flattened crater is
+            // most of what a player actually sees. The kick itself is over in a
+            // tenth of a second — too fast to read as anything but a flash —
+            // and what says "something went off here" is the patch of laid-over
+            // grass left behind, and the second or so it takes to stand back up.
+            // Scaled so a blast leaves a crater rather than a rumour.
             field.accumulate_contact(
                 x,
                 y,
                 outward * (MAX_CONTACT_ANGLE * weight),
                 outward,
                 weight,
-                weight * 4.5,
+                weight * BLAST_SEVERITY,
             );
         }
     }
@@ -612,6 +733,23 @@ mod tests {
         assert_eq!(wave.intensity(), 0.0);
     }
 
+    /// Step a blast until its front has fully cleared `radius`, then let the
+    /// grass respond.
+    ///
+    /// Three standard deviations past the probe, which is where the Gaussian
+    /// front has given it everything it is going to.
+    fn run_front_past(field: &mut GrassField, wave: &mut Shockwave, radius: f32, dt: f32) {
+        let cleared = radius + wave.width * 3.0;
+        while wave.radius() < cleared && !wave.finished() {
+            stamp_shockwave(field, wave);
+            field.step(dt, &calm());
+            wave.age += dt;
+        }
+        for _ in 0..4 {
+            field.step(dt, &calm());
+        }
+    }
+
     #[test]
     fn a_shockwave_throws_grass_radially_outward() {
         let mut field = still_field();
@@ -621,12 +759,17 @@ mod tests {
             width: 0.4,
             ..Default::default()
         };
-        // Step until the front has passed a probe a metre out.
-        for _ in 0..20 {
-            stamp_shockwave(&mut field, &wave);
-            field.step(dt, &calm());
-            wave.age += dt;
-        }
+        // Step until the front has cleared a probe a metre out, then give the
+        // grass a few frames to answer the kick.
+        //
+        // Driven by the wave's own geometry rather than by a fixed frame count,
+        // which is what this was. A count only works at one front speed: at the
+        // 7 m/s this was written against, twenty frames put the front at 2.3 m,
+        // and at the 42 m/s a blast now travels the same twenty frames put it
+        // at 14 m — past `max_radius`, with the wave long finished and the
+        // probe reading the tail of a disturbance that had swept by in the
+        // first frame.
+        run_front_past(&mut field, &mut wave, 1.0, dt);
 
         let east = field.bend_at(Vec2::new(1.0, 0.0));
         let north = field.bend_at(Vec2::new(0.0, 1.0));
@@ -689,11 +832,7 @@ mod tests {
             width: 0.4,
             ..Default::default()
         };
-        for _ in 0..24 {
-            stamp_shockwave(&mut field, &wave);
-            field.step(dt, &calm());
-            wave.age += dt;
-        }
+        run_front_past(&mut field, &mut wave, 1.2, dt);
 
         let samples = 64;
         let magnitudes: Vec<f32> = (0..samples)

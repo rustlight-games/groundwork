@@ -930,7 +930,7 @@ use crate::noise::{fbm, hash_2d};
 /// If more density is ever wanted, the answer is not this number: it is fewer,
 /// larger sprites, or an opaque pass for the dense interior with blending kept
 /// for the silhouette.
-pub const PER_SQUARE_METRE: f32 = 15.0;
+pub const PER_SQUARE_METRE: f32 = 19.5;
 
 /// World height of a clump sprite, shortest to tallest, in metres.
 ///
@@ -945,7 +945,22 @@ pub const PER_SQUARE_METRE: f32 = 15.0;
 /// stacks: sprites this tall reach far up the screen from roots well behind the
 /// pixel they cover, so the canopy piles into a wall on the far side of the
 /// field rather than a surface.
-pub const SIZE: (f32, f32) = (0.48, 1.02);
+/// Smaller and denser than it was, which is one decision rather than two.
+///
+/// These two constants only mean anything together: shrinking a plant without
+/// growing the count thins the canopy until the ground shows through, and
+/// growing the count without shrinking the plant piles bushes on top of each
+/// other. Here the linear size drops by a quarter — so a sprite covers a bit
+/// over half the ground it did — and the count rises by three quarters, which
+/// leaves the canopy about as closed as before while making the individual
+/// plant a smaller unit of the picture.
+///
+/// The cost is real and lands on the mesh rather than the simulation: the field
+/// solver does not know how many clumps are drawn over it, so a step is
+/// unchanged, but chunk building and vertex memory scale directly with the
+/// count. `grass.build.scene_clumps` and `grass.build.scene_mesh_bytes` are
+/// where that shows up.
+pub const SIZE: (f32, f32) = (0.36, 0.76);
 
 /// Metres per cycle of the field that varies clump size and tint.
 pub const VARIATION_METRES: f32 = 9.0;
