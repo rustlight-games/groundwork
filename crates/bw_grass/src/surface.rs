@@ -51,18 +51,48 @@ pub const SUPERSAMPLE: usize = 3;
 /// instead of one. Interleaving them made the stroke pass measurably faster for
 /// no change to a single pixel of output.
 ///
-/// Twelve bytes, and the byte fields are bytes on purpose — `top` is a height in
-/// final pixels and nothing in this field stands 255 of them tall, and `soil` is
-/// a blend the eye reads to perhaps six bits.
+/// ## It became a G-buffer
+///
+/// It used to hold a light index and nothing else about the surface, because
+/// shading happened at the rib and only its answer survived. That works for one
+/// lighting model and stops working the moment there are several: a cast shadow
+/// has to attenuate the *direct* term without touching the ambient one,
+/// occlusion has to darken the interior without flattening the form, and
+/// transmission has to key on which way the surface faces. None of those are
+/// expressible against a number that has already had the form baked into it.
+///
+/// So the rib now records what the surface *is* and the resolve decides what it
+/// looks like. Twenty bytes rather than twelve, which at four-times
+/// supersampling on a 256-pixel page is 21 MB — against a scene that is one and
+/// a shadow map that is ten.
 #[derive(Clone, Copy)]
 struct Cell {
     /// Isometric depth of whatever currently owns this pixel.
     depth: f32,
-    /// The owning stroke's own light index, before any world-scale shading.
+    /// The owning mark's own light index, **before** any lighting.
+    ///
+    /// Albedo, in the ramp's own units: how bright this mark is as a thing,
+    /// not how bright it happens to be lit. The form, the shadow and the
+    /// occlusion are all applied at resolve against the normal below.
     light: f32,
-    /// Height of the owning stroke above the soil, in final pixels.
-    top: u8,
-    /// Which ramp the owning stroke shades through.
+    /// World-space surface normal, as signed bytes.
+    ///
+    /// A byte per axis is about half a degree of angular precision, which is
+    /// far finer than anything downstream reads it at — the diffuse term is
+    /// wrapped and the glint is a broad lobe. Three bytes rather than an
+    /// octahedral pair because the decode is a multiply and the encode is a
+    /// round, and this is written far more often than it is read.
+    normal: [i8; 3],
+    /// Height of the owning mark above the soil, in eighths of a reference
+    /// pixel.
+    ///
+    /// Eighths, and that is a fix rather than a flourish. It was whole pixels in
+    /// a byte, which is a sixth of a millimetre of world — invisible at the
+    /// scale the game shows and clearly visible as horizontal banding on a
+    /// laboratory plate rendered at six times the authoring scale, which is
+    /// exactly where this renderer now does its judging.
+    top: u16,
+    /// Which ramp the owning mark shades through.
     tone: u8,
     /// How far the floor at this pixel has turned to bare earth, `0..255`.
     ///
@@ -72,6 +102,101 @@ struct Cell {
     /// in hue, so no light index makes them meet — and a hard-edged patch reads
     /// as a stone lying on the grass rather than as ground showing through it.
     soil: u8,
+    /// Root-to-tip position along the owning mark, `0..255`.
+    along: u8,
+    /// How mature the owning mark is, `0..255`.
+    maturity: u8,
+    /// How much geometry has passed through this pixel, winner or loser.
+    ///
+    /// The channel that was deleted and is back for a different reason. It used
+    /// to be a count of buried fragments with no consumer, and deleting it was
+    /// right — it cost a read-modify-write on the hottest loop in the crate and
+    /// resolve threw it away.
+    ///
+    /// It earns its place now because occlusion needs it. How dark the inside of
+    /// a tuft should be is not a question about the one blade that won the pixel;
+    /// it is a question about how much leaf is stacked behind that blade, and
+    /// this is the only place that is known. Saturating, because past a couple of
+    /// dozen layers the answer is "opaque" and the difference stops mattering.
+    optical: u8,
+    /// Bit 0: the camera is looking at this surface's underside.
+    flags: u8,
+}
+
+/// The owning mark faces away from the camera — this is its back.
+const FLAG_UNDERSIDE: u8 = 1;
+
+/// Sub-divisions of a reference pixel that [`Cell::top`] counts in.
+///
+/// Eight, which puts the quantisation at an eighth of a reference pixel — under
+/// a tenth of a millimetre of world, and finer than the finest plate this
+/// renderer produces. It was one whole pixel, and the banding that caused was
+/// visible on any laboratory plate rendered above the authoring scale.
+const TOP_STEPS: u16 = 8;
+
+/// Pack a world normal into three signed bytes.
+#[inline]
+fn encode_normal(normal: Vec3) -> [i8; 3] {
+    let n = normal.normalize_or(Vec3::Z) * 127.0;
+    [
+        n.x.round().clamp(-127.0, 127.0) as i8,
+        n.y.round().clamp(-127.0, 127.0) as i8,
+        n.z.round().clamp(-127.0, 127.0) as i8,
+    ]
+}
+
+/// One pixel of floor.
+#[inline]
+fn floor_cell(light: f32, soil: f32, normal: Vec3) -> Cell {
+    Cell {
+        depth: f32::NEG_INFINITY,
+        light,
+        normal: encode_normal(normal),
+        top: 0,
+        tone: Tone::Thatch as u8,
+        soil: (soil.clamp(0.0, 1.0) * 255.0) as u8,
+        along: 0,
+        maturity: 0,
+        // Deliberately not reset. The floor is laid before anything grows, and
+        // every blade that later passes over this pixel adds to it — so what the
+        // counter holds by the end is how much canopy stands between this patch
+        // of ground and the camera, which is exactly what the floor wants to know
+        // about how dark it should be.
+        optical: 0,
+        flags: 0,
+    }
+}
+
+impl Cell {
+    /// The world-space normal, decoded.
+    #[inline]
+    fn normal(&self) -> Vec3 {
+        Vec3::new(
+            self.normal[0] as f32,
+            self.normal[1] as f32,
+            self.normal[2] as f32,
+        ) * (1.0 / 127.0)
+    }
+}
+
+/// One rasterised surface point, on its way into the buffer.
+///
+/// A struct rather than nine arguments, because the rib fills most of it once
+/// and varies two fields across the width.
+#[derive(Clone, Copy)]
+pub struct Fragment {
+    pub depth: f32,
+    pub light: f32,
+    pub normal: Vec3,
+    pub tone: Tone,
+    /// Height above the soil, in reference pixels.
+    pub top: f32,
+    /// Root-to-tip position, `0..1`.
+    pub along: f32,
+    /// How mature the owning mark is, `0..1`.
+    pub maturity: f32,
+    /// Whether the camera sees this surface's back.
+    pub underside: bool,
 }
 
 /// The composited state of one page, at supersampled resolution.
@@ -105,9 +230,14 @@ impl Surface {
                 Cell {
                     depth: f32::NEG_INFINITY,
                     light: 0.0,
+                    normal: encode_normal(Vec3::Z),
                     top: 0,
                     tone: Tone::Soil as u8,
                     soil: 0,
+                    along: 0,
+                    maturity: 0,
+                    optical: 0,
+                    flags: 0,
                 };
                 width * height
             ],
@@ -122,20 +252,31 @@ impl Surface {
 
     /// Offer a pixel to the surface, taking it only if it is in front.
     ///
-    /// `top` is in final pixels rather than supersampled ones so it fits a byte
-    /// with room to spare; nothing in this field stands 255 pixels tall.
+    /// The optical-depth counter rises **whether or not the fragment wins**, and
+    /// that asymmetry is the point of it: a blade hidden behind three others
+    /// contributes nothing to what the pixel looks like and everything to how
+    /// dark the inside of that tuft should be.
     ///
     /// The index is not bounds-checked against a slice a second time — the
     /// caller has already clamped it — but it is still a safe indexing
     /// operation, so a mistake panics rather than corrupting the page.
     #[inline]
-    pub fn write(&mut self, index: usize, depth: f32, light: f32, tone: Tone, top: f32) {
+    pub fn write(&mut self, index: usize, fragment: Fragment) {
         let cell = &mut self.cells[index];
-        if depth >= cell.depth {
-            cell.depth = depth;
-            cell.light = light;
-            cell.tone = tone as u8;
-            cell.top = (top.clamp(0.0, 255.0)) as u8;
+        cell.optical = cell.optical.saturating_add(1);
+        if fragment.depth >= cell.depth {
+            cell.depth = fragment.depth;
+            cell.light = fragment.light;
+            cell.normal = encode_normal(fragment.normal);
+            cell.tone = fragment.tone as u8;
+            cell.top = (fragment.top.clamp(0.0, 8_000.0) * TOP_STEPS as f32) as u16;
+            cell.along = (fragment.along.clamp(0.0, 1.0) * 255.0) as u8;
+            cell.maturity = (fragment.maturity.clamp(0.0, 1.0) * 255.0) as u8;
+            cell.flags = if fragment.underside {
+                FLAG_UNDERSIDE
+            } else {
+                0
+            };
             // A blade covering bare earth is a blade, not earth.
             cell.soil = 0;
         }
@@ -144,39 +285,61 @@ impl Surface {
     /// Fill every pixel unconditionally — the floor pass, and nothing else.
     ///
     /// `soil` is how far this patch of floor has turned to bare earth: nought is
-    /// the dark mat under a thick canopy, one is exposed ground.
+    /// the dark mat under a thick canopy, one is exposed ground. `normal` is the
+    /// ground's own, so the floor is lit by the terrain it belongs to rather
+    /// than being a flat plane under everything.
     #[inline]
-    pub fn lay(&mut self, index: usize, light: f32, soil: f32) {
-        let cell = &mut self.cells[index];
-        cell.depth = f32::NEG_INFINITY;
-        cell.light = light;
-        cell.tone = Tone::Thatch as u8;
-        cell.top = 0;
-        cell.soil = (soil.clamp(0.0, 1.0) * 255.0) as u8;
+    pub fn lay(&mut self, index: usize, light: f32, soil: f32, normal: Vec3) {
+        self.cells[index] = floor_cell(light, soil, normal);
     }
 
     /// Lay a whole run of floor pixels that share a colour.
     ///
     /// The floor pass fills a supersampled block per final pixel, so its inner
-    /// loop is [`SUPERSAMPLE`] identical writes to consecutive addresses. Handing
-    /// the run over whole lets it be one bounds check and one straight-line
-    /// store instead of nine of each.
+    /// loop is several identical writes to consecutive addresses. Handing the run
+    /// over whole lets it be one bounds check and one straight-line store instead
+    /// of one of each per pixel.
     #[inline]
-    pub fn lay_run(&mut self, index: usize, count: usize, light: f32, soil: f32) {
-        let cell = Cell {
-            depth: f32::NEG_INFINITY,
-            light,
-            top: 0,
-            tone: Tone::Thatch as u8,
-            soil: (soil.clamp(0.0, 1.0) * 255.0) as u8,
-        };
-        self.cells[index..index + count].fill(cell);
+    pub fn lay_run(&mut self, index: usize, count: usize, light: f32, soil: f32, normal: Vec3) {
+        self.cells[index..index + count].fill(floor_cell(light, soil, normal));
     }
 
     /// How far toward bare earth this pixel's floor has gone, `0..1`.
     #[inline]
     pub fn soil_at(&self, index: usize) -> f32 {
         self.cells[index].soil as f32 / 255.0
+    }
+
+    /// The world-space surface normal at a supersampled pixel.
+    #[inline]
+    pub fn normal_at(&self, index: usize) -> Vec3 {
+        self.cells[index].normal()
+    }
+
+    /// Root-to-tip position of the owning mark, `0..1`.
+    #[inline]
+    pub fn along_at(&self, index: usize) -> f32 {
+        self.cells[index].along as f32 / 255.0
+    }
+
+    /// How mature the owning mark is, `0..1`.
+    #[inline]
+    pub fn maturity_at(&self, index: usize) -> f32 {
+        self.cells[index].maturity as f32 / 255.0
+    }
+
+    /// Whether the camera is looking at the owning surface's back.
+    #[inline]
+    pub fn underside_at(&self, index: usize) -> bool {
+        self.cells[index].flags & FLAG_UNDERSIDE != 0
+    }
+
+    /// How much geometry passed through this pixel, winner or loser.
+    ///
+    /// Saturating at 255 in the buffer, handed back as a count.
+    #[inline]
+    pub fn optical_at(&self, index: usize) -> f32 {
+        self.cells[index].optical as f32
     }
 
     #[inline]
@@ -198,7 +361,7 @@ impl Surface {
                         height += cell.top as u32;
                     }
                 }
-                heights[y * final_width + x] = height as f32 * inverse;
+                heights[y * final_width + x] = height as f32 * inverse / TOP_STEPS as f32;
             }
         }
         heights
@@ -241,10 +404,10 @@ impl Surface {
         (cell.light, tone)
     }
 
-    /// Height above the soil at a supersampled pixel, in final pixels.
+    /// Height above the soil at a supersampled pixel, in reference pixels.
     #[inline]
     pub fn top_at(&self, index: usize) -> f32 {
-        self.cells[index].top as f32
+        self.cells[index].top as f32 / TOP_STEPS as f32
     }
 
     /// Average colour of the supersampled block behind one final pixel.
@@ -389,11 +552,24 @@ pub fn to_rgb8(colours: &[Vec3]) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    fn fragment(depth: f32, light: f32, tone: Tone, top: f32) -> Fragment {
+        Fragment {
+            depth,
+            light,
+            normal: Vec3::Z,
+            tone,
+            top,
+            along: 0.5,
+            maturity: 0.5,
+            underside: false,
+        }
+    }
+
     #[test]
     fn a_nearer_stroke_takes_the_pixel() {
         let mut surface = Surface::new(2, 2);
-        surface.write(0, 1.0, 0.4, Tone::Grass, 10.0);
-        surface.write(0, 2.0, 0.9, Tone::Leaf, 20.0);
+        surface.write(0, fragment(1.0, 0.4, Tone::Grass, 10.0));
+        surface.write(0, fragment(2.0, 0.9, Tone::Leaf, 20.0));
         let (light, tone) = surface.pixel(0);
         assert_eq!(tone, Tone::Leaf);
         assert!((light - 0.9).abs() < 1e-6);
@@ -403,11 +579,71 @@ mod tests {
     #[test]
     fn a_further_stroke_does_not_steal_the_pixel() {
         let mut surface = Surface::new(2, 2);
-        surface.write(0, 5.0, 0.9, Tone::Grass, 20.0);
-        surface.write(0, 1.0, 0.1, Tone::Thatch, 4.0);
+        surface.write(0, fragment(5.0, 0.9, Tone::Grass, 20.0));
+        surface.write(0, fragment(1.0, 0.1, Tone::Thatch, 4.0));
         let (light, tone) = surface.pixel(0);
         assert_eq!(tone, Tone::Grass, "the buried stroke stole the pixel");
         assert!((light - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_buried_fragment_still_counts_toward_optical_depth() {
+        // The whole reason the counter came back. A blade hidden behind three
+        // others contributes nothing to what the pixel looks like and everything
+        // to how dark the inside of that tuft should be.
+        let mut surface = Surface::new(2, 2);
+        surface.write(0, fragment(5.0, 0.9, Tone::Grass, 20.0));
+        for _ in 0..4 {
+            surface.write(0, fragment(1.0, 0.1, Tone::Thatch, 4.0));
+        }
+        assert_eq!(surface.optical_at(0), 5.0);
+        // And the visible surface is still the near one.
+        assert_eq!(surface.pixel(0).1, Tone::Grass);
+    }
+
+    #[test]
+    fn a_normal_survives_the_round_trip() {
+        let mut surface = Surface::new(2, 2);
+        for normal in [
+            Vec3::Z,
+            Vec3::new(0.6, -0.3, 0.74).normalize(),
+            Vec3::new(-0.9, 0.1, 0.42).normalize(),
+            -Vec3::Z,
+        ] {
+            surface.write(
+                0,
+                Fragment {
+                    depth: 10.0,
+                    normal,
+                    ..fragment(10.0, 0.5, Tone::Grass, 1.0)
+                },
+            );
+            let back = surface.normal_at(0);
+            assert!(
+                back.normalize().distance(normal) < 0.02,
+                "{normal:?} came back as {back:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn canopy_height_keeps_more_than_whole_pixels() {
+        // The banding fix. Height used to be a byte of whole reference pixels,
+        // which is visible as horizontal steps on any plate rendered above the
+        // authoring scale — and that is where this renderer now does its judging.
+        let mut surface = Surface::new(1, 1);
+        let mut seen = Vec::new();
+        for step in 0..8 {
+            let top = 10.0 + step as f32 * 0.125;
+            surface.write(0, fragment(10.0 + step as f32, 0.5, Tone::Grass, top));
+            seen.push(surface.top_at(0));
+        }
+        seen.dedup();
+        assert!(
+            seen.len() >= 8,
+            "eighth-pixel height steps collapsed to {} levels",
+            seen.len()
+        );
     }
 
     #[test]

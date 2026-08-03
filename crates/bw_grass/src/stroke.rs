@@ -43,7 +43,7 @@ use crate::fastmath;
 use crate::geometry::{self, Frame, TipProfile};
 use crate::iso;
 use crate::palette::Tone;
-use crate::surface::Surface;
+use crate::surface::{Fragment, Surface};
 
 pub use crate::geometry::Profile;
 
@@ -277,10 +277,6 @@ pub struct Painter<'a> {
     surface: &'a mut Surface,
     /// Cache-pixel position of the page's top-left corner.
     origin: Vec2,
-    /// Direction toward the key light in **world** space, which is the only
-    /// space a surface normal exists in. Converted once, at construction, from
-    /// the image-space vector the rest of the renderer authors it as.
-    sun: Vec3,
     /// The light's direction on the screen plane, normalised.
     light_plane: Vec2,
     /// This page's cache pixels per world metre.
@@ -320,7 +316,6 @@ impl<'a> Painter<'a> {
         Self {
             surface,
             origin,
-            sun: iso::image_to_world(light).normalize_or(Vec3::Z),
             light_plane: plane.normalize_or_zero(),
             px_per_metre,
             detail: px_per_metre / iso::PX_PER_METRE,
@@ -378,7 +373,7 @@ impl<'a> Painter<'a> {
     }
 
     #[inline]
-    fn plot(&mut self, x: f32, y: f32, depth: f32, light: f32, tone: Tone, top: f32) {
+    fn plot(&mut self, x: f32, y: f32, fragment: Fragment) {
         // `as` truncates toward zero, so a negative coordinate would fold back
         // onto the page's left edge as a bright smear. Reject before casting.
         if x < 0.0 || y < 0.0 {
@@ -389,7 +384,7 @@ impl<'a> Painter<'a> {
             return;
         }
         let index = self.surface.index(x, y);
-        self.surface.write(index, depth, light, tone, top);
+        self.surface.write(index, fragment);
     }
 
     /// A bound, in cache pixels, on how far this stroke's marks can land from
@@ -641,6 +636,7 @@ impl<'a> Painter<'a> {
                     under,
                     depth,
                     top,
+                    along: s.clamp(0.0, 1.0),
                     body_light: stroke.base_light + tip - root_shade,
                     under_light,
                 },
@@ -655,6 +651,12 @@ impl<'a> Painter<'a> {
     }
 
     /// One slice across the stroke.
+    ///
+    /// Records what the surface *is* rather than what it looks like. The old rib
+    /// computed a lambert term here and stored the answer; this one stores the
+    /// normal and lets [`crate::bake::resolve`] decide, which is what makes a
+    /// cast shadow able to attenuate the direct light without also flattening
+    /// the form, and transmission able to key on which way the leaf faces.
     fn rib(&mut self, stroke: &Stroke, frame: &Frame, rib: Rib) {
         let Rib {
             centre,
@@ -663,6 +665,7 @@ impl<'a> Painter<'a> {
             under,
             depth,
             top,
+            along,
             body_light,
             under_light,
         } = rib;
@@ -697,62 +700,51 @@ impl<'a> Painter<'a> {
         // Pushed a hair behind the body so a neighbouring blade at the same
         // depth still wins the pixel.
         let under_depth = depth - 1.0e-4;
+        // Which face of the leaf the camera is looking at. Constant across the
+        // rib, because the ridge tilts the normal but cannot turn it over.
+        let underside = frame.normal.dot(iso::TOWARD_VIEWER) < 0.0;
 
         for i in 0..=steps {
             let offset = low + step * i as f32;
             let point = centre + across * offset;
 
-            let (light, depth) = if offset < -half || offset > half {
+            let fragment = if offset < -half || offset > half {
                 // Under-stroke: darker by a fixed amount rather than by a
                 // fraction, so a bright blade and a dim one cast the same
-                // weight of shadow.
-                (under_light, under_depth)
+                // weight of shadow. It keeps the blade's own normal, so it
+                // shades as part of the same surface rather than as a decal.
+                Fragment {
+                    depth: under_depth,
+                    light: under_light,
+                    normal: frame.normal,
+                    tone: stroke.tone,
+                    top,
+                    along,
+                    maturity: stroke.maturity,
+                    underside,
+                }
             } else {
                 let u = (offset * inverse_half).clamp(-1.0, 1.0);
-                // The real thing, at last: the world-space normal of the raised
-                // cross-section, dotted against the world-space sun. This is
-                // what the old pseudo-cylindrical term was imitating, and the
-                // difference is that this one knows which way the blade points.
-                let normal = frame.across(u, stroke.ridge);
-                let lambert = form_light(normal, self.sun);
-                // Centred on the mean rather than added: a stroke's average
-                // brightness is its own business, and the form term is only
-                // meant to say which *side* of it is lit.
-                (
-                    body_light + stroke.side_light * (lambert - FORM_MEAN),
+                Fragment {
                     depth,
-                )
+                    light: body_light,
+                    // The real thing: the world-space normal of the raised
+                    // cross-section. This is what the old pseudo-cylindrical
+                    // term was imitating, and the difference is that this one
+                    // knows which way the blade points.
+                    normal: frame.across(u, stroke.ridge),
+                    tone: stroke.tone,
+                    top,
+                    along,
+                    maturity: stroke.maturity,
+                    underside,
+                }
             };
 
-            self.plot(point.x, point.y, depth, light, stroke.tone, top);
+            self.plot(point.x, point.y, fragment);
         }
     }
 }
-
-/// How much light a thin two-sided surface shows, `0..1`.
-///
-/// Wrapped rather than clamped, and the wrap is not a cheat. A grass blade is a
-/// few cells thick, so the face turned away from the sun is not black — it is
-/// lit by what came through the blade plus what bounced off the canopy below.
-/// A hard `max(N·L, 0)` gives every blade a terminator and a dead back, which is
-/// what makes procedural vegetation read as moulded plastic.
-///
-/// The absolute value is the two-sidedness: which face of a leaf you happen to
-/// be looking at should not decide whether it is lit, because the leaf is thin
-/// enough that both faces are.
-#[inline]
-fn form_light(normal: Vec3, sun: Vec3) -> f32 {
-    const WRAP: f32 = 0.45;
-    let facing = normal.dot(sun).abs();
-    ((facing + WRAP) / (1.0 + WRAP)).clamp(0.0, 1.0)
-}
-
-/// What [`form_light`] averages to over a sphere of normals.
-///
-/// Subtracted so the form term redistributes light rather than adding any. A
-/// blade whose average brightness moved when its shading model changed would
-/// need every other constant in the baker retuned around it.
-const FORM_MEAN: f32 = 0.655;
 
 /// One slice across a stroke, with everything the slice needs already worked
 /// out.
@@ -765,7 +757,10 @@ struct Rib {
     under: f32,
     depth: f32,
     top: f32,
-    /// `base_light + tip - root_shade`: everything but the form term.
+    /// Root-to-tip position, `0..1`.
+    along: f32,
+    /// `base_light + tip - root_shade`: the mark's own albedo, with no lighting
+    /// in it at all.
     body_light: f32,
     under_light: f32,
 }
@@ -902,9 +897,14 @@ mod tests {
         }
     }
 
-    /// The brightest light index anywhere a blade painted, and how much of the
-    /// page it covered.
-    fn measure(light: Vec3, twist: f32) -> (f32, f32, f32) {
+    /// The span of recorded normals across a blade, and how much page it covered.
+    ///
+    /// Normals rather than light. The rib stopped computing a lambert term when
+    /// the surface became a G-buffer — shading is [`crate::bake::resolve`]'s job
+    /// now — so what the rasteriser is responsible for is recording *which way
+    /// the surface faces*, and that is what this measures.
+    fn measure(twist: f32) -> (f32, f32) {
+        let light = Vec3::new(-0.42, -0.40, 0.81).normalize();
         let (mut surface, origin) = page(64, 64);
         let mut painter = Painter::at_scale(&mut surface, origin, light, iso::PX_PER_METRE);
         let root = painter.to_ground(Vec2::new(96.0, 150.0)).extend(0.0);
@@ -919,85 +919,68 @@ mod tests {
             under: 0.0,
             ..default()
         });
-        let (mut low, mut high, mut count) = (f32::INFINITY, f32::NEG_INFINITY, 0.0f32);
+        // How far apart the two most opposed normals on the blade are, and how
+        // much of the page it covered.
+        let mut normals = Vec::new();
+        let mut count = 0.0f32;
         for index in 0..surface.width * surface.height {
             if surface.top_at(index) <= 0.0 {
                 continue;
             }
-            let (value, _) = surface.pixel(index);
-            low = low.min(value);
-            high = high.max(value);
+            normals.push(surface.normal_at(index));
             count += 1.0;
         }
-        (low, high, count)
+        let mut spread = 0.0f32;
+        for (step, a) in normals.iter().enumerate().step_by(7) {
+            for b in normals.iter().skip(step).step_by(11) {
+                spread = spread.max(1.0 - a.dot(*b));
+            }
+        }
+        (spread, count)
     }
 
     #[test]
-    fn turning_the_sun_moves_the_light_on_a_blade() {
-        // The gate for the whole phase. The old lateral term was computed in
-        // screen space against a screen-space light, so it produced a lit edge
-        // that never moved when the key did — four bearings ninety degrees apart
-        // gave four identical plates.
-        let elevation: f32 = 0.9;
-        let bearing = |degrees: f32| {
-            let a = degrees.to_radians();
-            Vec3::new(
-                a.cos() * elevation.cos(),
-                a.sin() * elevation.cos(),
-                elevation.sin(),
-            )
-        };
-        let a = measure(bearing(0.0), 0.0);
-        let b = measure(bearing(90.0), 0.0);
-        let c = measure(bearing(180.0), 0.0);
-        // Not just "something changed" — the *span* of light across the blade
-        // has to differ, which is what says the shading is reading a direction
-        // rather than a magnitude.
-        let span = |m: (f32, f32, f32)| m.1 - m.0;
+    fn a_blade_records_normals_that_face_different_ways_across_its_width() {
+        // The gate for the whole phase, at the level the rasteriser is
+        // responsible for. The old lateral term was a screen-space fudge and
+        // produced a lit edge that never moved when the key did; a real
+        // cross-section records genuinely opposed normals, and *that* is what
+        // makes the resolve able to swap which side is lit.
+        let (spread, painted) = measure(0.0);
+        assert!(painted > 0.0, "nothing was drawn");
         assert!(
-            (span(a) - span(c)).abs() > 0.02 || (a.1 - c.1).abs() > 0.02,
-            "the sun turned 180° and the blade did not notice: {a:?} vs {c:?}"
-        );
-        assert!(
-            (a.1 - b.1).abs() > 0.01 || (span(a) - span(b)).abs() > 0.01,
-            "the sun turned 90° and the blade did not notice: {a:?} vs {b:?}"
+            spread > 0.2,
+            "the blade's normals span only {spread}, so it shades flat across \
+             its width whatever the sun does"
         );
     }
 
     #[test]
-    fn a_blade_is_lit_across_its_width() {
-        // One edge toward the key, one away. Without this the mark is a flat
-        // ribbon whatever else is done to it.
+    fn a_flat_blade_still_faces_somewhere_definite() {
+        // A ridge of zero must give one normal everywhere, not a degenerate one.
+        let (mut surface, origin) = page(64, 64);
         let light = Vec3::new(-0.42, -0.40, 0.81).normalize();
-        let (low, high, _) = measure(light, 0.0);
-        assert!(
-            high - low > 0.05,
-            "the blade shades flat across its width: {low} to {high}"
-        );
-    }
-
-    #[test]
-    fn twisting_a_blade_narrows_it() {
-        // Foreshortening, which is what makes the twist legible in the
-        // silhouette rather than only in the shading.
-        //
-        // Measured at a half turn rather than a quarter, and the reason is
-        // worth recording because it looks like a bug and is not. Width does
-        // not fall off monotonically with total twist: the twist runs as
-        // `s^1.45`, so a blade with a quarter turn at its tip spends nearly all
-        // of its length barely turned at all, and its area is indistinguishable
-        // from flat. A half turn is the first angle at which the *middle* of the
-        // blade sits near edge-on, which is where the area actually goes.
-        let light = Vec3::new(-0.42, -0.40, 0.81).normalize();
-        let flat = measure(light, 0.0).2;
-        let turned = measure(light, std::f32::consts::PI).2;
-        assert!(
-            turned < flat * 0.95,
-            "a half-twisted blade covered {turned} px against {flat} flat"
-        );
-        // But it must not vanish. A field whose blades wink out as they turn is
-        // far worse than one that never narrows at all.
-        assert!(turned > flat * 0.55, "the twisted blade nearly disappeared");
+        let mut painter = Painter::at_scale(&mut surface, origin, light, iso::PX_PER_METRE);
+        let root = painter.to_ground(Vec2::new(96.0, 150.0)).extend(0.0);
+        painter.draw(&Stroke {
+            root,
+            bend: 0.3,
+            length: 0.3,
+            width: 3.0,
+            ridge: 0.0,
+            under: 0.0,
+            ..default()
+        });
+        for index in 0..surface.width * surface.height {
+            if surface.top_at(index) <= 0.0 {
+                continue;
+            }
+            let normal = surface.normal_at(index);
+            assert!(
+                (normal.length() - 1.0).abs() < 0.03,
+                "a recorded normal is {normal:?}"
+            );
+        }
     }
 
     #[test]

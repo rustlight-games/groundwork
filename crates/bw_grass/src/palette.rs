@@ -202,16 +202,71 @@ pub const DRY: [[f32; 3]; 8] = [
     [0.7200, 0.6780, 0.1790],
 ];
 
+/// How far below a ramp's own bottom the shadow extension reaches.
+///
+/// ## Why the measured ramp had to be extended downward
+///
+/// The ramps above are percentile maps of a painting, and that painting has no
+/// shadows in it — its first percentile is 0.215 luminance. For a long time that
+/// was exactly right, because the renderer had no shadows either: everything
+/// dark in the field was a *narrow* dark, the gap between one blade and the next,
+/// and [`THATCH`] reaching a little below the measurement covered it.
+///
+/// Real cast shadows change the requirement completely. A shadow is a broad dark
+/// area with a caster, it is the thing the eye reads a light direction from, and
+/// a shadow looked up in a ramp whose floor is a mid green comes back as a
+/// slightly duller mid green. The lighting would have been correct and invisible.
+///
+/// So `q` is now allowed to go **negative**, down to `-SHADOW_DEPTH`, and the
+/// region below zero is a generated extension rather than more measured stops.
+/// Positive `q` still means exactly what it always did — the reference's own
+/// percentile — so every constant tuned against the measured range keeps its
+/// meaning, and only the terms that genuinely describe occlusion reach past it.
+pub const SHADOW_DEPTH: f32 = 0.30;
+
+/// The colour a ramp's bottom stop becomes at the full depth of shadow.
+///
+/// Not a multiply toward black, and not a lerp toward grey. Both of those are
+/// what a shader does when nobody has looked at vegetation in shade: the first
+/// gives a dead dark green that reads as underexposure, the second drains the
+/// hue and reads as haze lying over the field rather than as shadow in it.
+///
+/// Light reaching the inside of a canopy has already been through several
+/// centimetres of leaf, and leaf is a filter — it takes out far more red than
+/// green and barely touches what little blue there is. So the three channels are
+/// scaled by very different amounts, and the result is a deep, *cool*, still
+/// clearly green colour whose blue channel has risen relative to its green even
+/// though it has fallen in absolute terms.
+#[inline]
+fn shadow_floor(bottom: Vec3) -> Vec3 {
+    Vec3::new(bottom.x * 0.21, bottom.y * 0.29, bottom.z * 0.64)
+}
+
 /// Look `q` up in a ramp, interpolating between stops.
 ///
-/// `q` is a light index in `[0, 1]`, not a luminance and not an albedo. It is
-/// everything the shader knows about how lit a pixel is, collapsed to one
-/// number; the ramp turns that back into colour.
+/// `q` is a light index, not a luminance and not an albedo. It is everything the
+/// shader knows about how lit a pixel is, collapsed to one number; the ramp turns
+/// that back into colour.
+///
+/// `0..1` is the measured range — stop *i* is the reference art at its `i/n`
+/// percentile. Below zero is the shadow extension, down to `-`[`SHADOW_DEPTH`];
+/// above one clamps, because the top stop is already an extrapolation.
 #[inline]
 pub fn shade(tone: Tone, q: f32) -> Vec3 {
     let ramp = tone.ramp();
+    if q < 0.0 {
+        let bottom = Vec3::new(ramp[0][0], ramp[0][1], ramp[0][2]);
+        // One at the ramp's own floor, zero at the full depth of shadow.
+        let t = (1.0 + q / SHADOW_DEPTH).clamp(0.0, 1.0);
+        // Eased rather than linear, so the extension spends most of its length
+        // near the ramp it joins and only the last of it reaches the deepest
+        // colour. A linear descent puts too much of the field's area at the
+        // bottom, which is the same mistake as a shadow with no penumbra.
+        let eased = t * t * (3.0 - 2.0 * t);
+        return shadow_floor(bottom).lerp(bottom, eased);
+    }
     let last = ramp.len() - 1;
-    let position = q.clamp(0.0, 1.0) * last as f32;
+    let position = q.min(1.0) * last as f32;
     let low = position as usize;
     let high = (low + 1).min(last);
     let t = position - low as f32;
@@ -291,8 +346,63 @@ mod tests {
 
     #[test]
     fn lookups_clamp_rather_than_wrap() {
-        assert_eq!(shade(Tone::Grass, -5.0), shade(Tone::Grass, 0.0));
+        assert_eq!(shade(Tone::Grass, -5.0), shade(Tone::Grass, -SHADOW_DEPTH));
         assert_eq!(shade(Tone::Grass, 5.0), shade(Tone::Grass, 1.0));
+    }
+
+    #[test]
+    fn the_shadow_extension_joins_the_measured_ramp() {
+        // A step where the generated part meets the measured part would print as
+        // a contour line wherever the light index crosses zero, which is
+        // everywhere the shadows are softest.
+        for tone in [Tone::Soil, Tone::Thatch, Tone::Grass, Tone::Leaf, Tone::Dry] {
+            let below = shade(tone, -1.0e-4);
+            let at = shade(tone, 0.0);
+            assert!(
+                (below - at).length() < 1.0e-3,
+                "{tone:?} steps at the join: {below:?} vs {at:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_shadow_extension_is_a_real_dark() {
+        // The whole reason it exists. The measured ramp's floor is a mid green —
+        // the painting it came from has no shadows in it — so a cast shadow
+        // looked up there would come back as a slightly duller mid green.
+        let floor = luma(shade(Tone::Grass, 0.0));
+        let deep = luma(shade(Tone::Grass, -SHADOW_DEPTH));
+        assert!(
+            deep < floor * 0.45,
+            "the deepest shadow is {deep:.3} against a ramp floor of {floor:.3}"
+        );
+        // And it descends the whole way rather than bottoming out early.
+        let mut previous = deep;
+        for step in 1..=20 {
+            let q = -SHADOW_DEPTH + step as f32 / 20.0 * SHADOW_DEPTH;
+            let value = luma(shade(Tone::Grass, q));
+            assert!(value >= previous - 1.0e-6, "the extension goes backwards");
+            previous = value;
+        }
+    }
+
+    #[test]
+    fn shadow_is_cooler_than_the_light_it_replaces() {
+        // Not "green times a number". Light reaching the inside of a canopy has
+        // been through several centimetres of leaf, which takes out far more red
+        // than green — so the deepest shade is a different, cooler green rather
+        // than a dimmer version of the same one. A shadow that is only darker
+        // reads as underexposure.
+        let lit = shade(Tone::Grass, 0.0);
+        let shade_colour = shade(Tone::Grass, -SHADOW_DEPTH);
+        let warmth = |c: Vec3| c.x / c.y.max(1.0e-6);
+        assert!(
+            warmth(shade_colour) < warmth(lit) * 0.85,
+            "shadow {shade_colour:?} is no cooler than light {lit:?}"
+        );
+        // Still unmistakably green, never grey and never black.
+        assert!(shade_colour.y > shade_colour.x * 1.5, "{shade_colour:?}");
+        assert!(shade_colour.y > 0.03, "the shadow bottomed out at black");
     }
 
     #[test]

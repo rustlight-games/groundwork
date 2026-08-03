@@ -66,6 +66,7 @@ pub mod fixtures;
 pub mod geometry;
 pub mod iso;
 pub mod lab;
+pub mod lighting;
 pub mod material;
 pub mod palette;
 pub mod placement;

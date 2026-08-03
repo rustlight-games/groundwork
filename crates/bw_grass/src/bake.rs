@@ -28,6 +28,7 @@ use rayon::prelude::*;
 
 use crate::field::WorldField;
 use crate::iso;
+use crate::lighting::{self, FormWeights};
 use crate::palette::{self, Tone};
 use crate::rng::Stream;
 use crate::scene::GrassScene;
@@ -235,8 +236,33 @@ pub struct BakeParams {
     pub tip_light: f32,
     /// The sharp catch of light on the third of marks that get one.
     pub glint: f32,
-    /// Strength of the one-sided lateral shading.
+    /// Strength of the one-sided lateral shading, applied at the rib.
     pub side_light: f32,
+
+    /// Weight of the three-scale form term — how much a surface's own facing
+    /// moves its light index.
+    ///
+    /// The term that answers the user-visible complaint "one side should receive
+    /// more light and the other should be darker", and the one that could not
+    /// exist before there were normals. It is generous compared with everything
+    /// around it because it is the only term in the field that is a *statement
+    /// about direction*: the macro lighting says where the mounds are, the
+    /// occlusion says where the cavities are, and neither of them says which way
+    /// the sun is.
+    pub form_light: f32,
+    /// Weight of light that has passed through a leaf rather than off it.
+    ///
+    /// Distinct from [`BakeParams::transmission`], which is the same idea at the
+    /// scale of a whole mound; this one is per leaf and keys on the leaf's own
+    /// normal. Both are wanted — a canopy glows at two scales — and they are not
+    /// substitutes.
+    pub leaf_transmission: f32,
+    /// Weight of the broad waxy sheen along a leaf.
+    ///
+    /// Small, and it should stay small. Grass is not wet. This exists to give
+    /// mature broad blades a lustre that says "surface" rather than "paint", and
+    /// past about a twentieth it starts reading as plastic.
+    pub gloss: f32,
     /// Width of the dark under-stroke, cache pixels.
     pub under: f32,
 
@@ -458,6 +484,11 @@ impl Default for BakeParams {
             // directions at once.
             glint: 0.85,
             side_light: 0.118,
+            // Large, and the largest single lighting term in the field. Nothing
+            // else here says which way the sun is.
+            form_light: 0.46,
+            leaf_transmission: 0.20,
+            gloss: 0.045,
             // Barely pulled back, and the restraint is the lesson. The obvious
             // reading of "too visually active" is to take contrast out of the
             // marks, and it is wrong: measured against the art, the contrast at
@@ -667,6 +698,24 @@ impl Macro {
             ((x + self.offset.x) / step + 0.5).clamp(0.0, (self.width - 1) as f32),
             ((y + self.offset.y) / step + 0.5).clamp(0.0, (self.height - 1) as f32),
         )
+    }
+
+    /// The ground's own world normal at a page pixel.
+    ///
+    /// Differenced off the lattice rather than sampled from the field, because
+    /// the lattice is already built and the mound field's finest feature is
+    /// several lattice cells wide — so a central difference across one stride is
+    /// reading the shape at the resolution it actually has, not approximating it.
+    ///
+    /// The height is in *metres* here and the slope wants reference pixels per
+    /// page pixel, which is what the conversion is for.
+    fn ground_normal(&self, x: f32, y: f32, detail: f32) -> Vec3 {
+        let step = self.stride as f32;
+        let slope = Vec2::new(
+            self.at(&self.height_field, x + step, y) - self.at(&self.height_field, x - step, y),
+            self.at(&self.height_field, x, y + step) - self.at(&self.height_field, x, y - step),
+        ) * (iso::PX_PER_METRE / (2.0 * step));
+        lighting::height_field_normal(slope, detail)
     }
 
     /// Bilinear read at a final-resolution page pixel.
@@ -960,13 +1009,80 @@ pub fn lay_floor(surface: &mut Surface, page: &Page, field: &WorldField, lattice
                 + loose * 0.10
                 - rim * 0.14;
 
+            // The floor takes the terrain's own normal rather than a flat up.
+            // Bare earth between the blades is the one part of the field where
+            // the ground's shape is directly visible, so a flat floor there is
+            // exactly where "this is a texture, not a place" gets given away.
+            let normal = lattice.ground_normal(x as f32, y as f32, page.detail());
             let step = surface.supersample();
             for sy in 0..step {
                 let index = surface.index(x * step, y * step + sy);
-                surface.lay_run(index, step, light, soil);
+                surface.lay_run(index, step, light, soil, normal);
             }
         }
     }
+}
+
+/// Radius the canopy is blurred by to get the crown surface, reference pixels.
+///
+/// A third of a tuft. Wide enough that individual blades are gone and only the
+/// bunch's own shape is left; narrow enough that neighbouring bunches have not
+/// merged into one dune.
+const CROWN_BLUR: usize = 18;
+
+/// How tightly the waxy sheen gathers.
+///
+/// Broad. Grass has a soft lustre rather than a specular pinprick, and a narrow
+/// lobe on geometry this fine produces exactly the sub-pixel highlights that
+/// cannot be filtered and therefore crawl whenever the ground moves under the
+/// sampling grid.
+const GLOSS_POWER: f32 = 12.0;
+
+/// How far clear of the mass a mark stands, `0..1`, from its height.
+///
+/// Shared by the transmission gate and the glaze, because they are asking the
+/// same question from opposite directions: did this mark win its pixel by
+/// standing above the canopy, or by being the only thing there.
+#[inline]
+fn exposure_of(top: f32) -> f32 {
+    (top / CANOPY_CEILING).clamp(0.0, 1.0)
+}
+
+/// A fixed ceiling rather than any page's own tallest blade.
+///
+/// Normalising by a per-page maximum makes every derived term depend on what
+/// happened to grow inside that particular rectangle, so two neighbouring pages
+/// shade the same pixel differently and the join between them becomes visible.
+/// Constants tile; page statistics do not.
+const CANOPY_CEILING: f32 = 48.0;
+
+/// The slope of a height field at a page pixel, per pixel, by central
+/// difference.
+#[inline]
+fn sample_slope(
+    field: &[f32],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    across: bool,
+) -> f32 {
+    // Two pixels apart rather than one. A one-pixel difference on a field this
+    // finely sampled is mostly reading the blur's own residual noise, and a
+    // normal built from noise scintillates.
+    const REACH: usize = 2;
+    let (low, high) = if across {
+        (
+            field[y * width + x.saturating_sub(REACH)],
+            field[y * width + (x + REACH).min(width - 1)],
+        )
+    } else {
+        (
+            field[y.saturating_sub(REACH) * width + x],
+            field[(y + REACH).min(height - 1) * width + x],
+        )
+    };
+    (high - low) / (2.0 * REACH as f32)
 }
 
 /// How far toward the key the canopy-relief comparison is taken, in pixels.
@@ -1060,13 +1176,6 @@ fn hue_only(from: Vec3, to: Vec3) -> Vec3 {
 pub fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams) -> Vec<Vec3> {
     let (width, height) = (page.width, page.height);
     let heights = surface.height_map(width, height);
-    // A fixed ceiling rather than this page's own tallest blade. Normalising by
-    // a per-page maximum makes every derived term — the glaze, the cool drift —
-    // depend on what happened to grow inside that particular rectangle, so two
-    // neighbouring pages shade the same pixel differently and the join between
-    // them becomes visible. Constants tile; page statistics do not.
-    const CANOPY_CEILING: f32 = 48.0;
-
     // Two radii of the same measurement, and they are half a metre apart because
     // they answer different questions. Three pixels separates one blade from the
     // one behind it. Fifty-two — about half a metre — is the distance from the
@@ -1095,11 +1204,27 @@ pub fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakePar
     // and a pixel at its shaded foot is compared with the bunch itself.
     let toward = Vec2::new(params.light.x, params.light.y).normalize_or(Vec2::NEG_Y);
 
+    // The crown surface: the canopy blurred at the scale of a tuft, so its
+    // gradient is the shape of the *bunch* rather than of any blade in it. This
+    // is the middle of the three normals — the one that makes a clump read as a
+    // lit mass instead of as a collection of individually correct leaves.
+    //
+    // A tuft is a fifth of a metre; blurring at a third of that keeps the crown's
+    // own shoulder while removing the blades, which is exactly the separation the
+    // term needs.
+    let crown_surface = blur(&heights, width, height, page.radius(CROWN_BLUR));
+
     let shadow = directional_shadow(&heights, width, height, params.light, page.detail());
     // Five pixels, not two. Sunlight through a canopy has no sharp edge to it;
     // the shadow this term describes is cast by grass onto grass a few
     // centimetres away, and the penumbra of that is wider than the shadow.
     let shadow = blur(&shadow, width, height, page.radius(5));
+
+    // The sun, in the only space a surface normal lives in.
+    let sun = iso::image_to_world(params.light).normalize_or(Vec3::Z);
+    let half = lighting::half_vector(sun);
+    let weights = FormWeights::default();
+    let detail = page.detail();
 
     let mut colours = vec![Vec3::ZERO; width * height];
     // How much of each pixel gets glazed back into its neighbourhood, filled in
@@ -1209,9 +1334,44 @@ pub fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakePar
             let canopy = heights[index];
             let world = macro_light[index];
 
+            // The two coarse normals are constant across the supersampled block
+            // — they vary at the scale of a tuft and of the terrain, not of a
+            // pixel — so they are read once per final pixel rather than sixteen
+            // times.
+            let ground_normal = lattice.ground_normal(fx, fy, detail);
+            let canopy_normal = lighting::height_field_normal(
+                Vec2::new(
+                    sample_slope(&crown_surface, width, height, x, y, true),
+                    sample_slope(&crown_surface, width, height, x, y, false),
+                ),
+                detail,
+            );
+
             let resolved = surface.resolve_pixel(x, y, |i| {
-                let (light, tone) = surface.pixel(i);
-                let q = shoulder(light + world);
+                let (albedo, tone) = surface.pixel(i);
+                let blade_normal = surface.normal_at(i);
+
+                // Form, at three scales. See [`crate::lighting`] for why all
+                // three are blended rather than one being chosen.
+                let form = lighting::form(weights, ground_normal, canopy_normal, blade_normal, sun);
+                // Light that came *through* the leaf. Strongest at the tip,
+                // where there is least material to get through, and gated on the
+                // mark standing clear of the mass — a leaf buried in a tuft has
+                // several centimetres of canopy behind it, not one blade.
+                let thinness = surface.along_at(i) * (0.35 + exposure_of(surface.top_at(i)) * 0.65);
+                let through = lighting::transmission(blade_normal, sun, thinness);
+                // A broad waxy sheen, on the marks that have a face to catch it.
+                let gloss = lighting::sheen(blade_normal, half, GLOSS_POWER)
+                    * (0.35 + surface.maturity_at(i) * 0.65);
+
+                let q = shoulder(
+                    albedo
+                        + world
+                        + params.form_light * form
+                        + params.leaf_transmission * through
+                        + params.gloss * gloss
+                        + lighting::underside_fill(surface.underside_at(i)),
+                );
                 let colour = palette::shade(tone, q);
                 let soil = surface.soil_at(i);
                 if soil <= 0.0 {
@@ -1751,6 +1911,68 @@ mod tests {
             interior < 2.0 / 255.0 / 20.0,
             "the plate's interior moved by {interior:.6} depending on where the \
              page grid was laid"
+        );
+    }
+
+    #[test]
+    fn turning_the_sun_relights_the_field_without_regrowing_it() {
+        // The gate for the whole lighting phase, and it has two halves that a
+        // single "did the picture change" would not separate.
+        //
+        // The picture has to change, obviously — that is the complaint the
+        // normals were built to answer, and before them four bearings ninety
+        // degrees apart gave four indistinguishable plates.
+        //
+        // But the *geometry* must not. Rotating a key light is a shading
+        // operation; if it also moved a blade then the field would not be
+        // relightable, the training pairs would be two different meadows, and no
+        // amount of good lighting would make up for it.
+        let page = Page::new(Vec2::new(-64.0, -64.0), 96, 96);
+        let elevation: f32 = 0.7;
+        let bake_at = |bearing: f32| {
+            let a: f32 = bearing;
+            let world = Vec3::new(
+                a.cos() * elevation.cos(),
+                a.sin() * elevation.cos(),
+                elevation.sin(),
+            );
+            let params = BakeParams {
+                light: iso::world_to_image(world).normalize(),
+                ..default()
+            };
+            let field = WorldField::lit_by(params.seed, params.light);
+            let scene = GrassScene::build(page, &field, &params);
+            let colours = bake(page, &params);
+            (scene, colours)
+        };
+
+        let (first_scene, first) = bake_at(0.0);
+        let (turned_scene, turned) = bake_at(std::f32::consts::FRAC_PI_2);
+
+        // Same meadow.
+        assert_eq!(
+            first_scene.len(),
+            turned_scene.len(),
+            "the sun regrew the field"
+        );
+        for (a, b) in first_scene.marks.iter().zip(&turned_scene.marks) {
+            assert_eq!(a.root.to_array(), b.root.to_array());
+            assert_eq!(a.length.to_bits(), b.length.to_bits());
+            assert_eq!(a.twist.to_bits(), b.twist.to_bits());
+        }
+
+        // Different picture, and by a margin that reads rather than one that
+        // only registers. A quarter of an 8-bit step averaged over the plate
+        // would be arithmetic noise; this is a visible relight.
+        let mean = first
+            .iter()
+            .zip(&turned)
+            .map(|(a, b)| (*a - *b).length() as f64)
+            .sum::<f64>()
+            / first.len() as f64;
+        assert!(
+            mean > 0.02,
+            "turning the sun a quarter turn moved the plate by {mean:.4}"
         );
     }
 
