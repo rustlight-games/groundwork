@@ -268,6 +268,16 @@ pub struct BakeParams {
     /// past about a twentieth it starts reading as plastic.
     pub gloss: f32,
     /// Width of the dark under-stroke, cache pixels.
+    ///
+    /// **Cut to a third.** It used to be the field's only shadow, and it was a
+    /// good one — a dark band offset away from the light, which is what a shadow
+    /// looks like from a distance. Now that blades cast real shadows onto each
+    /// other it is double-counting, and two shadows on one blade read as an
+    /// outline rather than as depth.
+    ///
+    /// It keeps the job the geometry shadows cannot do at this resolution:
+    /// separating two overlapping blades of nearly the same colour, at a width
+    /// of about a pixel, where a cast shadow has no room to form.
     pub under: f32,
 
     /// Weight of the mound's lit-face-to-dark-back separation.
@@ -294,7 +304,33 @@ pub struct BakeParams {
     /// Extra light on mound crowns, where the bright tips gather.
     pub crown_light: f32,
     /// Small-radius occlusion between overlapping blades.
+    ///
+    /// **Retired to a whisper.** It measured "am I lower than the canopy three
+    /// pixels away", which was the best available answer before the surface knew
+    /// how much geometry was stacked at each pixel and before the canopy could
+    /// be scanned by direction. Both of those now exist, and both answer the same
+    /// question better — see [`BakeParams::interior`] and
+    /// [`BakeParams::ambient_occlusion`]. What is left of it is a one-pixel
+    /// separation between touching marks, which is a job neither of the others
+    /// does at that radius.
     pub micro_occlusion: f32,
+    /// How much of the sky the canopy's own shape takes away.
+    ///
+    /// Horizon-scanned rather than differenced — see
+    /// [`crate::lighting::horizon_occlusion`]. This is the term that makes the
+    /// gap between two crowns dark without also darkening the open ground beside
+    /// them, which every previous attempt in this crate did.
+    pub ambient_occlusion: f32,
+    /// How dark a stack of overlapping leaves gets.
+    ///
+    /// The other half of occlusion, and the half no height field can supply. A
+    /// canopy surface says how high the grass is; it says nothing about whether
+    /// there is one blade there or fifteen, and the inside of a tuft is dark
+    /// because it is *full*. Comes from the fragment counter the rasteriser
+    /// keeps — see [`crate::surface::Surface::optical_at`].
+    pub interior: f32,
+    /// How fast the interior term saturates with stacked leaves.
+    pub interior_density: f32,
     /// How much a bunch standing above its neighbours catches, and a gap loses.
     ///
     /// Signed, and that is the whole of the design. The obvious form of this
@@ -326,15 +362,24 @@ pub struct BakeParams {
     /// blades rather than masses. What it can no longer claim to be is the
     /// shadow of anything in particular.
     pub shadow: f32,
-    /// How far into the palette's shadow extension a fully occluded point goes.
+    /// How far down the ramp a surface falls when no light reaches it at all.
     ///
-    /// The term that actually makes a cast shadow visible, and it is measured in
-    /// the extension's own units rather than in the ramp's, because the two are
-    /// answering different questions. The measured ramp says how bright a lit
-    /// surface is; the extension says how dark an unlit one gets, and a shadow
-    /// that only reached the bottom of the measured range would be a slightly
-    /// duller mid green.
-    pub cast_shadow: f32,
+    /// ## Why this is a subtraction and not a multiply
+    ///
+    /// A physical renderer multiplies albedo by light. This one cannot: its
+    /// "albedo" is a position in a hand-authored ramp, and half that ramp's
+    /// value is *where the hue goes* as the value falls. Multiplying an index by
+    /// 0.3 does not darken a colour, it picks a different one — usually the
+    /// wrong one.
+    ///
+    /// So light moves a surface **along** the ramp instead, and this is how far
+    /// it can move. It is sized to carry a fully unlit surface from the middle
+    /// of the measured range down past its floor and into the shadow extension
+    /// below — which is exactly the journey a shadow has to make, and the one
+    /// the old additive terms could not: they took a fixed amount off whatever
+    /// the surface already was, so a bright blade in deep shade stayed brighter
+    /// than a dim one in full sun.
+    pub shade_depth: f32,
     /// How much light still reaches a surface the sun cannot see.
     ///
     /// Sky, and green bounce off the canopy underneath. Without it a shadow
@@ -536,7 +581,7 @@ impl Default for BakeParams {
             // it is missing is exactly the narrow separation between one blade
             // and the next, and narrow dark is the kind [`BROAD_DARK`] has no
             // quarrel with.
-            under: 0.68,
+            under: 0.24,
 
             // Down by a seventh rather than the third the eye asked for, and the
             // difference is what the structure ladder costs. This term is the
@@ -562,7 +607,10 @@ impl Default for BakeParams {
             mound_light: 0.42,
             elevation_light: 0.035,
             crown_light: 0.038,
-            micro_occlusion: 0.125,
+            micro_occlusion: 0.030,
+            ambient_occlusion: 0.30,
+            interior: 0.34,
+            interior_density: 0.115,
             // Up by half, and now directional. This is where the volume that
             // came out of `mound_light` goes, and it is a better place for it:
             // it describes the bunches the eye actually groups by rather than
@@ -586,11 +634,11 @@ impl Default for BakeParams {
             // lighting terms it is narrow, so [`BROAD_DARK`] has no quarrel with
             // it.
             shadow: 0.075,
-            // Reaching most of the way into the extension. A cast shadow is the
-            // darkest thing in the field by a wide margin and it should be —
-            // the reference art's deepest values are all either a shadow or the
-            // inside of a tuft.
-            cast_shadow: 0.62,
+            // Enough to carry a mid-ramp surface past the measured floor and
+            // well into the extension. A cast shadow is the darkest thing in the
+            // field by a wide margin and it should be — the reference art's
+            // deepest values are all either a shadow or the inside of a tuft.
+            shade_depth: 0.86,
             // A third of the direct light, which is roughly what an open sky
             // gives against a midday sun once the green bounce off the canopy is
             // counted with it.
@@ -1114,6 +1162,15 @@ pub fn lay_floor(surface: &mut Surface, page: &Page, field: &WorldField, lattice
     }
 }
 
+/// The radii the horizon scan samples along each direction, reference pixels.
+///
+/// Geometric rather than uniform, which is what lets five taps cover two orders
+/// of magnitude: a blade is three pixels wide, a tuft is twenty across, and the
+/// gap between two crowns is fifty. A uniform spread over the same range would
+/// spend four of its five samples describing the largest scale and none at all
+/// on the one the eye reads first.
+const AO_RADII: [usize; 5] = [3, 7, 15, 30, 56];
+
 /// Radius the canopy is blurred by to get the crown surface, reference pixels.
 ///
 /// A third of a tuft. Wide enough that individual blades are gone and only the
@@ -1320,6 +1377,37 @@ pub fn resolve_lit(
     // term needs.
     let crown_surface = blur(&heights, width, height, page.radius(CROWN_BLUR));
 
+    // How much sky the canopy's own shape lets through, scanned by direction.
+    //
+    // The radii span two orders of magnitude on purpose: the near ones are one
+    // blade against the blade behind it, the middle ones the inside of a tuft,
+    // and the far ones a crown against the valley beside it. All three are
+    // occlusion and they are not the same shape, which is why a single blur
+    // radius could never stand in for the set.
+    let horizon = if params.quality.ao_directions() > 0 {
+        let radii: Vec<f32> = AO_RADII.iter().map(|r| page.radius(*r) as f32).collect();
+        lighting::horizon_occlusion(
+            &heights,
+            width,
+            height,
+            params.quality.ao_directions(),
+            &radii,
+        )
+    } else {
+        // The streaming tier gets the cheap answer it always had: how far below
+        // its own neighbourhood a pixel sits. Wrong about direction, right about
+        // magnitude, and a hundred times faster.
+        let coarse = blur(
+            &heights,
+            width,
+            height,
+            page.radius(AO_RADII[AO_RADII.len() - 1]),
+        );
+        (0..width * height)
+            .map(|i| ((coarse[i] - heights[i]) * 0.03).clamp(0.0, 1.0))
+            .collect()
+    };
+
     let shadow = directional_shadow(&heights, width, height, params.light, page.detail());
     // Five pixels, not two. Sunlight through a canopy has no sharp edge to it;
     // the shadow this term describes is cast by grass onto grass a few
@@ -1405,6 +1493,7 @@ pub fn resolve_lit(
             // ground read as a hole punched through the field.
             let open = 1.0 - lattice.at(&lattice.bare, fx, fy) * 0.85;
             let micro = ((near[index] - canopy) * 0.09).clamp(0.0, 1.0) * open;
+            let _ = &far;
             // Signed, at the bunch scale, and read off toward the key — see
             // [`BakeParams::canopy_relief`]. Clamped into the page rather than
             // wrapped or mirrored: within `RELIEF_REACH` of an edge the offset
@@ -1496,17 +1585,41 @@ pub fn resolve_lit(
                 // a normal rather than a shaded value: a shadow has to take out
                 // the *direct* term and leave the ambient one, or a shaded blade
                 // loses its form as well as its light.
-                let direct = params.sky_fill + (1.0 - params.sky_fill) * sunlight;
+                // Occlusion, from the two places it comes from. The canopy's
+                // shape decides how much sky arrives; the stack of leaves at
+                // this pixel decides how much of what arrives gets through.
+                //
+                // They multiply rather than add, because they are independent
+                // attenuations of the same light — a point deep inside a tuft in
+                // a hollow is darker than either would make it, which is what
+                // the reference art's cavities look like.
+                let stacked =
+                    lighting::optical_occlusion(surface.optical_at(i), params.interior_density);
+                let sky = (1.0 - params.ambient_occlusion * horizon[index])
+                    * (1.0 - params.interior * stacked);
+                // How much light of any kind reaches this surface, `0..1`.
+                //
+                // Sky fill and direct sun, separately, because a shadow takes
+                // out one and leaves the other. Splitting them is the whole
+                // reason the G-buffer holds a normal rather than a shaded value.
+                //
+                // The fill is also what keeps a cavity green. The fix for a
+                // shadow that has gone too dark is always more of this and never
+                // a weaker sun — grass in shade is dim and saturated, and a
+                // shadow with no fill in it reads as a hole in the plate.
+                let light = params.sky_fill * sky + (1.0 - params.sky_fill) * sunlight;
                 let lit = albedo
                     + world
-                    + params.form_light * form * direct
+                    + params.form_light * form * light
                     + params.leaf_transmission * through
                     + params.gloss * gloss * sunlight
                     + lighting::underside_fill(surface.underside_at(i));
-                // And the shadow itself, which reaches past the measured ramp
-                // into the extension below it — see [`palette::SHADOW_DEPTH`].
-                let occluded = (1.0 - sunlight) * params.cast_shadow;
-                let q = shoulder(lit) - occluded * palette::SHADOW_DEPTH;
+                // And then light carries the surface along the ramp, rather than
+                // a fixed amount being taken off it — see
+                // [`BakeParams::shade_depth`]. This is what lets a bright blade
+                // in deep shade end up darker than a dim one in full sun, which
+                // no additive term can do.
+                let q = shoulder(lit) - (1.0 - light) * params.shade_depth;
                 let colour = palette::shade(tone, q);
                 let soil = surface.soil_at(i);
                 if soil <= 0.0 {

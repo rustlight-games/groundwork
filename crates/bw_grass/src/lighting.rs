@@ -172,6 +172,82 @@ pub fn height_field_normal(slope: Vec2, detail: f32) -> Vec3 {
     Vec3::new(-(a + 0.5 * b), a - 0.5 * b, 1.0).normalize_or(Vec3::Z)
 }
 
+/// Where a canopy's own shape stops the sky reaching it, `0..1`.
+///
+/// Horizon-based rather than a difference of blurs, and the distinction is what
+/// the offline budget buys. A blur difference answers "is this lower than its
+/// neighbourhood", which is the same answer in every direction — so it darkens a
+/// hollow and a narrow slot between two crowns by the same amount, when the slot
+/// is far more occluded. Scanning outward along real directions and keeping the
+/// steepest horizon in each answers "how much sky can this point actually see",
+/// which is the question.
+///
+/// The radii do three jobs at once and are chosen to span them: the near ones
+/// are one blade against the blade behind it, the middle ones are the inside of
+/// a tuft, and the far ones are a crown against the valley beside it. Sampling a
+/// geometric spread rather than a uniform one is what lets five taps cover two
+/// orders of magnitude of scale.
+pub fn horizon_occlusion(
+    heights: &[f32],
+    width: usize,
+    height: usize,
+    directions: usize,
+    radii: &[f32],
+) -> Vec<f32> {
+    let mut occlusion = vec![0.0f32; width * height];
+    if directions == 0 || radii.is_empty() {
+        return occlusion;
+    }
+    // Precomputed, because the inner loop runs a hundred million times on a
+    // page and a sine in it would be most of the cost.
+    let steps: Vec<Vec2> = (0..directions)
+        .map(|i| {
+            let angle = i as f32 / directions as f32 * std::f32::consts::TAU;
+            Vec2::new(angle.cos(), angle.sin())
+        })
+        .collect();
+
+    for y in 0..height {
+        for x in 0..width {
+            let base = heights[y * width + x];
+            let mut total = 0.0f32;
+            for step in &steps {
+                // The steepest thing this direction has to climb over.
+                let mut horizon = 0.0f32;
+                for radius in radii {
+                    let sample = Vec2::new(x as f32, y as f32) + *step * *radius;
+                    if sample.x < 0.0 || sample.y < 0.0 {
+                        continue;
+                    }
+                    let (sx, sy) = (sample.x as usize, sample.y as usize);
+                    if sx >= width || sy >= height {
+                        continue;
+                    }
+                    let rise = heights[sy * width + sx] - base;
+                    horizon = horizon.max(rise / radius.max(1.0));
+                }
+                // The sine of the horizon angle, without the trigonometry: a
+                // slope of one is 45° and hides half the sky in that direction.
+                total += horizon / (1.0 + horizon);
+            }
+            occlusion[y * width + x] = total / directions as f32;
+        }
+    }
+    occlusion
+}
+
+/// How dark a stack of overlapping leaves gets, `0..1`.
+///
+/// Beer–Lambert against the count of fragments that passed through a pixel,
+/// winner and loser alike. This is the term the horizon scan cannot supply: the
+/// canopy height field says how high the surface is, and says nothing at all
+/// about whether there is one blade there or fifteen. The inside of a tuft is
+/// dark because it is *full*, not because it is low.
+#[inline]
+pub fn optical_occlusion(depth: f32, density: f32) -> f32 {
+    1.0 - (-density * depth).exp()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,6 +345,92 @@ mod tests {
                 assert!((normal.length() - 1.0).abs() < 1.0e-5, "{normal:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_pit_is_more_occluded_than_a_plain() {
+        // The basic claim, and the one a difference of blurs also makes.
+        const W: usize = 33;
+        let mut heights = vec![0.0f32; W * W];
+        // A ring of tall canopy around the middle.
+        for y in 0..W {
+            for x in 0..W {
+                let d = ((x as f32 - 16.0).powi(2) + (y as f32 - 16.0).powi(2)).sqrt();
+                if (6.0..12.0).contains(&d) {
+                    heights[y * W + x] = 20.0;
+                }
+            }
+        }
+        let ao = horizon_occlusion(&heights, W, W, 8, &[2.0, 4.0, 8.0]);
+        let pit = ao[16 * W + 16];
+        let outside = ao[16 * W + 30];
+        assert!(
+            pit > outside * 2.0,
+            "the pit is {pit:.3} occluded and the open ground {outside:.3}"
+        );
+    }
+
+    #[test]
+    fn a_hollow_is_darker_than_a_slot_of_the_same_depth() {
+        // The claim a difference of blurs *cannot* make, and the reason this is
+        // a directional scan rather than a cheaper one.
+        //
+        // Both points sit the same distance below the canopy around them, so any
+        // measure of "how far below my neighbourhood am I" rates them equally.
+        // They are not equal: the slot has open sky along its length and the
+        // hollow has walls in every direction, and the difference between those
+        // two is most of what separates the gap between two crowns from the
+        // inside of a tuft.
+        const W: usize = 41;
+        let ridge = |slot: bool| {
+            let mut heights = vec![0.0f32; W * W];
+            for y in 0..W {
+                for x in 0..W {
+                    let far = (x as f32 - 20.0).abs();
+                    // A slot: two walls either side, open along the other axis.
+                    // A hollow: walls all round.
+                    let inside = if slot {
+                        far > 3.0 && far < 9.0
+                    } else {
+                        let d = ((x as f32 - 20.0).powi(2) + (y as f32 - 20.0).powi(2)).sqrt();
+                        (3.0..9.0).contains(&d)
+                    };
+                    if inside {
+                        heights[y * W + x] = 24.0;
+                    }
+                }
+            }
+            horizon_occlusion(&heights, W, W, 16, &[2.0, 4.0, 8.0])[20 * W + 20]
+        };
+        let (slot, hollow) = (ridge(true), ridge(false));
+        assert!(
+            hollow > slot * 1.25,
+            "a hollow ({hollow:.3}) is no darker than a slot ({slot:.3}), so the \
+             scan is not reading direction"
+        );
+        // And both are genuinely occluded — a test that passed by rating the
+        // slot at nothing would be measuring a broken scan.
+        assert!(slot > 0.2, "the slot reads as open ground: {slot:.3}");
+    }
+
+    #[test]
+    fn flat_ground_is_not_occluded() {
+        let heights = vec![7.0f32; 24 * 24];
+        let ao = horizon_occlusion(&heights, 24, 24, 8, &[2.0, 5.0]);
+        assert!(ao.iter().all(|v| *v < 1.0e-5), "flat ground shaded itself");
+    }
+
+    #[test]
+    fn stacked_leaves_darken_and_saturate() {
+        // One layer is barely anything; a dozen is opaque and a dozen more
+        // changes nothing, which is why the counter saturates in a byte.
+        let one = optical_occlusion(1.0, 0.14);
+        let dozen = optical_occlusion(12.0, 0.14);
+        let many = optical_occlusion(40.0, 0.14);
+        assert!(one < 0.2, "a single leaf occludes {one:.3}");
+        assert!(dozen > 0.7, "a dozen leaves occlude only {dozen:.3}");
+        assert!(many - dozen < 0.3, "the term has not saturated by forty");
+        assert!(optical_occlusion(0.0, 0.14).abs() < 1.0e-6);
     }
 
     #[test]
