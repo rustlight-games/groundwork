@@ -294,8 +294,8 @@ pub struct Painter<'a> {
     scale: f32,
     /// Ribs per supersampled pixel of blade length.
     ribs_per_pixel: f32,
-    /// Page-local fast path around the atomic read in each global lazy table.
-    step_tables: [Option<&'static [StepSample]>; 513],
+    /// Reusable centreline buffer. See [`Painter::draw`].
+    samples: Vec<BladeSample>,
 }
 
 impl<'a> Painter<'a> {
@@ -321,7 +321,7 @@ impl<'a> Painter<'a> {
             detail: px_per_metre / iso::PX_PER_METRE,
             scale,
             ribs_per_pixel: 2.0,
-            step_tables: [None; 513],
+            samples: Vec::new(),
         }
     }
 
@@ -403,43 +403,62 @@ impl<'a> Painter<'a> {
         // distant page is cheap: the same blade of grass, drawn onto a page
         // baked at a quarter scale, is a quarter as long in pixels and so walks
         // a quarter of the ribs — each of which is a quarter as wide.
-        let screen_length = stroke.length * self.px_per_metre * self.scale;
+        let arc_pixels = stroke.length * self.px_per_metre * self.scale;
+        let tip = stroke.tip.resolved_at(self.child_pixels(stroke));
 
-        match stroke.tip.resolved_at(self.child_pixels(stroke)) {
-            TipProfile::Forked {
-                split_at,
-                opening,
-                long,
-                short,
-            } => {
-                // The parent stops at the split and hands its state over. The
-                // children continue from exactly there, which is what makes a
-                // fork read as one blade separating rather than as two small
-                // blades glued onto the end of a big one.
-                // The parent keeps the *whole* blade's width profile even
-                // though it stops early, so it arrives at the split at its
-                // natural width rather than tapering to a point there.
-                let cursor = self.body(stroke, 0.0, split_at, screen_length, (0.0, 1.0), None);
-                // Asymmetric, and deliberately so: the long child keeps most of
-                // the parent's heading and the short one does the turning. Two
-                // children mirrored about the parent is a tuning fork, and the
-                // eye finds the symmetry immediately.
-                let half = opening * 0.5;
-                self.child(stroke, cursor, split_at, -half * 1.3, long, screen_length);
-                self.child(stroke, cursor, split_at, half * 0.7, short, screen_length);
-            }
-            TipProfile::Notched { depth } => {
-                // A notch is a blade that stops a little short and blunt. The
-                // width floor is what makes it read as torn rather than as
-                // tapered, and it is the shape a fork averages to once it is too
-                // small to draw.
-                let end = (1.0 - depth).clamp(0.2, 1.0);
-                self.body(stroke, 0.0, end, screen_length, (0.0, 1.0), None);
-            }
-            TipProfile::Pointed => {
-                self.body(stroke, 0.0, 1.0, screen_length, (0.0, 1.0), None);
-            }
+        // Into a buffer the painter owns, rather than straight into the surface.
+        //
+        // The walk cannot borrow the surface while the painter does, and the
+        // alternative — inlining the rib inside the walk's callback — is what
+        // fused geometry and rasterisation together in the first place. A
+        // reusable buffer costs one allocation for the life of the painter and
+        // keeps the two apart, which is what lets the shadow pass walk the very
+        // same centreline.
+        let mut samples = std::mem::take(&mut self.samples);
+        samples.clear();
+        walk_blade(
+            stroke,
+            arc_pixels,
+            self.ribs_per_pixel,
+            tip,
+            &mut |sample| samples.push(sample),
+        );
+
+        let pen = self.scale * self.detail;
+        let under = stroke.under * pen;
+        let under_light = (stroke.base_light - 0.22).max(0.0);
+        for sample in &samples {
+            // The rib runs along the blade's own width axis, projected. That is
+            // not quite perpendicular to the projected centreline once the blade
+            // twists, and the difference is the point: a twisted blade presents
+            // a skewed cross-section, which is exactly what the eye reads as a
+            // surface turning.
+            let across = self
+                .page_direction(sample.frame.binormal)
+                .normalize_or(Vec2::new(1.0, 0.0));
+            let half = sample.half_reference * pen * geometry::foreshorten(sample.frame.normal);
+            self.rib(
+                stroke,
+                &sample.frame,
+                Rib {
+                    centre: self.to_page(sample.position),
+                    across,
+                    half,
+                    under,
+                    depth: iso::depth(sample.position) - stroke.depth_bias,
+                    // In *reference* pixels at every page scale, on purpose.
+                    // Every shading term downstream keys on how tall the canopy
+                    // stands, and grass of a given world height has to mean the
+                    // same thing to those terms whether the page holding it was
+                    // baked at full detail or a quarter of it.
+                    top: sample.position.z * iso::Z_SCALE * iso::PX_PER_METRE,
+                    along: sample.along,
+                    body_light: stroke.base_light + sample.tip_light - sample.root_shade,
+                    under_light,
+                },
+            );
         }
+        self.samples = samples;
     }
 
     /// How many final page pixels one fork child would span.
@@ -451,203 +470,6 @@ impl<'a> Painter<'a> {
             }
             _ => f32::INFINITY,
         }
-    }
-
-    /// One child of a forked tip.
-    fn child(
-        &mut self,
-        stroke: &Stroke,
-        from: Cursor,
-        split_at: f32,
-        turn: f32,
-        length: f32,
-        screen_length: f32,
-    ) {
-        // A child has to *continue* the parent's width, not restart from the
-        // parent's root width — otherwise the blade visibly swells at the split,
-        // which is the one thing a fork must never do. So the parent's own taper
-        // is evaluated where the split happens and the children divide what is
-        // left of it.
-        //
-        // `FORK_SHARE` is above a half on purpose: two children of exactly half
-        // the width read as a blade that has been sliced, and a real split leaf
-        // has a little more material than that because the two halves curl apart
-        // rather than lying flat.
-        const FORK_SHARE: f32 = 0.62;
-        let at_split = stroke.profile.width_at(split_at).max(0.05);
-        let child = Stroke {
-            width: stroke.width * at_split * FORK_SHARE,
-            tip_width: stroke.tip_width * 0.55,
-            // The children carry the tip lift and the glint, because the whole
-            // reason to draw a fork is that the reference's split ends are its
-            // brightest, thinnest paint.
-            tip_light: stroke.tip_light * 1.15,
-            tip: TipProfile::Pointed,
-            ..*stroke
-        };
-        let mut start = from;
-        start.heading += turn;
-        // Re-parameterised onto its own `0..1`, so a child tapers to its own
-        // point rather than inheriting whichever fraction of the parent's taper
-        // it happens to occupy.
-        self.body(
-            &child,
-            split_at,
-            split_at + length,
-            screen_length,
-            (split_at, split_at + length),
-            Some(start),
-        );
-    }
-
-    /// Walk part of a centreline and rasterise it.
-    ///
-    /// `from`/`to` are the arc parameters this segment walks. `profile` is the
-    /// arc range the *width profile* is stretched across, which is a different
-    /// question and has to be asked separately: a parent that stops at the split
-    /// still wants the whole blade's taper, so it arrives there at its natural
-    /// width; a child wants its own `0..1` so it tapers to its own point.
-    ///
-    /// Returns where the walk ended, so a fork's children can continue from it.
-    fn body(
-        &mut self,
-        stroke: &Stroke,
-        from: f32,
-        to: f32,
-        screen_length: f32,
-        profile_range: (f32, f32),
-        start: Option<Cursor>,
-    ) -> Cursor {
-        let span = (to - from).max(0.0);
-        // Sample the centreline finely enough that consecutive ribs overlap:
-        // half a supersampled pixel apart leaves no gaps at any angle, and the
-        // cost is linear in a quantity that is already small.
-        let steps = (screen_length * span * self.ribs_per_pixel).clamp(4.0, 512.0) as usize;
-        let inverse = 1.0 / steps as f32;
-        let samples = if let Some(samples) = self.step_tables[steps] {
-            samples
-        } else {
-            let samples = step_table(steps);
-            self.step_tables[steps] = Some(samples);
-            samples
-        };
-
-        // Hoisted out of the rib loop, all of it constant per stroke. The three
-        // widths are authored in reference pixels and land on the page in this
-        // page's own.
-        let pen = self.scale * self.detail;
-        let width = stroke.width * pen;
-        let tip_width = stroke.tip_width * pen;
-        let under = stroke.under * pen;
-        let under_light = (stroke.base_light - 0.22).max(0.0);
-        let kinks = stroke.kink != 0.0 || stroke.kink_turn != 0.0;
-        let profile_index = stroke.profile as usize;
-        let (profile_from, profile_to) = profile_range;
-        let profile_span = (profile_to - profile_from).max(1.0e-4);
-
-        // Most marks are walked whole, and for those the step table's cached
-        // powers are exactly right — the segment parameter *is* the arc
-        // parameter. A fork's children walk a slice of it and have to pay for
-        // their own, which is affordable because they are a minority of a
-        // minority.
-        let whole = from == 0.0 && span == 1.0;
-
-        let mut cursor = start.unwrap_or(Cursor {
-            position: stroke.root,
-            angle: 0.0,
-            heading: stroke.azimuth,
-            twist: 0.0,
-        });
-        let segment = stroke.length * span * inverse;
-
-        for sample in samples {
-            // Where this rib sits on the parent's arc, and where it sits on the
-            // width profile — two different parameters once a fork is involved.
-            let s = from + sample.s * span;
-            let profile_s = ((s - profile_from) / profile_span).clamp(0.0, 1.0);
-            // Smooth arc, plus an elbow. The smoothstep is narrow on purpose:
-            // spread it out and the kink becomes just more curvature.
-            let elbow = if kinks {
-                let t = ((s - stroke.kink_at) / 0.10).clamp(0.0, 1.0);
-                t * t * (3.0 - 2.0 * t)
-            } else {
-                0.0
-            };
-            let (bend_power, twist_power) = if whole {
-                (sample.bend, sample.twist)
-            } else {
-                let log_s = fastmath::log2(s.max(0.0));
-                (
-                    fastmath::pow_from_log2(log_s, 1.55),
-                    fastmath::pow_from_log2(log_s, TWIST_CURVE),
-                )
-            };
-            let s2 = s * s;
-            cursor.angle = stroke.bend * bend_power + stroke.curl * s2 * s2 + stroke.kink * elbow;
-            cursor.heading = stroke.azimuth + stroke.sway * s2 + stroke.kink_turn * elbow;
-            if let Some(started) = start {
-                // A child inherits the turn its parent handed it on top of
-                // whatever the shared centreline says.
-                cursor.heading += started.heading - stroke.azimuth - stroke.sway * from * from;
-            }
-            cursor.twist = stroke.twist * twist_power;
-
-            let (sin_heading, cos_heading) = fastmath::sin_cos(cursor.heading);
-            let (sin_angle, cos_angle) = fastmath::sin_cos(cursor.angle);
-            let frame = Frame::build(sin_heading, cos_heading, sin_angle, cos_angle, cursor.twist);
-
-            // The rib runs along the blade's own width axis, projected. That is
-            // not quite perpendicular to the projected centreline once the blade
-            // twists, and the difference is the point: a twisted blade presents
-            // a skewed cross-section, which is exactly what the eye reads as a
-            // surface turning.
-            let across = self
-                .page_direction(frame.binormal)
-                .normalize_or(Vec2::new(1.0, 0.0));
-
-            let index = ((profile_s * (samples.len() - 1) as f32) as usize).min(samples.len() - 1);
-            let shape = samples[index];
-            let half = (width * shape.widths[profile_index] + tip_width)
-                * geometry::foreshorten(frame.normal);
-            let depth = iso::depth(cursor.position) - stroke.depth_bias;
-            // In *reference* pixels at every page scale, on purpose. Every
-            // shading term downstream keys on how tall the canopy stands, and
-            // grass of a given world height has to mean the same thing to those
-            // terms whether the page holding it was baked at full detail or a
-            // quarter of it.
-            let top = cursor.position.z * iso::Z_SCALE * iso::PX_PER_METRE;
-
-            // Two terms doing different jobs, and — crucially — carried by two
-            // different fields so they can be dealt out at different rates. The
-            // gentle one lifts the whole blade a little. The sharp one is the
-            // glint, and it does not wake up until the last fifth.
-            let tip = stroke.tip_light * shape.tip + stroke.glint * shape.s8;
-            // Roots sit in their own shadow. Without this every blade glows at
-            // the base and the canopy loses its floor.
-            let root_shade = shape.root_shade;
-
-            self.rib(
-                stroke,
-                &frame,
-                Rib {
-                    centre: self.to_page(cursor.position),
-                    across,
-                    half,
-                    under,
-                    depth,
-                    top,
-                    along: s.clamp(0.0, 1.0),
-                    body_light: stroke.base_light + tip - root_shade,
-                    under_light,
-                },
-            );
-
-            // Advance along the arc. Past a right angle `cos` goes negative and
-            // the tip starts descending, which is exactly the hook shape the
-            // reference is full of.
-            cursor.position += frame.tangent * segment;
-        }
-        cursor
     }
 
     /// One slice across the stroke.
@@ -744,6 +566,288 @@ impl<'a> Painter<'a> {
             self.plot(point.x, point.y, fragment);
         }
     }
+}
+
+/// One sampled point on a blade's centreline, with everything a rasteriser
+/// needs and nothing about where it is being drawn.
+#[derive(Clone, Copy, Debug)]
+pub struct BladeSample {
+    /// World position of the centreline.
+    pub position: Vec3,
+    /// The orthonormal frame there, twist included.
+    pub frame: Frame,
+    /// Half-width in **reference** cache pixels, before foreshortening.
+    pub half_reference: f32,
+    /// Root-to-tip position on this segment, `0..1`.
+    pub along: f32,
+    /// The tip lift and glint at this point, already combined.
+    pub tip_light: f32,
+    /// How much the root's own shadow darkens this point.
+    pub root_shade: f32,
+}
+
+/// Walk a blade's whole centreline, forks and all.
+///
+/// The one place the shape of a blade is decided, and it takes no view, no
+/// surface and no light. That is the whole point: the camera pass and the shadow
+/// pass have to rasterise **the same geometry**, and the only way to guarantee
+/// that is for both to call this rather than each having its own idea of where a
+/// blade goes. Regenerating the shape twice would nearly work — it is
+/// deterministic — and "nearly" is exactly the failure that produces shadows
+/// which do not quite belong to the blades casting them.
+///
+/// `arc_pixels` is how many target pixels the blade's arc spans, which sets how
+/// finely it is walked. `tip` arrives already resolved, because whether a fork
+/// can be drawn is a question about the target's resolution and this function
+/// has no opinion about targets.
+pub fn walk_blade(
+    stroke: &Stroke,
+    arc_pixels: f32,
+    ribs_per_pixel: f32,
+    tip: TipProfile,
+    emit: &mut impl FnMut(BladeSample),
+) {
+    match tip {
+        TipProfile::Forked {
+            split_at,
+            opening,
+            long,
+            short,
+        } => {
+            // The parent stops at the split and hands its state over. The
+            // children continue from exactly there, which is what makes a fork
+            // read as one blade separating rather than as two small blades glued
+            // onto the end of a big one.
+            //
+            // It keeps the *whole* blade's width profile even though it stops
+            // early, so it arrives at the split at its natural width rather than
+            // tapering to a point there.
+            let cursor = walk_segment(
+                stroke,
+                0.0,
+                split_at,
+                arc_pixels,
+                ribs_per_pixel,
+                (0.0, 1.0),
+                None,
+                emit,
+            );
+            // Asymmetric, and deliberately so: the long child keeps most of the
+            // parent's heading and the short one does the turning. Two children
+            // mirrored about the parent is a tuning fork, and the eye finds the
+            // symmetry immediately.
+            let half = opening * 0.5;
+            walk_child(
+                stroke,
+                cursor,
+                split_at,
+                -half * 1.3,
+                long,
+                arc_pixels,
+                ribs_per_pixel,
+                emit,
+            );
+            walk_child(
+                stroke,
+                cursor,
+                split_at,
+                half * 0.7,
+                short,
+                arc_pixels,
+                ribs_per_pixel,
+                emit,
+            );
+        }
+        TipProfile::Notched { depth } => {
+            // A notch is a blade that stops a little short and blunt. Stopping
+            // before the profile reaches its point is what makes it read as torn
+            // rather than as tapered, and it is the shape a fork averages to once
+            // it is too small to draw.
+            let end = (1.0 - depth).clamp(0.2, 1.0);
+            walk_segment(
+                stroke,
+                0.0,
+                end,
+                arc_pixels,
+                ribs_per_pixel,
+                (0.0, 1.0),
+                None,
+                emit,
+            );
+        }
+        TipProfile::Pointed => {
+            walk_segment(
+                stroke,
+                0.0,
+                1.0,
+                arc_pixels,
+                ribs_per_pixel,
+                (0.0, 1.0),
+                None,
+                emit,
+            );
+        }
+    }
+}
+
+/// How much of the parent's width a fork's two children share between them.
+///
+/// Above a half on purpose: two children of exactly half the width read as a
+/// blade that has been sliced, and a real split leaf has a little more material
+/// than that because the two halves curl apart rather than lying flat.
+const FORK_SHARE: f32 = 0.62;
+
+/// One child of a forked tip.
+#[allow(clippy::too_many_arguments)]
+fn walk_child(
+    stroke: &Stroke,
+    from: Cursor,
+    split_at: f32,
+    turn: f32,
+    length: f32,
+    arc_pixels: f32,
+    ribs_per_pixel: f32,
+    emit: &mut impl FnMut(BladeSample),
+) {
+    // A child has to *continue* the parent's width, not restart from the
+    // parent's root width — otherwise the blade visibly swells at the split,
+    // which is the one thing a fork must never do. So the parent's own taper is
+    // evaluated where the split happens and the children divide what is left.
+    let at_split = stroke.profile.width_at(split_at).max(0.05);
+    let child = Stroke {
+        width: stroke.width * at_split * FORK_SHARE,
+        tip_width: stroke.tip_width * 0.55,
+        // The children carry the tip lift and the glint, because the whole
+        // reason to draw a fork is that the reference's split ends are its
+        // brightest, thinnest paint.
+        tip_light: stroke.tip_light * 1.15,
+        tip: TipProfile::Pointed,
+        ..*stroke
+    };
+    let mut start = from;
+    start.heading += turn;
+    // Re-parameterised onto its own `0..1`, so a child tapers to its own point
+    // rather than inheriting whichever fraction of the parent's taper it happens
+    // to occupy.
+    walk_segment(
+        &child,
+        split_at,
+        split_at + length,
+        arc_pixels,
+        ribs_per_pixel,
+        (split_at, split_at + length),
+        Some(start),
+        emit,
+    );
+}
+
+/// Walk part of a centreline, emitting a sample per rib.
+///
+/// `from`/`to` are the arc parameters this segment walks. `profile_range` is the
+/// arc range the *width profile* is stretched across, which is a different
+/// question and has to be asked separately: a parent that stops at the split
+/// still wants the whole blade's taper, so it arrives there at its natural
+/// width; a child wants its own `0..1` so it tapers to its own point.
+///
+/// Returns where the walk ended, so a fork's children can continue from it.
+#[allow(clippy::too_many_arguments)]
+fn walk_segment(
+    stroke: &Stroke,
+    from: f32,
+    to: f32,
+    arc_pixels: f32,
+    ribs_per_pixel: f32,
+    profile_range: (f32, f32),
+    start: Option<Cursor>,
+    emit: &mut impl FnMut(BladeSample),
+) -> Cursor {
+    let span = (to - from).max(0.0);
+    // Sample the centreline finely enough that consecutive ribs overlap: half a
+    // target pixel apart leaves no gaps at any angle, and the cost is linear in
+    // a quantity that is already small.
+    let steps = (arc_pixels * span * ribs_per_pixel).clamp(4.0, 512.0) as usize;
+    let inverse = 1.0 / steps as f32;
+    let samples = step_table(steps);
+
+    let kinks = stroke.kink != 0.0 || stroke.kink_turn != 0.0;
+    let profile_index = stroke.profile as usize;
+    let (profile_from, profile_to) = profile_range;
+    let profile_span = (profile_to - profile_from).max(1.0e-4);
+    // Most marks are walked whole, and for those the step table's cached powers
+    // are exactly right — the segment parameter *is* the arc parameter. A fork's
+    // children walk a slice of it and pay for their own, which is affordable
+    // because they are a minority of a minority.
+    let whole = from == 0.0 && span == 1.0;
+
+    let mut cursor = start.unwrap_or(Cursor {
+        position: stroke.root,
+        angle: 0.0,
+        heading: stroke.azimuth,
+        twist: 0.0,
+    });
+    let segment = stroke.length * span * inverse;
+    let handed = start.map(|s| s.heading - stroke.azimuth - stroke.sway * from * from);
+
+    for sample in samples {
+        // Where this rib sits on the parent's arc, and where it sits on the
+        // width profile — two different parameters once a fork is involved.
+        let s = from + sample.s * span;
+        let profile_s = ((s - profile_from) / profile_span).clamp(0.0, 1.0);
+        // Smooth arc, plus an elbow. The smoothstep is narrow on purpose: spread
+        // it out and the kink becomes just more curvature.
+        let elbow = if kinks {
+            let t = ((s - stroke.kink_at) / 0.10).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        } else {
+            0.0
+        };
+        let (bend_power, twist_power) = if whole {
+            (sample.bend, sample.twist)
+        } else {
+            let log_s = fastmath::log2(s.max(0.0));
+            (
+                fastmath::pow_from_log2(log_s, 1.55),
+                fastmath::pow_from_log2(log_s, TWIST_CURVE),
+            )
+        };
+        let s2 = s * s;
+        cursor.angle = stroke.bend * bend_power + stroke.curl * s2 * s2 + stroke.kink * elbow;
+        cursor.heading = stroke.azimuth + stroke.sway * s2 + stroke.kink_turn * elbow;
+        if let Some(offset) = handed {
+            // A child inherits the turn its parent handed it on top of whatever
+            // the shared centreline says.
+            cursor.heading += offset;
+        }
+        cursor.twist = stroke.twist * twist_power;
+
+        let (sin_heading, cos_heading) = fastmath::sin_cos(cursor.heading);
+        let (sin_angle, cos_angle) = fastmath::sin_cos(cursor.angle);
+        let frame = Frame::build(sin_heading, cos_heading, sin_angle, cos_angle, cursor.twist);
+
+        let index = ((profile_s * (samples.len() - 1) as f32) as usize).min(samples.len() - 1);
+        let shape = samples[index];
+
+        emit(BladeSample {
+            position: cursor.position,
+            frame,
+            half_reference: stroke.width * shape.widths[profile_index] + stroke.tip_width,
+            along: s.clamp(0.0, 1.0),
+            // Two terms doing different jobs, and carried by two different
+            // fields so they can be dealt out at different rates. The gentle one
+            // lifts the whole blade a little; the glint does not wake up until
+            // the last fifth.
+            tip_light: stroke.tip_light * shape.tip + stroke.glint * shape.s8,
+            // Roots sit in their own shadow. Without this every blade glows at
+            // the base and the canopy loses its floor.
+            root_shade: shape.root_shade,
+        });
+
+        // Advance along the arc. Past a right angle `cos` goes negative and the
+        // tip starts descending, which is exactly the hook shape the reference is
+        // full of.
+        cursor.position += frame.tangent * segment;
+    }
+    cursor
 }
 
 /// One slice across a stroke, with everything the slice needs already worked

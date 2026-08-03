@@ -27,7 +27,7 @@
 
 use bevy::prelude::*;
 
-use crate::bake::{BakeParams, Macro, Page, lay_floor, resolve};
+use crate::bake::{BakeParams, Macro, Page, lay_floor};
 use crate::field::WorldField;
 use crate::geometry::TipProfile;
 use crate::iso;
@@ -35,6 +35,7 @@ use crate::palette::Tone;
 use crate::quality::GrassRenderQuality;
 use crate::rng::{Draw, Stream};
 use crate::stroke::{Painter, Profile, Stroke};
+
 use crate::surface::Surface;
 
 /// One question the plate answers.
@@ -123,19 +124,96 @@ pub struct Key {
 }
 
 impl Key {
+    /// Where the light sits on the screen plane, normalised.
+    ///
+    /// The field's own bearing, turned by [`Key::azimuth`]. Held fixed against
+    /// the elevation, because it is the thing the picture is composed around:
+    /// it decides which way every shadow falls on screen, which side of every
+    /// mound is lit, and which flank of a mark carries its dark under-stroke.
+    /// [`crate::field::LIGHT_PLANE`] is the same statement made where the mound
+    /// field can read it.
+    pub fn plane(self) -> Vec2 {
+        let (sin_a, cos_a) = self.azimuth.sin_cos();
+        let plane = crate::field::LIGHT_PLANE;
+        Vec2::new(
+            plane.x * cos_a - plane.y * sin_a,
+            plane.x * sin_a + plane.y * cos_a,
+        )
+    }
+
     /// The direction toward the light, in the image space
     /// [`crate::bake::BakeParams::light`] uses: +X right, +Y **down**, +Z toward
     /// the viewer.
+    ///
+    /// ## Elevation is a world angle, and image `+Z` is not up
+    ///
+    /// This looks like it should be `(plane · cos θ, sin θ)` and that is exactly
+    /// the mistake it exists to avoid. Image `+Z` points at the **viewer**, and
+    /// this camera looks down at 35°, so putting `sin θ` there produces a light
+    /// somewhere behind the viewer's shoulder rather than one `θ` above the
+    /// horizon. Built that way, a "35° sun" came out at nearly 55° of real
+    /// elevation — and the shadow guard band, which is sized from one over the
+    /// tangent, came out a third short of what the field actually casts.
+    ///
+    /// So the sun is placed in the **world** and converted, with the screen
+    /// bearing as the constraint rather than the construction.
+    ///
+    /// Its height is fixed by `θ`, which leaves a circle of candidates. The
+    /// bearing pins that to a line — the projections of the candidates onto the
+    /// screen plane have to be parallel to [`Key::plane`] — and a line meets a
+    /// circle twice. Both roots project onto the same screen *line*; only one
+    /// projects along it in the right *direction*, and the other is a light that
+    /// is very nearly straight at the camera. Picking by alignment rather than
+    /// by sign is what makes this survive the bearing being turned right round.
+    ///
+    /// Not every elevation is reachable at every bearing: with the screen
+    /// bearing pinned, a sun that would have to be both high and down-screen
+    /// does not exist. Those cases have no root at all, and fall back to the
+    /// highest the bearing allows.
     pub fn direction(self) -> Vec3 {
-        let (sin_a, cos_a) = self.azimuth.sin_cos();
-        let (sin_e, cos_e) = self.elevation.sin_cos();
-        // The zero bearing is the field's own light plane, rotated by `azimuth`.
-        let plane = crate::field::LIGHT_PLANE;
-        let turned = Vec2::new(
-            plane.x * cos_a - plane.y * sin_a,
-            plane.x * sin_a + plane.y * cos_a,
-        );
-        Vec3::new(turned.x * cos_e, turned.y * cos_e, sin_e).normalize()
+        let plane = self.plane();
+        let up = self.elevation.sin();
+        let flat = self.elevation.cos();
+
+        // The candidates are the world vectors of height `up` whose screen
+        // projection is parallel to `plane`: `right·plane.y − down·plane.x = 0`,
+        // written out and cleared of denominators.
+        const ROOT3: f32 = 1.732_050_8;
+        let normal = Vec2::new(ROOT3 * plane.y - plane.x, -(ROOT3 * plane.y + plane.x));
+        let offset = -2.0 * up * plane.x;
+        let length = normal.length();
+        if length < 1.0e-6 {
+            return Vec3::new(plane.x, plane.y, 0.0).normalize_or(Vec3::Z);
+        }
+
+        // Where that line comes closest to the origin, and how far along it the
+        // circle of radius `flat` is met.
+        let foot = normal * (offset / (length * length));
+        let half = (flat * flat - (offset * offset) / (length * length))
+            .max(0.0)
+            .sqrt();
+        let along = Vec2::new(-normal.y, normal.x) / length;
+
+        // Of the two, the one whose screen projection runs *along* the bearing
+        // rather than against it.
+        let mut best = Vec3::new(plane.x * flat, plane.y * flat, up);
+        let mut best_score = f32::NEG_INFINITY;
+        for side in [-1.0f32, 1.0] {
+            let ground = foot + along * (half * side);
+            let candidate = Vec3::new(ground.x, ground.y, up);
+            let image = iso::world_to_image(candidate);
+            let score = Vec2::new(image.x, image.y).dot(plane);
+            if score > best_score {
+                best_score = score;
+                best = candidate;
+            }
+        }
+        iso::world_to_image(best.normalize_or(Vec3::Z)).normalize_or(Vec3::Z)
+    }
+
+    /// The direction toward the light in world space.
+    pub fn world(self) -> Vec3 {
+        iso::image_to_world(self.direction()).normalize_or(Vec3::Z)
     }
 }
 
@@ -268,6 +346,7 @@ pub fn bake_lab(lab: &Lab, params: &BakeParams) -> Vec<Vec3> {
     let params = BakeParams {
         seed: lab.seed,
         light: lab.key.direction(),
+        quality: lab.quality,
         ..*params
     };
     let page = lab_page(lab);
@@ -275,15 +354,26 @@ pub fn bake_lab(lab: &Lab, params: &BakeParams) -> Vec<Vec3> {
     let lattice = Macro::build(&page, &field);
     let mut surface = Surface::at_supersample(page.width, page.height, lab.quality.supersample());
 
+    // The fixtures go into a scene rather than straight onto the surface, so
+    // the plate is lit and shadowed by exactly the path a page is. A laboratory
+    // that skipped the shadow pass would certify a renderer nobody runs.
+    let mut scene = crate::scene::GrassScene {
+        page,
+        marks: Vec::new(),
+    };
+    for (index, fixture) in Fixture::ALL.iter().enumerate() {
+        plant_fixture(&mut scene.marks, lab, *fixture, lab.cell_centre(index));
+    }
+
     lay_floor(&mut surface, &page, &field, &lattice);
     {
         let mut painter =
-            Painter::at_scale(&mut surface, page.origin, params.light, page.px_per_metre);
-        for (index, fixture) in Fixture::ALL.iter().enumerate() {
-            plant_fixture(&mut painter, lab, *fixture, lab.cell_centre(index));
-        }
+            Painter::at_scale(&mut surface, page.origin, params.light, page.px_per_metre)
+                .with_ribs_per_pixel(lab.quality.ribs_per_pixel());
+        scene.draw(&mut painter);
     }
-    resolve(&surface, &page, &lattice, &params)
+    let shadows = crate::bake::cast_shadows(&scene, &params);
+    crate::bake::resolve_lit(&surface, &page, &lattice, &params, shadows.as_deref())
 }
 
 /// Grow one fixture onto a painter.
@@ -291,7 +381,7 @@ pub fn bake_lab(lab: &Lab, params: &BakeParams) -> Vec<Vec3> {
 /// Deliberately takes the same [`Painter`] the field does, and builds the same
 /// [`Stroke`] values. A laboratory that drew through its own path would be a
 /// laboratory for a renderer nobody ships.
-pub fn plant_fixture(painter: &mut Painter, lab: &Lab, fixture: Fixture, centre: Vec2) {
+pub fn plant_fixture(marks: &mut Vec<Stroke>, lab: &Lab, fixture: Fixture, centre: Vec2) {
     let mut draw = Draw::from_seed(lab.seed ^ (fixture as u64) << 32);
     let blade = |draw: &mut Draw| Stroke {
         length: draw.range(0.16, 0.24),
@@ -307,7 +397,7 @@ pub fn plant_fixture(painter: &mut Painter, lab: &Lab, fixture: Fixture, centre:
         Fixture::Bare => {}
 
         Fixture::LoneBlade => {
-            painter.draw(&Stroke {
+            marks.push(Stroke {
                 root: centre.extend(0.0),
                 azimuth: 0.0,
                 length: 0.26,
@@ -326,7 +416,7 @@ pub fn plant_fixture(painter: &mut Painter, lab: &Lab, fixture: Fixture, centre:
             // the key and the lit edge has to walk round with it.
             for step in 0..8 {
                 let azimuth = step as f32 / 8.0 * std::f32::consts::TAU;
-                painter.draw(&Stroke {
+                marks.push(Stroke {
                     root: (centre + Vec2::from_angle(azimuth) * 0.03).extend(0.0),
                     azimuth,
                     length: 0.22,
@@ -345,7 +435,7 @@ pub fn plant_fixture(painter: &mut Painter, lab: &Lab, fixture: Fixture, centre:
             // reads as one blade separating and where along the blade it stops
             // doing so.
             for (step, split_at) in [0.74f32, 0.82, 0.90].into_iter().enumerate() {
-                painter.draw(&Stroke {
+                marks.push(Stroke {
                     root: (centre + Vec2::new(step as f32 * 0.08 - 0.08, 0.0)).extend(0.0),
                     azimuth: 0.2,
                     length: 0.30,
@@ -369,7 +459,7 @@ pub fn plant_fixture(painter: &mut Painter, lab: &Lab, fixture: Fixture, centre:
 
         Fixture::Crossing => {
             for (offset, azimuth) in [(-0.05f32, 0.6f32), (0.05, -0.6)] {
-                painter.draw(&Stroke {
+                marks.push(Stroke {
                     root: (centre + Vec2::new(offset, 0.0)).extend(0.0),
                     azimuth,
                     length: 0.26,
@@ -391,7 +481,7 @@ pub fn plant_fixture(painter: &mut Painter, lab: &Lab, fixture: Fixture, centre:
                 stroke.azimuth = heading + draw.signed() * 0.9;
                 stroke.width *= 0.7;
                 stroke.length *= 0.8;
-                painter.draw(&stroke);
+                marks.push(stroke);
             }
         }
 
@@ -405,7 +495,7 @@ pub fn plant_fixture(painter: &mut Painter, lab: &Lab, fixture: Fixture, centre:
                 stroke.azimuth = heading + draw.signed() * 1.2;
                 stroke.width *= 1.5;
                 stroke.length *= 1.25;
-                painter.draw(&stroke);
+                marks.push(stroke);
             }
         }
 
@@ -425,14 +515,14 @@ pub fn plant_fixture(painter: &mut Painter, lab: &Lab, fixture: Fixture, centre:
                 } else {
                     Tone::Grass
                 };
-                painter.draw(&stroke);
+                marks.push(stroke);
             }
         }
 
         Fixture::LowMat => {
             for _ in 0..90 {
                 let offset = Vec2::new(draw.signed(), draw.signed()) * 0.2;
-                painter.draw(&Stroke {
+                marks.push(Stroke {
                     root: (centre + offset).extend(0.0),
                     azimuth: draw.range(0.0, std::f32::consts::TAU),
                     length: draw.range(0.05, 0.11),
@@ -452,7 +542,7 @@ pub fn plant_fixture(painter: &mut Painter, lab: &Lab, fixture: Fixture, centre:
             // Reads on whether the guard band admits it at all.
             for step in 0..5 {
                 let across = (step as f32 - 2.0) * 0.06;
-                painter.draw(&Stroke {
+                marks.push(Stroke {
                     root: (centre + Vec2::new(across, 0.0) + Vec2::splat(0.22)).extend(0.0),
                     azimuth: std::f32::consts::PI * 1.25,
                     length: 0.34,
@@ -467,7 +557,7 @@ pub fn plant_fixture(painter: &mut Painter, lab: &Lab, fixture: Fixture, centre:
         Fixture::Lodged => {
             for step in 0..6 {
                 let along = (step as f32 - 2.5) * 0.05;
-                painter.draw(&Stroke {
+                marks.push(Stroke {
                     root: (centre + Vec2::new(along, -along)).extend(0.0),
                     azimuth: 0.9,
                     length: 0.33,
@@ -484,7 +574,7 @@ pub fn plant_fixture(painter: &mut Painter, lab: &Lab, fixture: Fixture, centre:
         Fixture::WidthLadder => {
             for step in 0..3 {
                 let across = (step as f32 - 1.0) * 0.11;
-                painter.draw(&Stroke {
+                marks.push(Stroke {
                     root: (centre + Vec2::new(across, -across)).extend(0.0),
                     azimuth: 0.0,
                     length: 0.26,
@@ -532,32 +622,89 @@ mod tests {
         // must move the light around the sky, not raise or lower it. A rotation
         // that also changed elevation would make "the lit side followed the key"
         // impossible to tell from "the light got brighter".
+        //
+        // Measured in the **world**, which is the point. The same assertion
+        // against the image vector's `z` passes trivially and means nothing,
+        // because image `+Z` points at the viewer rather than at the sky.
         for step in 0..8 {
             let key = Key {
                 azimuth: step as f32 / 8.0 * std::f32::consts::TAU,
                 elevation: DEFAULT_ELEVATION,
             };
-            let direction = key.direction();
+            assert!((key.direction().length() - 1.0).abs() < 1.0e-5);
+            let elevation = iso::elevation_of(key.world());
             assert!(
-                (direction.z - DEFAULT_ELEVATION.sin()).abs() < 1.0e-5,
-                "bearing {step} moved the sun's height to {}",
-                direction.z
+                (elevation - DEFAULT_ELEVATION).abs() < 1.0e-3,
+                "bearing {step} put the sun {}° above the ground, not {}°",
+                elevation.to_degrees(),
+                DEFAULT_ELEVATION.to_degrees()
             );
-            assert!((direction.length() - 1.0).abs() < 1.0e-5);
         }
     }
 
     #[test]
-    fn a_quarter_turn_moves_the_light_a_quarter_of_the_way_round() {
-        let flat = |key: Key| {
-            let d = key.direction();
-            Vec2::new(d.x, d.y).normalize()
+    fn the_key_sits_where_it_says_it_does() {
+        // The bug this arithmetic exists to prevent, pinned. Building the image
+        // vector as `(plane · cos θ, sin θ)` puts a "35° sun" at nearly 55° of
+        // real elevation, and the shadow guard band — which is sized from one
+        // over the tangent — comes out a third short of what the field casts.
+        for degrees in [15.0f32, 25.0, 35.0, 45.0] {
+            let key = Key {
+                azimuth: 0.0,
+                elevation: degrees.to_radians(),
+            };
+            let measured = iso::elevation_of(key.world()).to_degrees();
+            assert!(
+                (measured - degrees).abs() < 0.05,
+                "a {degrees}° key sits at {measured}°"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unreachable_sun_clamps_to_the_highest_the_bearing_allows() {
+        // With the screen bearing pinned, a sun that would have to be both high
+        // and down-screen does not exist. At the field's own bearing the ceiling
+        // is a little under 54°, and the important thing is that asking for more
+        // gives a real light at that height rather than a vector that is
+        // silently not a unit, not on the bearing, or not a number at all — all
+        // three of which an earlier arithmetic managed.
+        let ceiling = Key {
+            azimuth: 0.0,
+            elevation: std::f32::consts::FRAC_PI_2,
         };
-        let start = flat(Key::default());
-        let quarter = flat(Key {
+        let reached = iso::elevation_of(ceiling.world()).to_degrees();
+        assert!(
+            (50.0..56.0).contains(&reached),
+            "the bearing's ceiling came out at {reached}°"
+        );
+        for degrees in [60.0f32, 75.0, 89.0] {
+            let key = Key {
+                azimuth: 0.0,
+                elevation: degrees.to_radians(),
+            };
+            let direction = key.direction();
+            assert!(direction.is_finite(), "{degrees}° gave {direction:?}");
+            assert!((direction.length() - 1.0).abs() < 1.0e-4);
+            let measured = iso::elevation_of(key.world()).to_degrees();
+            assert!(
+                (measured - reached).abs() < 0.5,
+                "{degrees}° clamped to {measured}° rather than the {reached}° \
+                 ceiling"
+            );
+        }
+        // And the tier the renderer actually ships at is comfortably inside it.
+        assert!(DEFAULT_ELEVATION.to_degrees() < reached);
+    }
+
+    #[test]
+    fn a_quarter_turn_moves_the_light_a_quarter_of_the_way_round() {
+        let start = Key::default().plane();
+        let quarter = Key {
             azimuth: std::f32::consts::FRAC_PI_2,
             ..Key::default()
-        });
+        }
+        .plane();
         assert!(
             start.dot(quarter).abs() < 1.0e-4,
             "a quarter turn left the light {start:?} → {quarter:?}"
@@ -567,10 +714,25 @@ mod tests {
     #[test]
     fn the_default_key_is_the_field_s_own_bearing() {
         // Zero bearing has to mean "where the sun already is", or every plate
-        // taken at the default would be lit from somewhere the meadow is not.
+        // taken at the default would be lit from somewhere the meadow is not —
+        // and the mound field, which shades its own domes, would disagree with
+        // every mark's under-stroke about where that was.
         let direction = Key::default().direction();
         let plane = Vec2::new(direction.x, direction.y).normalize();
         assert!(plane.distance(crate::field::LIGHT_PLANE) < 1.0e-4);
+        // The bearing survives every elevation, which is what lets the sun be
+        // lowered without recomposing the picture.
+        for degrees in [25.0f32, 35.0, 55.0] {
+            let key = Key {
+                azimuth: 0.0,
+                elevation: degrees.to_radians(),
+            };
+            let plane = Vec2::new(key.direction().x, key.direction().y).normalize();
+            assert!(
+                plane.distance(crate::field::LIGHT_PLANE) < 1.0e-3,
+                "a {degrees}° sun moved the screen bearing to {plane:?}"
+            );
+        }
     }
 
     #[test]

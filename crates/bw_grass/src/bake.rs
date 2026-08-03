@@ -30,8 +30,10 @@ use crate::field::WorldField;
 use crate::iso;
 use crate::lighting::{self, FormWeights};
 use crate::palette::{self, Tone};
+use crate::quality::GrassRenderQuality;
 use crate::rng::Stream;
 use crate::scene::GrassScene;
+use crate::shadow::{self, ShadowMap};
 use crate::stroke::Painter;
 use crate::surface::{Surface, blur};
 
@@ -197,6 +199,8 @@ impl Page {
 #[derive(Clone, Copy, Debug)]
 pub struct BakeParams {
     pub seed: u64,
+    /// How hard the renderer is allowed to work. See [`GrassRenderQuality`].
+    pub quality: GrassRenderQuality,
     /// Direction toward the key light in image space: +X right, +Y **down**,
     /// +Z toward the viewer.
     pub light: Vec3,
@@ -314,8 +318,32 @@ pub struct BakeParams {
     /// a diffuse bright patch says a region is pale, a lit edge over a dark base
     /// says a thing is standing up.
     pub canopy_relief: f32,
-    /// The fixed directional self-shadow.
+    /// The fixed directional self-shadow, marched over the canopy height.
+    ///
+    /// Kept, demoted, and now doing a different job. It describes the canopy as
+    /// a *surface* — one crown against the ground behind it — which is a real
+    /// cue and one the geometry shadows below do not supply, because they see
+    /// blades rather than masses. What it can no longer claim to be is the
+    /// shadow of anything in particular.
     pub shadow: f32,
+    /// How far into the palette's shadow extension a fully occluded point goes.
+    ///
+    /// The term that actually makes a cast shadow visible, and it is measured in
+    /// the extension's own units rather than in the ramp's, because the two are
+    /// answering different questions. The measured ramp says how bright a lit
+    /// surface is; the extension says how dark an unlit one gets, and a shadow
+    /// that only reached the bottom of the measured range would be a slightly
+    /// duller mid green.
+    pub cast_shadow: f32,
+    /// How much light still reaches a surface the sun cannot see.
+    ///
+    /// Sky, and green bounce off the canopy underneath. Without it a shadow
+    /// under a dense tuft goes to the floor of the extension and reads as a
+    /// hole; grass in shade is dim and *saturated*, never black, and the fix for
+    /// an over-dark shadow is always more fill and never a weaker sun.
+    pub sky_fill: f32,
+    /// Angular radius of the sun, radians. Softens every cast shadow.
+    pub sun_radius: f32,
     /// Light that has passed *through* the canopy rather than reflected off it.
     ///
     /// The single term that separates lit grass from cut-out grass. Without it
@@ -408,6 +436,7 @@ impl Default for BakeParams {
     fn default() -> Self {
         Self {
             seed: 0x5eed_1234,
+            quality: GrassRenderQuality::Preview,
             // Up and to the left on screen, and well in front of the ground
             // plane. Image space, so +Y is *down*: negative X is leftward and
             // negative Y is up the screen. Every mound in the field is therefore
@@ -416,7 +445,7 @@ impl Default for BakeParams {
             // direction, stated once, obeyed everywhere — a field where the
             // macro light and the marks disagree about where the sun is reads as
             // wrong long before anyone can say why.
-            light: Vec3::new(-0.42, -0.40, 0.81).normalize(),
+            light: crate::lab::Key::default().direction(),
 
             // Half as many tufts as there were, of roughly twice the reach.
             //
@@ -556,7 +585,17 @@ impl Default for BakeParams {
             // front from a pattern seen from directly overhead — and unlike the
             // lighting terms it is narrow, so [`BROAD_DARK`] has no quarrel with
             // it.
-            shadow: 0.14,
+            shadow: 0.075,
+            // Reaching most of the way into the extension. A cast shadow is the
+            // darkest thing in the field by a wide margin and it should be —
+            // the reference art's deepest values are all either a shadow or the
+            // inside of a tuft.
+            cast_shadow: 0.62,
+            // A third of the direct light, which is roughly what an open sky
+            // gives against a midday sun once the green bounce off the canopy is
+            // counted with it.
+            sky_fill: 0.34,
+            sun_radius: crate::shadow::SUN_RADIUS,
             transmission: 0.205,
             light_blur: 4,
             region: 0.32,
@@ -741,11 +780,63 @@ impl Macro {
 pub fn bake(page: Page, params: &BakeParams) -> Vec<Vec3> {
     let field = WorldField::lit_by(params.seed, params.light);
     let lattice = Macro::build(&page, &field);
-    let mut surface = Surface::new(page.width, page.height);
+    // One scene, rendered twice: once from the sun into a depth buffer and once
+    // from the camera into the surface. Building it here rather than inside each
+    // pass is the whole reason `GrassScene` exists — regenerating the blades for
+    // the shadow pass would nearly work, and "nearly" is what produces shadows
+    // that do not quite belong to the blades casting them.
+    let scene = GrassScene::build(page, &field, params);
+    let mut surface =
+        Surface::at_supersample(page.width, page.height, params.quality.supersample());
 
     lay_floor(&mut surface, &page, &field, &lattice);
-    plant_strokes(&mut surface, &page, &field, params);
-    resolve(&surface, &page, &lattice, params)
+    {
+        let mut painter =
+            Painter::at_scale(&mut surface, page.origin, params.light, page.px_per_metre)
+                .with_ribs_per_pixel(params.quality.ribs_per_pixel());
+        scene.draw(&mut painter);
+    }
+    let shadows = cast_shadows(&scene, params);
+    resolve_lit(&surface, &page, &lattice, params, shadows.as_deref())
+}
+
+/// Render the scene from the sun, once per sample over its disc.
+///
+/// Several maps rather than one, and averaged at the receiver rather than
+/// blurred afterwards. Blurring a hard shadow gives every edge the same
+/// penumbra whatever cast it; averaging several sun directions gives a narrow
+/// penumbra close to the caster and a wide one far from it, which is what a
+/// shadow actually does and is most of what stops a field of them reading as
+/// stencils.
+///
+/// Returns nothing at [`GrassRenderQuality::Preview`], which is the streaming
+/// tier and cannot afford a second pass over the geometry.
+pub fn cast_shadows(scene: &GrassScene, params: &BakeParams) -> Option<Vec<ShadowMap>> {
+    if params.quality.shadow_density() <= 0.0 {
+        return None;
+    }
+    let sun = iso::image_to_world(params.light).normalize_or(Vec3::Z);
+    // A genuine bound, not an estimate. A caster clipped out of the volume is a
+    // shadow that simply is not there, and only on the pages whose casters
+    // happened to fall outside.
+    let ceiling = scene.canopy_ceiling().max(0.05);
+    let maps: Vec<ShadowMap> = shadow::sun_samples(params.quality.sun_samples())
+        .into_iter()
+        .filter_map(|offset| {
+            ShadowMap::cast(
+                scene,
+                shadow::nudge(sun, offset, params.sun_radius),
+                ceiling,
+                params.quality,
+                // Half a texel of stagger between the maps, so the several
+                // grids do not agree about where their texel boundaries are.
+                // Without it the averaged penumbra keeps the grid of whichever
+                // map happened to dominate.
+                offset * 0.5,
+            )
+        })
+        .collect();
+    (!maps.is_empty()).then_some(maps)
 }
 
 /// Grow every mark the page holds onto an already-floored surface.
@@ -1173,7 +1264,22 @@ fn hue_only(from: Vec3, to: Vec3) -> Vec3 {
 }
 
 /// Assemble one light index per pixel and look it up in a ramp.
+///
+/// Kept as the shadowless entry point, because `benches/bake.rs` times the
+/// resolve stage on its own and a stage that silently included a shadow pass
+/// would be timing something the name does not say.
 pub fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams) -> Vec<Vec3> {
+    resolve_lit(surface, page, lattice, params, None)
+}
+
+/// [`resolve`], with the sun's own view of the scene.
+pub fn resolve_lit(
+    surface: &Surface,
+    page: &Page,
+    lattice: &Macro,
+    params: &BakeParams,
+    shadows: Option<&[ShadowMap]>,
+) -> Vec<Vec3> {
     let (width, height) = (page.width, page.height);
     let heights = surface.height_map(width, height);
     // Two radii of the same measurement, and they are half a metre apart because
@@ -1347,6 +1453,12 @@ pub fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakePar
                 detail,
             );
 
+            // Where this pixel's ground is, which is where a shadow lookup has
+            // to happen. The canopy height lifts it: a blade three centimetres
+            // up is shadowed by what is above *it*, not by what is above the
+            // soil beneath it.
+            let ground_here = page.ground_at(Vec2::new(fx + 0.5, fy + 0.5));
+
             let resolved = surface.resolve_pixel(x, y, |i| {
                 let (albedo, tone) = surface.pixel(i);
                 let blade_normal = surface.normal_at(i);
@@ -1364,14 +1476,37 @@ pub fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakePar
                 let gloss = lighting::sheen(blade_normal, half, GLOSS_POWER)
                     * (0.35 + surface.maturity_at(i) * 0.65);
 
-                let q = shoulder(
-                    albedo
-                        + world
-                        + params.form_light * form
-                        + params.leaf_transmission * through
-                        + params.gloss * gloss
-                        + lighting::underside_fill(surface.underside_at(i)),
-                );
+                // How much sun reaches this surface, averaged over the sun's
+                // disc. One map gives a hard edge; several sampled directions
+                // give a penumbra that widens with distance from the caster,
+                // which is what a shadow does and what a blur cannot imitate.
+                let sunlight = match shadows {
+                    Some(maps) if !maps.is_empty() => {
+                        let at = ground_here.extend(surface.top_at(i) * iso::METRES_PER_PX_UP);
+                        let total: f32 = maps
+                            .iter()
+                            .map(|map| map.visibility(at, blade_normal))
+                            .sum();
+                        total / maps.len() as f32
+                    }
+                    _ => 1.0,
+                };
+                // Sky fill first, then whatever direct light survives the
+                // shadow. Splitting them is the whole reason the G-buffer holds
+                // a normal rather than a shaded value: a shadow has to take out
+                // the *direct* term and leave the ambient one, or a shaded blade
+                // loses its form as well as its light.
+                let direct = params.sky_fill + (1.0 - params.sky_fill) * sunlight;
+                let lit = albedo
+                    + world
+                    + params.form_light * form * direct
+                    + params.leaf_transmission * through
+                    + params.gloss * gloss * sunlight
+                    + lighting::underside_fill(surface.underside_at(i));
+                // And the shadow itself, which reaches past the measured ramp
+                // into the extension below it — see [`palette::SHADOW_DEPTH`].
+                let occluded = (1.0 - sunlight) * params.cast_shadow;
+                let q = shoulder(lit) - occluded * palette::SHADOW_DEPTH;
                 let colour = palette::shade(tone, q);
                 let soil = surface.soil_at(i);
                 if soil <= 0.0 {
@@ -1912,6 +2047,88 @@ mod tests {
             "the plate's interior moved by {interior:.6} depending on where the \
              page grid was laid"
         );
+    }
+
+    #[test]
+    fn the_canopy_bound_is_never_beaten() {
+        // The shadow guard band is sized from `CANOPY_METRES`, so a mark that
+        // stands taller than it can cast onto a page from outside the band —
+        // and the symptom is not a clipped shadow, it is a missing one, on the
+        // pages whose casters happened to fall outside.
+        //
+        // Swept over real pages rather than reasoned about, because the bound is
+        // the product of four independent multipliers and any one of them can be
+        // raised without the others being looked at.
+        use crate::placement::CANOPY_METRES;
+        let mut tallest = 0.0f32;
+        for (index, origin) in crate::fixtures::PLACES.iter().enumerate() {
+            let params = BakeParams {
+                seed: bw_seed(index),
+                quality: GrassRenderQuality::Reference,
+                ..default()
+            };
+            let page = Page::new(*origin, 192, 192);
+            let field = WorldField::lit_by(params.seed, params.light);
+            let scene = GrassScene::build(page, &field, &params);
+            tallest = tallest.max(scene.canopy_ceiling());
+        }
+        assert!(
+            tallest <= CANOPY_METRES,
+            "the field grows {tallest:.3} m of canopy against a {CANOPY_METRES} m \
+             bound the shadow guard band is sized from"
+        );
+        // And not so far over that the band is costing area for nothing: every
+        // extra metre of reach widens the rectangle every scatter pass walks.
+        assert!(
+            tallest > CANOPY_METRES * 0.55,
+            "the canopy bound is {CANOPY_METRES} m for a field that reaches \
+             {tallest:.3} m, which is guard band nobody needs"
+        );
+    }
+
+    /// A stable per-place seed, so the sweep above covers different worlds.
+    fn bw_seed(index: usize) -> u64 {
+        0x5eed_1234u64.wrapping_add(index as u64 * 0x9e37_79b9)
+    }
+
+    #[test]
+    fn the_shadow_guard_covers_every_caster_that_can_reach_a_page() {
+        // Measured against the sun rather than against a constant, and swept
+        // down to the lowest elevation the renderer claims to support. Getting
+        // this wrong at 35° and right at 55° is exactly the shape of the bug
+        // this exists to prevent.
+        use crate::placement::{Bed, CANOPY_METRES, footprint};
+        let field = WorldField::lit_by(1, BakeParams::default().light);
+        for degrees in [35.0f32, 45.0, 55.0] {
+            let elevation = degrees.to_radians();
+            let params = BakeParams {
+                quality: GrassRenderQuality::Reference,
+                light: crate::lab::Key {
+                    azimuth: 0.0,
+                    elevation,
+                }
+                .direction(),
+                ..default()
+            };
+            for detail in [1.0f32, 0.5, 0.25] {
+                let page = Page::at_detail(Vec2::new(-64.0, -64.0), 128, 128, detail);
+                let bed = Bed {
+                    page: &page,
+                    field: &field,
+                    params: &params,
+                };
+                let (low, high) = footprint(&page, bed.caster_reach());
+                // Where the page itself is, without any band at all.
+                let (bare_low, bare_high) = footprint(&page, -1.0e6);
+                let needed = CANOPY_METRES / elevation.tan();
+                let margin = (bare_low - low).min(high - bare_high);
+                assert!(
+                    margin.x >= needed && margin.y >= needed,
+                    "at {degrees}° detail {detail} the band gives {margin:?} m \
+                     where a caster reaches {needed:.3} m"
+                );
+            }
+        }
     }
 
     #[test]

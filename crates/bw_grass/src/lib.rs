@@ -74,6 +74,7 @@ pub mod plugin;
 pub mod quality;
 pub mod rng;
 pub mod scene;
+pub mod shadow;
 pub mod stroke;
 pub mod surface;
 

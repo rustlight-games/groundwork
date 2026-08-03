@@ -50,7 +50,7 @@ fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
 /// Wider than the page in every direction, and much wider below it: grass grows
 /// up the screen, so a blade rooted off the bottom edge still leans into view,
 /// and one rooted off the top edge never does.
-pub fn footprint(page: &Page) -> (Vec2, Vec2) {
+pub fn footprint(page: &Page, caster_reach: f32) -> (Vec2, Vec2) {
     // Generous, and sized against the *arc length* of the longest mark rather
     // than against its height. Most marks in this field lie well over toward the
     // ground, so a stroke rooted off the left edge reaches sideways almost its
@@ -109,7 +109,31 @@ pub fn footprint(page: &Page) -> (Vec2, Vec2) {
         low = low.min(ground);
         high = high.max(ground);
     }
-    (low, high)
+
+    // And then again, by however far a *shadow* reaches — in **world metres**,
+    // after the AABB rather than before it.
+    //
+    // That ordering is the whole of this paragraph. A shadow's reach is a world
+    // distance, and widening the *page rectangle* by the equivalent number of
+    // cache pixels does not produce it: the projection is anisotropic, so a
+    // pixel across the screen is 0.71 of a pixel of ground while a pixel down it
+    // is 1.41, and the world margin that comes out the far side of the AABB is a
+    // fifth short in the worst direction. Measured, not reasoned about — the
+    // first version of this asked for 1.357 m and delivered 1.097.
+    //
+    // This is also the half of the guard band that geometry alone never asks
+    // for, and it fails in the nastiest way there is. A mark rooted up-light of
+    // the page and outside the band is not clipped, it is never generated — so
+    // its shadow is simply absent, on the pages whose casters happened to fall
+    // outside. Nothing about the page looks wrong; a stripe of the world is just
+    // missing its shade.
+    //
+    // Widened in every direction rather than only toward the sun. Doing it
+    // one-sided would save a little area and would mean a sign that has to be
+    // right, which is exactly the class of mistake that produces a defect nobody
+    // notices for a month.
+    let shade = Vec2::splat(caster_reach.max(0.0));
+    (low - shade, high + shade)
 }
 
 /// Grow everything that stands up.
@@ -205,6 +229,37 @@ pub struct Bed<'a> {
     pub params: &'a BakeParams,
 }
 
+impl Bed<'_> {
+    /// How far up-light a mark can be rooted and still shade this page, metres.
+    ///
+    /// Derived from the sun rather than written down, because it is a function
+    /// of the elevation — one over its tangent — and the elevation is a
+    /// parameter. At the 35° this renderer is built for it is one and a half
+    /// times the canopy's height; at 20° it would be nearly three times, and a
+    /// constant sized for one would silently under-guard the other.
+    pub fn caster_reach(&self) -> f32 {
+        if self.params.quality.shadow_density() <= 0.0 {
+            return 0.0;
+        }
+        let sun = crate::iso::image_to_world(self.params.light).normalize_or(Vec3::Z);
+        // A sixteenth over, so that a later nudge to the sun or the canopy does
+        // not need this recalculated on the same day. The band costs area and
+        // the area is worth less than the defect.
+        CANOPY_METRES * crate::shadow::reach_per_height(sun) * 1.0625
+    }
+}
+
+/// How high anything in the field can stand, world metres.
+///
+/// The tallest mark the vocabulary can grow: the longest arc a `Tangle` reaches
+/// at full vigour, at full tall-accent reach, standing near upright so almost
+/// all of that length becomes height. A bound rather than a measurement, because
+/// the guard band has to be sized before the field exists.
+///
+/// [`crate::bake::tests::the_canopy_bound_is_never_beaten`] sweeps the
+/// vocabulary against it rather than trusting this paragraph.
+pub const CANOPY_METRES: f32 = 0.95;
+
 /// Walk a jittered grid over the page's world footprint, placing one thing per
 /// cell.
 ///
@@ -226,7 +281,7 @@ fn scatter(
 ) {
     let Bed { page, params, .. } = *bed;
     let spacing = (1.0 / per_square_metre.max(0.01)).sqrt();
-    let (low, high) = footprint(page);
+    let (low, high) = footprint(page, bed.caster_reach());
     let (x0, y0) = (
         (low.x / spacing).floor() as i32,
         (low.y / spacing).floor() as i32,

@@ -47,6 +47,9 @@ use bw_grass::surface::resample;
 fn main() {
     let options = Options::parse();
     let mut params = BakeParams {
+        // The example exists to judge the picture, so it renders the tier the
+        // picture is judged at.
+        quality: bw_grass::GrassRenderQuality::Reference,
         seed: options.seed,
         ..default()
     };
