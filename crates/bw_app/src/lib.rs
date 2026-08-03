@@ -54,7 +54,7 @@ fn spawn_camera(mut commands: Commands) {
 /// between looks is the thing that stops anybody doing it.
 ///
 /// ```sh
-/// BW_VIEW=35 ./run     # a wide strategy camera
+/// BW_VIEW=55 ./run     # a wide strategy camera
 /// BW_VIEW=15 ./run     # a farming-sim camera
 /// ```
 ///

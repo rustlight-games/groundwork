@@ -25,6 +25,8 @@
 //!   painterly half. It is the thing that separates two overlapping blades of
 //!   the same colour, and no amount of runtime lighting substitutes for it.
 
+use std::sync::{LazyLock, OnceLock};
+
 use bevy::prelude::*;
 
 use crate::fastmath;
@@ -80,6 +82,54 @@ impl Profile {
             Profile::Stem => fastmath::pow(1.0 - s * 0.55, 0.7),
         }
     }
+}
+
+/// Normalised centreline terms shared by every stroke with the same step count.
+///
+/// A blade's world-space parameters differ, but its `s` positions, powers and
+/// width-profile values do not. Computing these inside every blade repeated two
+/// logarithms and several exponentials millions of times per page. The table is
+/// built with the exact same `f32` operations the loop used, then reused without
+/// changing a single raster input.
+#[derive(Clone, Copy)]
+struct StepSample {
+    s: f32,
+    s4: f32,
+    s8: f32,
+    bend: f32,
+    tip: f32,
+    root_shade: f32,
+    widths: [f32; 3],
+}
+
+static STEP_TABLES: LazyLock<[OnceLock<Box<[StepSample]>>; 513]> =
+    LazyLock::new(|| std::array::from_fn(|_| OnceLock::new()));
+
+fn step_table(steps: usize) -> &'static [StepSample] {
+    STEP_TABLES[steps].get_or_init(|| {
+        let inverse = 1.0 / steps as f32;
+        (0..=steps)
+            .map(|step| {
+                let s = step as f32 * inverse;
+                let log_s = fastmath::log2(s);
+                let log_rest = fastmath::log2(1.0 - s);
+                StepSample {
+                    s,
+                    s4: s.powi(4),
+                    s8: s.powi(8),
+                    bend: fastmath::pow_from_log2(log_s, 1.55),
+                    tip: fastmath::pow_from_log2(log_s, 1.4),
+                    root_shade: 0.085 * fastmath::pow_from_log2(log_rest, 2.5),
+                    widths: [
+                        Profile::Tapered.width_from_logs(s, log_s, log_rest),
+                        Profile::Oval.width_from_logs(s, log_s, log_rest),
+                        Profile::Stem.width_from_logs(s, log_s, log_rest),
+                    ],
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    })
 }
 
 /// One mark, described in world space and cache pixels.
@@ -187,6 +237,8 @@ pub struct Painter<'a> {
     /// a stroke is built means a mark is described once and drawn correctly at
     /// any scale.
     detail: f32,
+    /// Page-local fast path around the atomic read in each global lazy table.
+    step_tables: [Option<&'static [StepSample]>; 513],
 }
 
 impl<'a> Painter<'a> {
@@ -210,6 +262,7 @@ impl<'a> Painter<'a> {
             light_plane: plane.normalize_or_zero(),
             px_per_metre,
             detail: px_per_metre / iso::PX_PER_METRE,
+            step_tables: [None; 513],
         }
     }
 
@@ -289,6 +342,13 @@ impl<'a> Painter<'a> {
         let screen_length = stroke.length * self.px_per_metre * scale;
         let steps = (screen_length * 2.0).clamp(6.0, 512.0) as usize;
         let inverse = 1.0 / steps as f32;
+        let samples = if let Some(samples) = self.step_tables[steps] {
+            samples
+        } else {
+            let samples = step_table(steps);
+            self.step_tables[steps] = Some(samples);
+            samples
+        };
 
         // Walk the arc, integrating rather than interpolating, so the blade
         // keeps its length however far it bends.
@@ -309,23 +369,21 @@ impl<'a> Painter<'a> {
         // its sine and cosine be taken once for the whole blade rather than
         // once per rib.
         let turns = stroke.sway != 0.0 || stroke.kink_turn != 0.0;
+        let kinks = stroke.kink != 0.0 || stroke.kink_turn != 0.0;
+        let profile = stroke.profile as usize;
         let fixed_heading = fastmath::sin_cos(stroke.azimuth);
 
-        for step in 0..=steps {
-            let s = step as f32 * inverse;
-            // Both logarithms, once. Five of the terms below are powers of one
-            // or the other; taking them here is what makes the loop affordable.
-            let log_s = fastmath::log2(s);
-            let log_rest = fastmath::log2(1.0 - s);
+        for sample in samples {
+            let s = sample.s;
             // Smooth arc, plus an elbow. The smoothstep is narrow on purpose:
             // spread it out and the kink becomes just more curvature.
-            let elbow = {
+            let elbow = if kinks {
                 let t = ((s - stroke.kink_at) / 0.10).clamp(0.0, 1.0);
                 t * t * (3.0 - 2.0 * t)
+            } else {
+                0.0
             };
-            let angle = stroke.bend * fastmath::pow_from_log2(log_s, 1.55)
-                + stroke.curl * s.powi(4)
-                + stroke.kink * elbow;
+            let angle = stroke.bend * sample.bend + stroke.curl * sample.s4 + stroke.kink * elbow;
             let (sin_heading, cos_heading) = if turns {
                 fastmath::sin_cos(stroke.azimuth + stroke.sway * s * s + stroke.kink_turn * elbow)
             } else {
@@ -337,7 +395,7 @@ impl<'a> Painter<'a> {
             let tangent = (page - previous_page).normalize_or(Vec2::NEG_Y);
             previous_page = page;
 
-            let half = width * stroke.profile.width_from_logs(s, log_s, log_rest) + tip_width;
+            let half = width * sample.widths[profile] + tip_width;
             let depth = iso::depth(position) - stroke.depth_bias;
             // In *reference* pixels at every page scale, on purpose. Every
             // shading term downstream keys on how tall the canopy stands, and
@@ -354,11 +412,10 @@ impl<'a> Painter<'a> {
             // few pixels of a mark, not a pale upper half: spread it further and
             // the marks read as bright ribbons rather than as dark grass with
             // something bright riding on top of it.
-            let tip =
-                stroke.tip_light * fastmath::pow_from_log2(log_s, 1.4) + stroke.glint * s.powi(8);
+            let tip = stroke.tip_light * sample.tip + stroke.glint * sample.s8;
             // Roots sit in their own shadow. Without this every blade glows at
             // the base and the canopy loses its floor.
-            let root_shade = 0.085 * fastmath::pow_from_log2(log_rest, 2.5);
+            let root_shade = sample.root_shade;
 
             self.rib(
                 stroke,
@@ -498,6 +555,42 @@ mod tests {
     }
 
     #[test]
+    fn cached_step_terms_are_bit_exact() {
+        for steps in [6usize, 17, 64, 127, 256, 512] {
+            let inverse = 1.0 / steps as f32;
+            for (step, sample) in step_table(steps).iter().enumerate() {
+                let s = step as f32 * inverse;
+                let log_s = fastmath::log2(s);
+                let log_rest = fastmath::log2(1.0 - s);
+                assert_eq!(sample.s.to_bits(), s.to_bits());
+                assert_eq!(sample.s4.to_bits(), s.powi(4).to_bits());
+                assert_eq!(sample.s8.to_bits(), s.powi(8).to_bits());
+                assert_eq!(
+                    sample.bend.to_bits(),
+                    fastmath::pow_from_log2(log_s, 1.55).to_bits()
+                );
+                assert_eq!(
+                    sample.tip.to_bits(),
+                    fastmath::pow_from_log2(log_s, 1.4).to_bits()
+                );
+                assert_eq!(
+                    sample.root_shade.to_bits(),
+                    (0.085 * fastmath::pow_from_log2(log_rest, 2.5)).to_bits()
+                );
+                for (profile, cached) in [Profile::Tapered, Profile::Oval, Profile::Stem]
+                    .into_iter()
+                    .zip(sample.widths)
+                {
+                    assert_eq!(
+                        cached.to_bits(),
+                        profile.width_from_logs(s, log_s, log_rest).to_bits()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_stroke_marks_the_page() {
         let (mut surface, origin) = page(64, 64);
         let mut painter = Painter::new(
@@ -509,7 +602,7 @@ mod tests {
             root: painter.to_ground(Vec2::new(96.0, 140.0)).extend(0.0),
             ..default()
         });
-        let (heights, _) = surface.height_maps(64, 64);
+        let heights = surface.height_map(64, 64);
         assert!(heights.iter().any(|&h| h > 1.0), "nothing was drawn");
     }
 
@@ -528,7 +621,7 @@ mod tests {
                 length: 0.3,
                 ..default()
             });
-            let (heights, _) = surface.height_maps(64, 64);
+            let heights = surface.height_map(64, 64);
             heights.iter().cloned().fold(0.0f32, f32::max)
         };
         // Bend is the angle at the *tip*, and it grows along the blade, so a
@@ -588,7 +681,7 @@ mod tests {
         let mut painter = Painter::new(&mut surface, origin, Vec3::Z);
         let root = painter.to_ground(Vec2::new(-40.0, 48.0)).extend(0.0);
         painter.draw(&Stroke { root, ..default() });
-        let (heights, _) = surface.height_maps(32, 32);
+        let heights = surface.height_map(32, 32);
         for y in 0..32 {
             assert_eq!(heights[y * 32], 0.0, "row {y} picked up a wrapped stroke");
         }

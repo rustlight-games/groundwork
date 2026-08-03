@@ -463,11 +463,11 @@ fn page_stage(c: &mut Criterion) {
 
     // A slice out of `shade`, so that stage is not a single opaque number
     // either. It is the cheap half — one box filter over the supersampled
-    // height and occupancy channels — and knowing its size is what says the
+    // height channel — and knowing its size is what says the
     // rest of `shade` is the per-supersampled-pixel ramp work, which is where
     // an optimisation would have to go.
-    group.bench_function("shade.height_maps", |b| {
-        b.iter(|| planted.height_maps(black_box(TILE_PIXELS), black_box(TILE_PIXELS)))
+    group.bench_function("shade.height_map", |b| {
+        b.iter(|| planted.height_map(black_box(TILE_PIXELS), black_box(TILE_PIXELS)))
     });
 
     group.finish();

@@ -1867,7 +1867,7 @@ fn hue_only(from: Vec3, to: Vec3) -> Vec3 {
 /// Assemble one light index per pixel and look it up in a ramp.
 pub fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams) -> Vec<Vec3> {
     let (width, height) = (page.width, page.height);
-    let (heights, _buried) = surface.height_maps(width, height);
+    let heights = surface.height_map(width, height);
     // A fixed ceiling rather than this page's own tallest blade. Normalising by
     // a per-page maximum makes every derived term — the glaze, the cool drift —
     // depend on what happened to grow inside that particular rectangle, so two
@@ -2490,7 +2490,7 @@ mod tests {
                 // height therefore measures the reach of the *tall* part of a
                 // mark and calls it the reach of the mark. The density channel
                 // counts writes, so it sees all of it.
-                let (_, painted) = surface.height_maps(512, 512);
+                let painted = surface.painted_map(512, 512);
                 for y in 0..512 {
                     for x in 0..512 {
                         if painted[y * 512 + x] > 0.0 {
@@ -2561,7 +2561,7 @@ mod tests {
                 // height therefore measures the reach of the *tall* part of a
                 // mark and calls it the reach of the mark. The density channel
                 // counts writes, so it sees all of it.
-                let (_, painted) = surface.height_maps(512, 512);
+                let painted = surface.painted_map(512, 512);
                 for y in 0..512 {
                     for x in 0..512 {
                         if painted[y * 512 + x] > 0.0 {

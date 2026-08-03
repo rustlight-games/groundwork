@@ -30,37 +30,32 @@ impl Default for BattleCamera {
         // twenty-six metres at the conventional two metres to a tile, and
         // plenty of RTS cameras go wider still.
         //
-        // Fifty-five: about 98 × 55 metres of ground, which is a strategy camera
-        // rather than a farming one. The deciding measurement is not how much
-        // ground is visible but how big a *person* is on screen, because that is
-        // the thing the eye actually calibrates against. At this height on a
-        // 1080-pixel window a 1.8-metre figure stands about thirty-five pixels
-        // tall, which is where Warcraft III and Age of Empires sit and is the
-        // size a unit has to be for a formation to read as a formation. At
-        // thirty-five metres the same figure is fifty-six pixels and the view
-        // feels intimate — closer to an action game looking over one character
-        // than to a commander watching a battle.
+        // Thirty-five: about 62 × 35 metres of ground. On a 1080-pixel window a
+        // 1.8-metre figure stands about fifty-six pixels tall, close to the
+        // intimate isometric action framing used by Diablo rather than the much
+        // wider Warcraft/Age-of-Empires strategy view. It still leaves enough
+        // battlefield around a formation to read the fight rather than only the
+        // selected character.
         //
         // What the width costs is worth writing down, because it is the kind of
         // thing someone later "fixes" without knowing it was decided. The ground
         // is a baked cache at ninety-six pixels to the metre and is displayed at
-        // `window_height / view_height / 96` — here, a fifth. A blade of grass is
-        // roughly a quarter of a metre, so it lands at about five screen pixels,
-        // and the tip highlights average down to well under half the share that
-        // was baked. At this framing the grass is a *texture*. It is not a field
-        // of legible blades and no amount of per-blade work will make it one.
+        // `window_height / view_height / 96` — here, just under a third. A blade
+        // of grass roughly a quarter of a metre long lands at about eight screen
+        // pixels, so the painterly mark language remains visible instead of
+        // collapsing entirely into distant texture.
         //
         // Which settles an argument rather than losing one. Both art critiques of
         // this surface asked for the same things — larger regional shapes, calmer
         // ground between the clumps, less uniform micro-detail — and at a close
         // camera those are matters of taste. At this one they are forced:
         // anything below about ten screen pixels cannot be seen as detail, only
-        // as noise, so everything the eye is going to read has to be built at the
-        // scale of metres. Tune the ground against a `--view 55 --ruler` render,
-        // never against a 1:1 plate.
+        // as noise, so everything the eye is going to read still needs a clear
+        // middle and broad scale. Tune the ground against a `--view 35 --ruler`
+        // render, never against a 1:1 plate.
         //
         // `BW_VIEW` overrides it at run time — see `bw_app`.
-        Self { view_height: 55.0 }
+        Self { view_height: 35.0 }
     }
 }
 
@@ -114,6 +109,11 @@ mod tests {
     #[test]
     fn the_projection_frames_the_requested_height() {
         assert_eq!(framed_height(12.0), Some(12.0));
+    }
+
+    #[test]
+    fn the_default_uses_the_close_action_framing() {
+        assert_eq!(BattleCamera::default().view_height, 35.0);
     }
 
     #[test]

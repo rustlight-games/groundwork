@@ -19,6 +19,8 @@
 //! about 0.036 on a mean of 0.39 — under a tenth. Mounds in this art are a soft
 //! organising rhythm, not terrain.
 
+use std::cell::Cell;
+
 use bevy::prelude::*;
 
 use crate::rng::{Draw, Stream, fbm, value_noise};
@@ -357,17 +359,155 @@ impl Ground {
 pub const LIGHT_PLANE: Vec2 = Vec2::new(-0.724_1, -0.689_7);
 
 /// The composition fields for one world.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct WorldField {
     seed: u64,
     light: Vec2,
+    mound_cache: MoundCache,
+    blob_cache: Box<BlobCache>,
+}
+
+const MOUND_CACHE_SLOTS: usize = 256;
+
+#[derive(Clone, Copy, Debug)]
+struct MoundRecord {
+    present: bool,
+    centre: Vec2,
+    minor: f32,
+    major: f32,
+    sin: f32,
+    cos: f32,
+    amplitude: f32,
+    sharpness: f32,
+}
+
+impl MoundRecord {
+    const EMPTY: Self = Self {
+        present: false,
+        centre: Vec2::ZERO,
+        minor: 0.0,
+        major: 0.0,
+        sin: 0.0,
+        cos: 1.0,
+        amplitude: 0.0,
+        sharpness: 1.0,
+    };
+}
+
+#[derive(Debug)]
+struct MoundCache {
+    valid: [Cell<bool>; MOUND_CACHE_SLOTS],
+    keys: [Cell<i64>; MOUND_CACHE_SLOTS],
+    records: [Cell<MoundRecord>; MOUND_CACHE_SLOTS],
+}
+
+impl MoundCache {
+    fn new() -> Self {
+        Self {
+            valid: std::array::from_fn(|_| Cell::new(false)),
+            keys: std::array::from_fn(|_| Cell::new(0)),
+            records: std::array::from_fn(|_| Cell::new(MoundRecord::EMPTY)),
+        }
+    }
+
+    #[inline]
+    fn get(&self, key: i64) -> Option<MoundRecord> {
+        let slot = (crate::rng::scramble(key as u64) as usize) & (MOUND_CACHE_SLOTS - 1);
+        (self.valid[slot].get() && self.keys[slot].get() == key).then_some(self.records[slot].get())
+    }
+
+    #[inline]
+    fn insert(&self, key: i64, record: MoundRecord) {
+        let slot = (crate::rng::scramble(key as u64) as usize) & (MOUND_CACHE_SLOTS - 1);
+        self.keys[slot].set(key);
+        self.records[slot].set(record);
+        self.valid[slot].set(true);
+    }
+}
+
+const BLOB_CACHE_SLOTS: usize = 256;
+
+#[derive(Clone, Copy, Debug)]
+struct BlobRecord {
+    present: bool,
+    centre: Vec2,
+    base: f32,
+    stretch: f32,
+    sin: f32,
+    cos: f32,
+    phases: [f32; 5],
+    weights: [f32; 5],
+}
+
+impl BlobRecord {
+    const EMPTY: Self = Self {
+        present: false,
+        centre: Vec2::ZERO,
+        base: 0.0,
+        stretch: 1.0,
+        sin: 0.0,
+        cos: 1.0,
+        phases: [0.0; 5],
+        weights: [0.0; 5],
+    };
+}
+
+#[derive(Debug)]
+struct BlobRecordCache {
+    valid: [Cell<bool>; BLOB_CACHE_SLOTS],
+    keys: [Cell<i64>; BLOB_CACHE_SLOTS],
+    records: [Cell<BlobRecord>; BLOB_CACHE_SLOTS],
+}
+
+impl BlobRecordCache {
+    fn new() -> Self {
+        Self {
+            valid: std::array::from_fn(|_| Cell::new(false)),
+            keys: std::array::from_fn(|_| Cell::new(0)),
+            records: std::array::from_fn(|_| Cell::new(BlobRecord::EMPTY)),
+        }
+    }
+
+    #[inline]
+    fn slot(key: i64) -> usize {
+        (crate::rng::scramble(key as u64) as usize) & (BLOB_CACHE_SLOTS - 1)
+    }
+
+    #[inline]
+    fn get(&self, key: i64) -> Option<BlobRecord> {
+        let slot = Self::slot(key);
+        (self.valid[slot].get() && self.keys[slot].get() == key).then_some(self.records[slot].get())
+    }
+
+    #[inline]
+    fn insert(&self, key: i64, record: BlobRecord) {
+        let slot = Self::slot(key);
+        self.keys[slot].set(key);
+        self.records[slot].set(record);
+        self.valid[slot].set(true);
+    }
+}
+
+#[derive(Debug)]
+struct BlobCache {
+    tiers: [BlobRecordCache; 3],
+}
+
+impl BlobCache {
+    fn new() -> Self {
+        Self {
+            tiers: std::array::from_fn(|_| BlobRecordCache::new()),
+        }
+    }
 }
 
 impl WorldField {
-    pub const fn new(seed: u64) -> Self {
+    pub fn new(seed: u64) -> Self {
         Self {
             seed,
             light: LIGHT_PLANE,
+            mound_cache: MoundCache::new(),
+            blob_cache: Box::new(BlobCache::new()),
         }
     }
 
@@ -376,7 +516,102 @@ impl WorldField {
         Self {
             seed,
             light: Vec2::new(light.x, light.y).normalize_or(LIGHT_PLANE),
+            mound_cache: MoundCache::new(),
+            blob_cache: Box::new(BlobCache::new()),
         }
+    }
+
+    fn mound_record(&self, cell_x: i32, cell_y: i32) -> MoundRecord {
+        let key = ((cell_x as i64) << 32) | (cell_y as u32 as i64);
+        if let Some(record) = self.mound_cache.get(key) {
+            return record;
+        }
+        let mut draw = Draw::at(self.seed, Stream::Mound, cell_x, cell_y);
+        let record = if !draw.chance(0.74) {
+            MoundRecord::EMPTY
+        } else {
+            let centre = Vec2::new(cell_x as f32, cell_y as f32) * MOUND_SPACING
+                + Vec2::new(draw.unit(), draw.unit()) * MOUND_SPACING;
+            let extent = draw.range(MOUND_EXTENT.0, MOUND_EXTENT.1);
+            let aspect = if draw.chance(0.26) {
+                draw.range(0.85, 1.25)
+            } else {
+                draw.range(MOUND_ASPECT.0, MOUND_ASPECT.1)
+            };
+            let wander = draw.signed();
+            let adrift = draw.chance(0.20);
+            let spin = draw.range(0.0, std::f32::consts::TAU);
+            let strength = draw.unit();
+            let amplitude = 0.035 + strength * strength * 0.30;
+            let sharpness = draw.range(1.1, 2.4);
+            let root = aspect.sqrt();
+            let angle = if adrift {
+                spin
+            } else {
+                self.flow_at(centre) + wander * 0.5
+            };
+            let (sin, cos) = crate::fastmath::sin_cos(angle);
+            MoundRecord {
+                present: true,
+                centre,
+                minor: extent / root,
+                major: extent * root,
+                sin,
+                cos,
+                amplitude,
+                sharpness,
+            }
+        };
+        self.mound_cache.insert(key, record);
+        record
+    }
+
+    fn blob_record(
+        &self,
+        draw_x: i32,
+        draw_y: i32,
+        spacing: f32,
+        chance: f32,
+        size: (f32, f32),
+        salt: i32,
+    ) -> BlobRecord {
+        let tier = match salt {
+            0x00 => 0,
+            0x40 => 1,
+            _ => 2,
+        };
+        let key = ((draw_x as i64) << 32) | (draw_y as u32 as i64);
+        if let Some(record) = self.blob_cache.tiers[tier].get(key) {
+            return record;
+        }
+        let mut draw = Draw::at(self.seed, Stream::Dirt, draw_x, draw_y);
+        let record = if !draw.chance(chance) {
+            BlobRecord::EMPTY
+        } else {
+            let base_cell = Vec2::new((draw_x - salt) as f32, (draw_y + salt) as f32);
+            let centre = (base_cell + Vec2::new(draw.unit(), draw.unit())) * spacing;
+            let base = draw.range(size.0, size.1);
+            let stretch = draw.range(MIN_STRETCH * MIN_STRETCH, 1.0).sqrt();
+            let (sin, cos) = (self.flow_at(centre) + draw.signed() * 0.8).sin_cos();
+            let mut phases = [0.0; 5];
+            let mut weights = [0.0; 5];
+            for (index, harmonic) in (2..=6).enumerate() {
+                phases[index] = draw.range(0.0, std::f32::consts::TAU);
+                weights[index] = draw.range(0.08, 0.44) / harmonic as f32;
+            }
+            BlobRecord {
+                present: true,
+                centre,
+                base,
+                stretch,
+                sin,
+                cos,
+                phases,
+                weights,
+            }
+        };
+        self.blob_cache.tiers[tier].insert(key, record);
+        record
     }
 
     /// Height and shading together, because the second is analytic in the first.
@@ -457,7 +692,7 @@ impl WorldField {
 
         for dy in -2..=2 {
             for dx in -2..=2 {
-                let mut draw = Draw::at(self.seed, Stream::Mound, cx + dx, cy + dy);
+                let mound = self.mound_record(cx + dx, cy + dy);
                 // A quarter of the cells grow nothing. This is the single most
                 // effective thing in the function: one mound per cell, however
                 // hard it is jittered, tessellates — the field becomes bright
@@ -465,16 +700,13 @@ impl WorldField {
                 // traces the grid, and once seen it cannot be unseen. Leaving
                 // gaps breaks the network, and the gaps are also where the broad
                 // calm ground comes from.
-                if !draw.chance(0.74) {
+                if !mound.present {
                     continue;
                 }
                 // Every draw for this cell happens here, before anything that
                 // depends on where we are standing. A cell's mound has to be the
                 // same mound from every point that can see it, so no early-out
                 // may sit in the middle of the sequence.
-                let centre = Vec2::new(cx as f32 + dx as f32, cy as f32 + dy as f32)
-                    * MOUND_SPACING
-                    + Vec2::new(draw.unit(), draw.unit()) * MOUND_SPACING;
                 // Reject on the widest mound the vocabulary can grow, before
                 // drawing the eight values that say how wide *this* one is.
                 //
@@ -489,7 +721,7 @@ impl WorldField {
                 // Sound because [`MOUND_REACH`] is an upper bound on `major`
                 // below, which `mound_reach_bounds_every_ellipse` checks against
                 // the draws themselves rather than against this comment.
-                if (p - centre).length_squared() > MOUND_REACH * MOUND_REACH {
+                if (p - mound.centre).length_squared() > MOUND_REACH * MOUND_REACH {
                     continue;
                 }
                 // Smaller than the grid they sit on, so neighbours touch rather
@@ -497,7 +729,6 @@ impl WorldField {
                 // similar size and strength read as a pattern even when their
                 // placement is random, because the eye finds the repeated unit
                 // rather than the arrangement.
-                let extent = draw.range(MOUND_EXTENT.0, MOUND_EXTENT.1);
                 // Three ridges to every cushion. See the note above the function.
                 //
                 // The long axis is capped where it is because the window above is
@@ -505,18 +736,9 @@ impl WorldField {
                 // 3.2 metres — could be missed by a sample that should have seen
                 // it, and a *missed* mound is a step in the field, which is the
                 // one artefact this whole design is built to avoid.
-                let aspect = if draw.chance(0.26) {
-                    draw.range(0.85, 1.25)
-                } else {
-                    draw.range(MOUND_ASPECT.0, MOUND_ASPECT.1)
-                };
-                let wander = draw.signed();
-                let adrift = draw.chance(0.20);
-                let spin = draw.range(0.0, std::f32::consts::TAU);
                 // Squared, so most mounds are faint and a few are pronounced.
                 // A uniform draw makes every mound roughly as assertive as its
                 // neighbours, which is most of what "bubble terrain" is.
-                let strength = draw.unit();
                 // Unchanged even though the *lighting* on these was halved, and
                 // the split is the point. Amplitude does not decide how mounded
                 // the plate looks — `lit` is normalised, so it is scale-free —
@@ -525,44 +747,30 @@ impl WorldField {
                 // structure at a fifth of a metre and up comes from, and taking
                 // it out along with the directional shading flattens the plate
                 // at every radius rather than only at the one that was shouting.
-                let amplitude = 0.035 + strength * strength * 0.30;
                 // Falloff exponent: low is a dome, high is a plateau with a
                 // sharp shoulder. Mixing both is what stops every mound reading
                 // as the same shape at a glance.
-                let sharpness = draw.range(1.1, 2.4);
-
-                // Area-preserving: the long axis grows by exactly as much as the
-                // short one shrinks, so stretching a mound never also enlarges it.
-                let root = aspect.sqrt();
-                let (minor, major) = (extent / root, extent * root);
-                let offset = p - centre;
+                let offset = p - mound.centre;
                 // Reject on the semi-major axis before orienting anything. This
                 // is what keeps a per-mound flow lookup affordable: nothing
                 // outside the bounding circle can be inside the ellipse, and
                 // twenty of the twenty-five cells leave here.
-                if offset.length_squared() > major * major {
+                if offset.length_squared() > mound.major * mound.major {
                     continue;
                 }
                 // Ridges run along the local flow; a fifth strike out on their
                 // own. Without that minority the field acquires a *grain*, and a
                 // grain is only a subtler kind of pattern.
-                let angle = if adrift {
-                    spin
-                } else {
-                    self.flow_at(centre) + wander * 0.5
-                };
-
-                let (sin, cos) = crate::fastmath::sin_cos(angle);
                 let along = Vec2::new(
-                    offset.x * cos + offset.y * sin,
-                    offset.y * cos - offset.x * sin,
+                    offset.x * mound.cos + offset.y * mound.sin,
+                    offset.y * mound.cos - offset.x * mound.sin,
                 );
-                let local = Vec2::new(along.x / minor, along.y / major);
+                let local = Vec2::new(along.x / mound.minor, along.y / mound.major);
                 let falloff = 1.0 - local.length_squared();
                 if falloff <= 0.0 {
                     continue;
                 }
-                let height = amplitude * crate::fastmath::pow(falloff, sharpness);
+                let height = mound.amplitude * crate::fastmath::pow(falloff, mound.sharpness);
                 let squared = height * height;
                 let weight = squared * squared;
                 accumulated += weight;
@@ -579,10 +787,10 @@ impl WorldField {
                 // world, and projected the way everything else is: a world step
                 // of `(dx, dy)` moves `(dx - dy)` across the screen and
                 // `(dx + dy)` halved down it.
-                let gradient = Vec2::new(local.x / minor, local.y / major);
+                let gradient = Vec2::new(local.x / mound.minor, local.y / mound.major);
                 let outward = Vec2::new(
-                    gradient.x * cos - gradient.y * sin,
-                    gradient.x * sin + gradient.y * cos,
+                    gradient.x * mound.cos - gradient.y * mound.sin,
+                    gradient.x * mound.sin + gradient.y * mound.cos,
                 )
                 .normalize_or_zero();
                 let screen = Vec2::new(outward.x - outward.y, (outward.x + outward.y) * 0.5)
@@ -974,19 +1182,19 @@ impl WorldField {
         // dividing by the tightest stretch turns that into a world distance.
         let span = REJECT * size.1 / MIN_STRETCH;
         let reach = (span / spacing).ceil() as i32;
+        // The eroded rim is a property of the point being sampled, not of the
+        // blob contributing to it. Computing this inside the contributing-cell
+        // loop repeated the same three-octave field several times.
+        let bite = 0.72 + fbm(self.seed, Stream::Dirt, q.x * 9.0 + 5.0, q.y * 9.0, 3) * 0.56;
 
         for dy in -reach..=reach {
             for dx in -reach..=reach {
-                let mut draw = Draw::at(self.seed, Stream::Dirt, cx + dx, cy + dy);
+                let blob = self.blob_record(cx + dx, cy + dy, spacing, chance, size, salt);
                 // Most cells grow nothing. A patch per cell would read as a
                 // polka dot however irregular its outline.
-                if !draw.chance(chance) {
+                if !blob.present {
                     continue;
                 }
-                let centre = (Vec2::new(cell.x + dx as f32, cell.y + dy as f32)
-                    + Vec2::new(draw.unit(), draw.unit()))
-                    * spacing;
-                let base = draw.range(size.0, size.1);
                 // Elliptical, and freely oriented. Bare ground opens along the
                 // channels between clumps rather than as a disc, and a field of
                 // circles reads as damage rather than as ground however wobbly
@@ -995,39 +1203,34 @@ impl WorldField {
                 // shrinks. Dividing one axis alone would make every elongated
                 // patch a smaller patch too, and the total bare ground would
                 // quietly follow the aspect ratio around.
-                let stretch = draw.range(MIN_STRETCH * MIN_STRETCH, 1.0).sqrt();
                 // Lying along the same flow the ridges and the blades follow,
                 // loosely. A worn opening runs *with* the ground rather than
                 // across it, and openings that share a direction with the grass
                 // around them read as places the field wore through; openings
                 // scattered at every angle read as damage.
-                let (sin, cos) = (self.flow_at(centre) + draw.signed() * 0.8).sin_cos();
-                let world_offset = q - centre;
+                let world_offset = q - blob.centre;
                 let offset = Vec2::new(
-                    (world_offset.x * cos + world_offset.y * sin) * stretch,
-                    (world_offset.y * cos - world_offset.x * sin) / stretch,
+                    (world_offset.x * blob.cos + world_offset.y * blob.sin) * blob.stretch,
+                    (world_offset.y * blob.cos - world_offset.x * blob.sin) / blob.stretch,
                 );
                 let distance = offset.length();
-                if distance > base * REJECT {
+                if distance > blob.base * REJECT {
                     continue;
                 }
                 // Four harmonics of boundary wobble. Two would read as an
                 // ellipse and six as noise; four gives lobes and indentations.
                 let angle = offset.y.atan2(offset.x);
                 let mut radius = 1.0;
-                for harmonic in 2..=6 {
-                    let phase = draw.range(0.0, std::f32::consts::TAU);
-                    let weight = draw.range(0.08, 0.44) / harmonic as f32;
-                    radius += weight * (harmonic as f32 * angle + phase).cos();
+                for (index, harmonic) in (2..=6).enumerate() {
+                    radius +=
+                        blob.weights[index] * (harmonic as f32 * angle + blob.phases[index]).cos();
                 }
                 // Erode the rim at a much finer scale than the harmonics do.
                 // Six harmonics give an organic *outline*; they do not give a
                 // broken one, and an opening whose contour reads as a single
                 // smooth curve is a soft mask over the grass rather than ground
                 // the thatch has been worn off.
-                let bite =
-                    0.72 + fbm(self.seed, Stream::Dirt, q.x * 9.0 + 5.0, q.y * 9.0, 3) * 0.56;
-                let edge = base * radius.max(0.25) * bite;
+                let edge = blob.base * radius.max(0.25) * bite;
                 best = best.max(1.0 - (distance / edge).clamp(0.0, 1.0));
             }
         }

@@ -7,8 +7,9 @@
 //! reads as a stack of decals rather than as something with an inside. So each
 //! pixel remembers the isometric depth of whatever is currently on top of it,
 //! and a stroke arriving later only takes the pixel if it is genuinely in front.
-//! Everything that loses still counts — it is recorded as occlusion — which is
-//! where the dark interiors of the mounds come from.
+//! Losing fragments carry no visible payload. Canopy shadowing comes from the
+//! winning height field, so recording every failed depth test only added a hot
+//! read-modify-write that resolve discarded.
 //!
 //! Depth, not height, is the test. [`crate::iso::depth`] folds "how far down the
 //! screen is this rooted" together with "how high does it stand", which is the
@@ -39,11 +40,9 @@ pub const SUPERSAMPLE: usize = 3;
 /// no change to a single pixel of output.
 ///
 /// Twelve bytes, and the byte fields are bytes on purpose — `top` is a height in
-/// final pixels and nothing in this field stands 255 of them tall, `buried`
-/// saturates long before it overflows, and `soil` is a blend the eye reads to
-/// perhaps six bits.
+/// final pixels and nothing in this field stands 255 of them tall, and `soil` is
+/// a blend the eye reads to perhaps six bits.
 #[derive(Clone, Copy)]
-#[repr(C)]
 struct Cell {
     /// Isometric depth of whatever currently owns this pixel.
     depth: f32,
@@ -53,12 +52,6 @@ struct Cell {
     top: u8,
     /// Which ramp the owning stroke shades through.
     tone: u8,
-    /// How many strokes have been buried at this pixel, saturating.
-    ///
-    /// The cheapest possible measure of "how much grass is there", and the only
-    /// one available for free: a pixel that twenty strokes fought over is deep
-    /// inside a clump, and a pixel nothing contested is a gap.
-    buried: u8,
     /// How far the floor at this pixel has turned to bare earth, `0..255`.
     ///
     /// A blend rather than a choice, and that is the whole point of it being a
@@ -92,7 +85,6 @@ impl Surface {
                     light: 0.0,
                     top: 0,
                     tone: Tone::Soil as u8,
-                    buried: 0,
                     soil: 0,
                 };
                 width * height
@@ -119,7 +111,6 @@ impl Surface {
             // A blade covering bare earth is a blade, not earth.
             cell.soil = 0;
         }
-        cell.buried = cell.buried.saturating_add(1);
     }
 
     /// Fill every pixel unconditionally — the floor pass, and nothing else.
@@ -149,17 +140,9 @@ impl Surface {
             light,
             top: 0,
             tone: Tone::Thatch as u8,
-            buried: 0,
             soil: (soil.clamp(0.0, 1.0) * 255.0) as u8,
         };
-        for target in &mut self.cells[index..index + count] {
-            // `buried` is the one channel the floor does not own: it counts what
-            // the stroke pass has already thrown at this pixel, and the floor
-            // going down afterwards must not forget it.
-            let buried = target.buried;
-            *target = cell;
-            target.buried = buried;
-        }
+        self.cells[index..index + count].fill(cell);
     }
 
     /// How far toward bare earth this pixel's floor has gone, `0..1`.
@@ -173,30 +156,45 @@ impl Surface {
         y * self.width + x
     }
 
-    /// Canopy height and contested-ness, box-filtered to final resolution.
-    ///
-    /// Both of the derived shading terms — local occlusion and the fixed
-    /// directional shadow — want a smooth height field rather than the jagged
-    /// per-stroke one, and neither needs supersampled detail.
-    pub fn height_maps(&self, final_width: usize, final_height: usize) -> (Vec<f32>, Vec<f32>) {
+    /// Canopy height, box-filtered to final resolution.
+    pub fn height_map(&self, final_width: usize, final_height: usize) -> Vec<f32> {
         let mut heights = vec![0.0f32; final_width * final_height];
-        let mut density = vec![0.0f32; final_width * final_height];
         let inverse = 1.0 / (SUPERSAMPLE * SUPERSAMPLE) as f32;
         for y in 0..final_height {
             for x in 0..final_width {
-                let (mut height, mut buried) = (0u32, 0u32);
+                let mut height = 0u32;
                 for sy in 0..SUPERSAMPLE {
                     let row = (y * SUPERSAMPLE + sy) * self.width + x * SUPERSAMPLE;
                     for cell in &self.cells[row..row + SUPERSAMPLE] {
                         height += cell.top as u32;
-                        buried += cell.buried as u32;
                     }
                 }
                 heights[y * final_width + x] = height as f32 * inverse;
-                density[y * final_width + x] = buried as f32 * inverse;
             }
         }
-        (heights, density)
+        heights
+    }
+
+    /// Coverage helper for shape-bound tests. Production pages lay a floor
+    /// before strokes, so this intentionally remains test-only.
+    #[cfg(test)]
+    pub(crate) fn painted_map(&self, final_width: usize, final_height: usize) -> Vec<f32> {
+        let mut painted = vec![0.0; final_width * final_height];
+        let inverse = 1.0 / (SUPERSAMPLE * SUPERSAMPLE) as f32;
+        for y in 0..final_height {
+            for x in 0..final_width {
+                let mut count = 0usize;
+                for sy in 0..SUPERSAMPLE {
+                    let row = (y * SUPERSAMPLE + sy) * self.width + x * SUPERSAMPLE;
+                    count += self.cells[row..row + SUPERSAMPLE]
+                        .iter()
+                        .filter(|cell| cell.depth.is_finite())
+                        .count();
+                }
+                painted[y * final_width + x] = count as f32 * inverse;
+            }
+        }
+        painted
     }
 
     /// The stroke light index and tone at a supersampled pixel.
@@ -372,16 +370,13 @@ mod tests {
     }
 
     #[test]
-    fn a_further_stroke_is_buried_rather_than_lost() {
+    fn a_further_stroke_does_not_steal_the_pixel() {
         let mut surface = Surface::new(2, 2);
         surface.write(0, 5.0, 0.9, Tone::Grass, 20.0);
         surface.write(0, 1.0, 0.1, Tone::Thatch, 4.0);
         let (light, tone) = surface.pixel(0);
         assert_eq!(tone, Tone::Grass, "the buried stroke stole the pixel");
         assert!((light - 0.9).abs() < 1e-6);
-        // But it still counted: this is where cavity darkness comes from.
-        let (_, density) = surface.height_maps(2, 2);
-        assert!(density[0] > 0.0);
     }
 
     #[test]
