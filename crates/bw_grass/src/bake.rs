@@ -219,7 +219,7 @@ pub struct BakeParams {
     /// cooler as well as darker and its lights warmer as well as brighter, and a
     /// field that varies only in value reads as one plastic colour under a lamp.
     pub cool: f32,
-    /// How much chroma the body of the field gives up, leaving the tips alone.
+    /// How much chroma the *shadows* give up, tapering to none at the tips.
     ///
     /// A deliberate, measured departure from the reference rather than a closer
     /// match to it. The art this ramp was sampled from is a saturated painting
@@ -304,7 +304,7 @@ impl Default for BakeParams {
             base_light: 0.556,
             tip_light: 0.42,
             glint: 0.775,
-            side_light: 0.075,
+            side_light: 0.118,
             // Barely pulled back, and the restraint is the lesson. The obvious
             // reading of "too visually active" is to take contrast out of the
             // marks, and it is wrong: measured against the art, the contrast at
@@ -343,9 +343,9 @@ impl Default for BakeParams {
             // the field; variation *within* one only makes it noisy. They cost
             // the same and this is the one worth having.
             scatter: 0.50,
-            glaze: 0.12,
+            glaze: 0.155,
             cool: 0.155,
-            temper: 0.18,
+            temper: 0.165,
             drift: 0.52,
             soften: 0.065,
         }
@@ -515,7 +515,16 @@ fn lay_floor(surface: &mut Surface, page: &Page, field: &WorldField, lattice: &M
             // Same mean, twice the spread. Almost nothing reaches the bottom —
             // `mottle` is fractal noise and piles up around its middle — which
             // is exactly the population the measurement is asking for.
-            let light = 0.17 + mottle * 0.54 + grain * 0.34 * soil + bare * 0.05 + loose * 0.10
+            // The grain fades out toward the middle of an opening. Earth that is
+            // as agitated at its centre as at its rim reads as dead moss rather
+            // than as soil — what makes a surface look like packed ground is
+            // that it is *smoother* than the vegetation around it, and the
+            // texture belongs at the disturbed edge where the thatch broke up.
+            let light = 0.17
+                + mottle * 0.54
+                + grain * 0.36 * soil * (1.0 - soil * 0.55)
+                + bare * 0.05
+                + loose * 0.10
                 - rim * 0.14;
 
             for sy in 0..SUPERSAMPLE {
@@ -607,7 +616,7 @@ fn plant(painter: &mut Painter, bed: &Bed) {
         // does read as that patch being out of focus; thinning them across a
         // quarter of the view reads as a quieter passage of the same meadow,
         // and quiet passages are what the detailed ones are measured against.
-        |ground| 0.72 + ground.resolution * 0.34,
+        |ground| 0.60 + ground.resolution * 0.52,
         grow_tuft,
     );
     scatter(
@@ -1012,15 +1021,23 @@ impl Mark {
         // that reads unmistakably as a blade, `Broad` and `Buried` are the marks
         // that stop being individually legible and become mass, and between them
         // they are now over half the field.
+        // Cut again toward the straight and the massed. The curled families —
+        // `Sway`, `Hook`, `Tangle` — are now under a sixth of the field between
+        // them, down from over a third two rounds ago, because a tangle of thin
+        // hooked shapes is what every *other* kind of ground cover looks like.
+        // Moss, clover, low fern and seaweed are all read from the same cue, and
+        // it is not the individual shape that carries it, it is what fraction of
+        // the marks curl. Grass is a straight tapered blade with at most one
+        // bend in it, and the reading flips somewhere around a fifth.
         let weights = [
-            0.27 - loose * 0.10,  // Dash
+            0.31 - loose * 0.11,  // Dash
             0.14 - loose * 0.05,  // Kink
-            0.11 - loose * 0.04,  // Sway
-            0.075 - loose * 0.03, // Hook
+            0.085 - loose * 0.03, // Sway
+            0.05 - loose * 0.02,  // Hook
             0.10 + loose * 0.05,  // Fleck
-            0.13 + loose * 0.07,  // Broad
-            0.045 + loose * 0.02, // Tangle
-            0.13 + loose * 0.06,  // Buried
+            0.15 + loose * 0.08,  // Broad
+            0.03 + loose * 0.015, // Tangle
+            0.135 + loose * 0.06, // Buried
         ];
         let total: f32 = weights.iter().sum();
         let mut cursor = 0.0;
@@ -1057,7 +1074,7 @@ impl Mark {
         // pixels spread across a third of the plate stop being highlights and
         // become the base colour, and then the actual base has to read as shadow
         // to get any separation at all.
-        let lit = 0.09 + ground.resolution * 0.11;
+        let lit = 0.068 + ground.resolution * 0.082;
         let glint = if draw.chance(lit) {
             // Well-described ground gets brighter accents as well as more of
             // them, which is what keeps its local contrast up while the loosely
@@ -1100,7 +1117,29 @@ impl Mark {
             // sprinkled at a fixed rate across the whole field. A uniform
             // scatter of pale stems says "some blades are dry"; a scatter that
             // thickens through the drier regions says the region is.
-            tone: if draw.chance(0.004 + ground.hue.max(0.0) * 0.055) {
+            // Straw belongs where the ground is already drifting olive, and in a
+            // ring around every opening.
+            //
+            // The fringe term is the middle stage of the three an edge of bare
+            // earth needs: dense grass, then sparse *dry* blades, then open
+            // soil. Without it an opening has two stages and they meet at a
+            // feathered boundary between green and brown, which reads as one
+            // material painted over the other however irregular the outline is.
+            // Grass at the lip of a scuff is drier than grass a hand's width
+            // back — less root, more sun, whatever wore the patch also wore it —
+            // and half a dozen straw-coloured blades around a rim say that
+            // faster than any amount of shaping.
+            //
+            // Keyed to a band rather than to `bare` itself, so it peaks on the
+            // rim and falls away to nothing in both directions. Straw in the
+            // middle of a clearing is dead grass; straw at its edge is the edge.
+            tone: if draw.chance(
+                0.004
+                    + ground.hue.max(0.0) * 0.055
+                    + smoothstep(0.05, 0.30, ground.bare)
+                        * (1.0 - smoothstep(0.42, 0.80, ground.bare))
+                        * 0.24,
+            ) {
                 Tone::Dry
             } else {
                 Tone::Grass
@@ -1566,13 +1605,42 @@ fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams)
             // walks the hue toward emerald, reads as calmer at a glance, and
             // costs almost nothing on any row of the comparison — the same
             // perceptual result for a twentieth of the measured drift.
+            // A real chroma reduction, weighted by how deep in shade the pixel
+            // is: hardest in the shadows, half as hard through the body, none at
+            // all on the tips.
+            //
+            // The first attempt at this only took red out, because pulling
+            // toward grey raised the plate's mean blue by forty percent and that
+            // looked like a disaster. It is not one — `channel.blue` is not a
+            // term in `metrics::distance`, and it could not sensibly be, because
+            // this palette's blue sits at 0.04 where a one-part-in-fifty change
+            // is a forty percent change. The only thing a desaturation actually
+            // costs is the `saturation` row, and that row is being deliberately
+            // spent: the reference is a saturated painting to be looked at, and
+            // this is a floor that has to sit under an army.
+            //
+            // Toward the pixel's own luminance, so it is exactly a chroma move
+            // and cannot touch exposure or the tone percentiles. Shadows that are
+            // cooler *and* less saturated than the light is most of what
+            // separates a painted surface from one green under a dimmer lamp —
+            // the cooling alone was only ever half the statement.
+            // Toward a cool green of the same luminance, never toward grey.
+            //
+            // Grey is the obvious desaturation target and it is subtly the wrong
+            // one: it drains the hue as well as the chroma, and a shaded passage
+            // that has lost its hue reads as haze lying over the field rather
+            // than as shadow in it. The measured `saturation` row cannot tell the
+            // two apart — both land on the same number — which is exactly why
+            // this has to be decided by eye and then written down.
+            //
+            // So the target keeps a clear green bias and gives up most of its
+            // chroma rather than all of it. The blend then does two things at
+            // once and they are the two things the shade wanted: less saturated,
+            // and cooler, because the target's red is well below its green.
             let luma = resolved.dot(Vec3::new(0.2126, 0.7152, 0.0722));
-            let calm = params.temper * (1.0 - smoothstep(0.40, 0.60, luma));
-            let calmed = hue_only(
-                resolved,
-                Vec3::new(resolved.x * 0.86, resolved.y, resolved.z * 1.06),
-            );
-            let resolved = resolved.lerp(calmed, calm.clamp(0.0, 1.0));
+            let calm = params.temper * (1.0 - smoothstep(0.28, 0.62, luma));
+            let muted = hue_only(resolved, Vec3::splat(luma) * Vec3::new(0.80, 1.14, 0.84));
+            let resolved = resolved.lerp(muted, calm.clamp(0.0, 1.0));
 
             // Then the region's own hue, which is keyed to nowhere near the same
             // thing — see [`BakeParams::drift`]. Both ends are gentle multiples

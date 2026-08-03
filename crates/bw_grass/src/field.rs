@@ -548,7 +548,7 @@ impl WorldField {
             // Hue that tracked brightness would only be a longer way of saying
             // the same thing: the pale regions warm, the dim ones cool, and the
             // field still reads as one colour under a moving lamp.
-            hue: fbm(self.seed, Stream::Hue, p.x * 0.115 + 29.0, p.y * 0.115, 3) * 2.0 - 1.0,
+            hue: fbm(self.seed, Stream::Hue, p.x * 0.085 + 29.0, p.y * 0.085, 3) * 2.0 - 1.0,
             bare: self.bare(world, height, density),
             colony: smoothstep(
                 0.42,
