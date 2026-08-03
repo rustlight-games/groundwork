@@ -62,12 +62,28 @@ use bw_grass::fixtures::{PLACES, SCREEN, ZOOMS, place_name};
 use bw_grass::iso;
 use bw_grass::surface::resample;
 
-/// How much a timing may move before it is called a regression.
+/// How much the single-threaded page latency may move before it is a regression.
 ///
-/// Fifteen percent, because a timing on a laptop under thermal load moves ten
-/// between runs of identical code. Tighter than that and the suite cries wolf
-/// often enough to be ignored, which is worse than not having it.
-const TIMING_TOLERANCE: f64 = 0.15;
+/// Fifteen percent, because a timing under thermal load moves ten between runs
+/// of identical code. Tighter than that and the suite cries wolf often enough to
+/// be ignored, which is worse than not having it.
+const LATENCY_TOLERANCE: f64 = 0.15;
+
+/// How much a whole-view fill may move before it is a regression.
+///
+/// Forty, and the gap between this and [`LATENCY_TOLERANCE`] is the point.
+/// `view_fill` is wall clock across every core, so it carries the scheduler,
+/// the thermal state and whatever else the machine is doing on top of the work
+/// itself. Measured here across three runs of *identical* code it moved −33.5%,
+/// +11.0% and +39.6% on different rows — so at fifteen percent this number
+/// would report a regression most times it was run, and a gate that fires on
+/// noise gets switched off.
+///
+/// It stays in the suite because it is the only thing that says how long a cold
+/// view takes to fill, and it stays *reported* at every run. It just does not
+/// get to fail one on its own. The latency row is the one to believe: same work,
+/// one thread, and it moved 3.2% across those same runs.
+const VIEW_TOLERANCE: f64 = 0.40;
 
 /// How much a structural count may move: not at all.
 ///
@@ -445,10 +461,19 @@ fn report_against_baseline(current: &Report, path: &str) {
         );
     }
 
-    // Two tolerances, because the families are not noisy in the same way, and
-    // one number that covers both would either miss real timing regressions or
-    // report arithmetic as noise.
-    let timings = current.regressions_against(&baseline, TIMING_TOLERANCE);
+    // Three tolerances, because the three families are not noisy in the same
+    // way. One number covering all of them would either miss a real latency
+    // regression or report the scheduler as one.
+    let latency: Vec<_> = current
+        .regressions_against(&baseline, LATENCY_TOLERANCE)
+        .into_iter()
+        .filter(|change| change.name.starts_with("grass.page_bake"))
+        .collect();
+    let views: Vec<_> = current
+        .regressions_against(&baseline, VIEW_TOLERANCE)
+        .into_iter()
+        .filter(|change| change.name == "grass.view_fill")
+        .collect();
     let exact: Vec<_> = current
         .regressions_against(&baseline, EXACT_TOLERANCE)
         .into_iter()
@@ -456,7 +481,7 @@ fn report_against_baseline(current: &Report, path: &str) {
         .collect();
 
     println!();
-    for change in timings.iter().filter(|c| !c.name.contains("view_p")) {
+    for change in latency.iter().chain(&views) {
         println!(
             "REGRESSION  {}[{}]  {:.1}% worse",
             change.name,
@@ -470,10 +495,11 @@ fn report_against_baseline(current: &Report, path: &str) {
             change.name, change.scenario, change.baseline, change.current
         );
     }
-    if timings.is_empty() && exact.is_empty() {
+    if latency.is_empty() && views.is_empty() && exact.is_empty() {
         println!(
-            "no regressions past {:.0}% on timings.",
-            TIMING_TOLERANCE * 100.0
+            "no regressions: page latency within {:.0}%, view fill within {:.0}%, counts exact.",
+            LATENCY_TOLERANCE * 100.0,
+            VIEW_TOLERANCE * 100.0
         );
     }
     if new > 0 {
