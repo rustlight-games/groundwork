@@ -536,7 +536,16 @@ impl Default for BakeParams {
             fine: 3800.0,
             leaves: 4.0,
 
-            blade_length: (0.05, 0.40),
+            // The short end is lifted rather than the whole range scaled, and
+            // that distinction is what keeps the guard band affordable. A tuft
+            // has to stand clear of the fine layer to read as a plant at all —
+            // there is seventy times as much fine grass as there is tuft, so a
+            // tuft whose blades are the same height simply joins it and the
+            // plate reads as a carpet with denser patches. But clearance is a
+            // statement about the *shortest* blade in a tuft, and multiplying
+            // the whole distribution to get it stacks onto four other
+            // multipliers and puts metre-and-a-half blades in a meadow.
+            blade_length: (0.14, 0.38),
             blade_width: (0.42, 1.95),
             // Well off vertical even at the low end. Grass drawn standing up is
             // grass drawn as objects; this art draws it as strokes lying along
@@ -547,7 +556,10 @@ impl Default for BakeParams {
             blade_bend: (0.35, 1.40),
 
             base_light: 0.556,
-            tip_light: 0.42,
+            // Down by a fifth while `TIP_CURVE` went up by two thirds, which is
+            // one instruction rather than two: the same light, gathered onto the
+            // last few pixels of a mark instead of spread along its upper half.
+            tip_light: 0.34,
             // Up, while the *number* of marks carrying one came down by a third.
             // The two moves are the same instruction: a highlight should be a
             // reward on a chosen tip rather than a property of the surface. Peak
@@ -604,7 +616,11 @@ impl Default for BakeParams {
             //
             // It is also the only lighting term whose scale is larger than half
             // a metre, which is where the plate is still measurably flat.
-            mound_light: 0.42,
+            // Down by a quarter, now that `BROAD_LIGHT` compresses its upward
+            // half as well. The two moves are one instruction: the mound is a
+            // rhythm and not a source, and a rhythm that brightens a whole
+            // region is announcing itself.
+            mound_light: 0.32,
             elevation_light: 0.035,
             crown_light: 0.038,
             micro_occlusion: 0.030,
@@ -646,7 +662,7 @@ impl Default for BakeParams {
             sun_radius: crate::shadow::SUN_RADIUS,
             transmission: 0.205,
             light_blur: 4,
-            region: 0.32,
+            region: 0.20,
             // The one term that raises mid-scale organisation without touching
             // a single pixel of high-frequency contrast, because it varies from
             // tuft to tuft and a tuft is a fifth of a metre — exactly the radius
@@ -1162,6 +1178,94 @@ pub fn lay_floor(surface: &mut Surface, page: &Page, field: &WorldField, lattice
     }
 }
 
+/// Everything the renderer knew, beside the picture it produced.
+///
+/// ## Why a neural renderer needs more than the colour
+///
+/// The expensive path decides a great many things from hashes the cheap input
+/// cannot see. Whether *this* broad blade forked, which way its face turned,
+/// how much canopy is stacked behind it — none of that is recoverable from a
+/// low-resolution plate, and a network trained on pixels alone has no choice but
+/// to average over the possibilities. Averaged forks are soft tips, and averaged
+/// occlusion is a flat interior; both are exactly the failures the whole of this
+/// work was meant to remove.
+///
+/// So the structure travels with the target. Not all of it will be needed at
+/// inference — most of these are here to find out *which* are — but a channel
+/// that was never exported cannot be tested for.
+#[derive(Default)]
+pub struct Passes {
+    /// The mark's own light index, before any lighting.
+    pub albedo: Vec<f32>,
+    /// World-space surface normal of whatever won each pixel.
+    pub normal: Vec<Vec3>,
+    /// The terrain's normal, at metres.
+    pub ground_normal: Vec<Vec3>,
+    /// The crown's normal, at centimetres.
+    pub canopy_normal: Vec<Vec3>,
+    /// Canopy height above the soil, in reference pixels.
+    pub height: Vec<f32>,
+    /// How much sun reaches the canopy, `0..1`.
+    pub sunlight: Vec<f32>,
+    /// How much sky the canopy's own shape takes away, `0..1`.
+    pub occlusion: Vec<f32>,
+    /// How much geometry stacked up at each pixel.
+    pub optical: Vec<f32>,
+    /// Root-to-tip position of the winning mark, `0..1`.
+    pub along: Vec<f32>,
+    /// How mature the winning mark is, `0..1`.
+    pub maturity: Vec<f32>,
+}
+
+impl Passes {
+    fn resize(&mut self, pixels: usize) {
+        self.albedo = vec![0.0; pixels];
+        self.normal = vec![Vec3::Z; pixels];
+        self.ground_normal = vec![Vec3::Z; pixels];
+        self.canopy_normal = vec![Vec3::Z; pixels];
+        self.height = vec![0.0; pixels];
+        self.sunlight = vec![1.0; pixels];
+        self.occlusion = vec![0.0; pixels];
+        self.optical = vec![0.0; pixels];
+        self.along = vec![0.0; pixels];
+        self.maturity = vec![0.0; pixels];
+    }
+
+    /// Every channel, as a name and a single-component view.
+    ///
+    /// For writing them out. Vector channels are split rather than packed,
+    /// because a normal written as an image has to be encoded to be looked at
+    /// and the encoding is the caller's business.
+    pub fn scalars(&self) -> Vec<(&'static str, &[f32])> {
+        vec![
+            ("albedo", &self.albedo),
+            ("height", &self.height),
+            ("sunlight", &self.sunlight),
+            ("occlusion", &self.occlusion),
+            ("optical", &self.optical),
+            ("along", &self.along),
+            ("maturity", &self.maturity),
+        ]
+    }
+
+    /// The vector channels, likewise.
+    pub fn vectors(&self) -> Vec<(&'static str, &[Vec3])> {
+        vec![
+            ("normal", &self.normal),
+            ("ground-normal", &self.ground_normal),
+            ("canopy-normal", &self.canopy_normal),
+        ]
+    }
+}
+
+/// Where the sum of the macro lighting terms starts to compress.
+///
+/// Six broad terms that each behave perfectly can still *agree*, and where they
+/// do the light index runs off the top of the ramp. The symptom is a flat pale
+/// region — the brightest passage in the plate carrying none of its own detail,
+/// because everything in it has clipped to the same stop.
+const MACRO_KNEE: f32 = 0.16;
+
 /// The radii the horizon scan samples along each direction, reference pixels.
 ///
 /// Geometric rather than uniform, which is what lets five taps cover two orders
@@ -1173,10 +1277,12 @@ const AO_RADII: [usize; 5] = [3, 7, 15, 30, 56];
 
 /// Radius the canopy is blurred by to get the crown surface, reference pixels.
 ///
-/// A third of a tuft. Wide enough that individual blades are gone and only the
-/// bunch's own shape is left; narrow enough that neighbouring bunches have not
-/// merged into one dune.
-const CROWN_BLUR: usize = 18;
+/// A seventh of a metre. Wide enough that individual blades are gone and only
+/// the bunch's own shape is left; narrow enough that neighbouring bunches have
+/// *not* merged into one dune — which is the failure that matters, because a
+/// merged crown surface gives every tuft the same normal and every tuft the same
+/// light, and a field of equally lit tufts is a carpet.
+const CROWN_BLUR: usize = 13;
 
 /// How tightly the waxy sheen gathers.
 ///
@@ -1275,16 +1381,53 @@ const RELIEF_REACH: f32 = 17.0;
 /// direction, which the field wanted anyway.
 const BROAD_DARK: f32 = 0.58;
 
-/// Keep a signed term's positive half and compress its negative half.
+/// How much of a broad lighting term's *upward* half survives.
+///
+/// The mirror of [`BROAD_DARK`], and it took real shadows arriving before the
+/// need for it was visible.
+///
+/// That rule says light may be broad and dark may not, because a broad dark area
+/// has no caster and reads as a stain. The reverse is just as true and was
+/// hidden while the field had no shadows to compare against: **a broad bright
+/// area has no source.** The sun does not get stronger over there. A metre-wide
+/// pale patch is the field inventing exposure, and once there are genuine
+/// shadows beside it the patch stops reading as "sunlit" and starts reading as
+/// blown out — a passage with no incident in it, which is the same complaint as
+/// a featureless dark one and for the same reason.
+///
+/// So the slowly-varying terms now give up part of both halves, and the *fast*
+/// ones — the tip lift, the glint, the blade's own form — keep theirs entirely.
+/// Bright then only ever appears as a small thing among larger duller things,
+/// which is where it is legible as a highlight.
+///
+/// Less severe than `BROAD_DARK` on purpose. A broad bright area is a milder
+/// fault than a broad dark one: the eye forgives a hazy sunlit passage far more
+/// readily than a shadow with nothing casting it.
+const BROAD_LIGHT: f32 = 0.66;
+
+/// Compress both halves of a slowly-varying term.
+///
+/// One function where there were two. It began as `squashed`, which kept a
+/// term's positive half whole and compressed only its negative half, because at
+/// the time the only broad artefact the field could produce was a dark stain —
+/// see [`BROAD_DARK`]. Real shadows made the other half visible: a broad *bright*
+/// area has no source either, and beside a genuine shadow it reads as blown out
+/// rather than as sunlit. So both halves are compressed, by different amounts,
+/// and the asymmetry between the two constants is the whole of what is left of
+/// the original rule.
 ///
 /// Deliberately linear on each side rather than a smooth curve through zero: a
 /// curve would also flatten the small values, which are most of the field, and
-/// the point is to change what *large* negative excursions do without touching
-/// the gentle modulation everywhere else. Continuous at zero, so nothing here
-/// can print an edge.
+/// the point is to change what *large* excursions do without touching the gentle
+/// modulation everywhere else. Continuous at zero, so nothing here can print an
+/// edge.
 #[inline]
-fn squashed(value: f32, below: f32) -> f32 {
-    if value >= 0.0 { value } else { value * below }
+fn broad(value: f32) -> f32 {
+    if value >= 0.0 {
+        value * BROAD_LIGHT
+    } else {
+        value * BROAD_DARK
+    }
 }
 
 /// Rebalance a colour shift so it moves hue without also moving exposure.
@@ -1337,6 +1480,28 @@ pub fn resolve_lit(
     params: &BakeParams,
     shadows: Option<&[ShadowMap]>,
 ) -> Vec<Vec3> {
+    resolve_passes(surface, page, lattice, params, shadows, None)
+}
+
+/// [`resolve_lit`], optionally recording what it saw.
+///
+/// The auxiliary passes exist for the neural renderer rather than for the
+/// picture, and they are gathered *here* rather than reconstructed afterwards
+/// for one reason: several of them — how much sun reached a point, how much sky
+/// the canopy left it — are computed in this loop and nowhere else. Rebuilding
+/// them from the finished plate would be guessing at the renderer's own working,
+/// which is exactly what a training target must not require.
+pub fn resolve_passes(
+    surface: &Surface,
+    page: &Page,
+    lattice: &Macro,
+    params: &BakeParams,
+    shadows: Option<&[ShadowMap]>,
+    mut passes: Option<&mut Passes>,
+) -> Vec<Vec3> {
+    if let Some(passes) = passes.as_deref_mut() {
+        passes.resize(page.width * page.height);
+    }
     let (width, height) = (page.width, page.height);
     let heights = surface.height_map(width, height);
     // Two radii of the same measurement, and they are half a metre apart because
@@ -1509,14 +1674,28 @@ pub fn resolve_lit(
             // macro lighting describes every form equally and reads as a map of
             // the height field rather than as light falling on ground.
             let stated = lattice.at(&lattice.statement, fx, fy).clamp(0.0, 1.4);
-            macro_light[index] = params.mound_light * wrapped * stated
+            // Every term here varies over metres, so every one of them is
+            // subject to [`BROAD_LIGHT`] as well as [`BROAD_DARK`]. The fast
+            // terms — the tip lift, the glint, the blade's own form — are
+            // applied per supersample below and keep both halves in full.
+            let slow = params.mound_light * broad(wrapped) * stated
                 + params.transmission * through
-                + params.elevation_light * (rise - 0.45)
-                + params.crown_light * (crown - 0.4)
+                + params.elevation_light * broad(rise - 0.45)
+                + params.crown_light * broad(crown - 0.4)
                 - params.micro_occlusion * micro
-                + params.canopy_relief * squashed(relief, BROAD_DARK)
+                + params.canopy_relief * broad(relief)
                 - params.shadow * shadow[index]
-                + params.region * squashed(tint, BROAD_DARK);
+                + params.region * broad(tint);
+            // And a soft ceiling on their sum, which is a different failure from
+            // any one of them being too strong. Six terms that each behave
+            // perfectly can still agree, and where they do the light index runs
+            // off the top of the ramp and a whole region goes flat pale — the
+            // brightest thing in the picture carrying none of its detail.
+            macro_light[index] = if slow > MACRO_KNEE {
+                MACRO_KNEE + (slow - MACRO_KNEE) * 0.35
+            } else {
+                slow
+            };
         }
     }
 
@@ -1620,7 +1799,16 @@ pub fn resolve_lit(
                 // in deep shade end up darker than a dim one in full sun, which
                 // no additive term can do.
                 let q = shoulder(lit) - (1.0 - light) * params.shade_depth;
-                let colour = palette::shade(tone, q);
+                // Through the material axes rather than the bare ramp — see
+                // [`palette::Material`]. One index cannot say *which* kind of
+                // bright a bright pixel is, and the field's whole remaining
+                // complaint was that bright meant lime everywhere.
+                let material = palette::Material {
+                    exposure: light,
+                    along: surface.along_at(i),
+                    maturity: surface.maturity_at(i),
+                };
+                let colour = palette::shade_material(tone, q, material);
                 let soil = surface.soil_at(i);
                 if soil <= 0.0 {
                     colour
@@ -1746,6 +1934,47 @@ pub fn resolve_lit(
                 },
             );
             colours[index] = resolved.lerp(shifted, drift.abs());
+
+            if let Some(passes) = passes.as_deref_mut() {
+                // Averaged over the supersampled block, exactly as the colour
+                // is, so every channel describes the same pixel.
+                let step = surface.supersample();
+                let inverse = 1.0 / (step * step) as f32;
+                let (mut albedo, mut normal) = (0.0f32, Vec3::ZERO);
+                let (mut along, mut optical, mut mature) = (0.0f32, 0.0f32, 0.0f32);
+                for sy in 0..step {
+                    for sx in 0..step {
+                        let i = surface.index(x * step + sx, y * step + sy);
+                        albedo += surface.pixel(i).0;
+                        normal += surface.normal_at(i);
+                        along += surface.along_at(i);
+                        optical += surface.optical_at(i);
+                        mature += surface.maturity_at(i);
+                    }
+                }
+                passes.albedo[index] = albedo * inverse;
+                passes.normal[index] = normal.normalize_or(Vec3::Z);
+                passes.along[index] = along * inverse;
+                passes.optical[index] = optical * inverse;
+                passes.maturity[index] = mature * inverse;
+                passes.height[index] = canopy;
+                passes.occlusion[index] = horizon[index];
+                passes.ground_normal[index] = ground_normal;
+                passes.canopy_normal[index] = canopy_normal;
+                // One lookup at the canopy's own height rather than sixteen —
+                // this pass is a summary, and the sun does not vary inside a
+                // final pixel by anything a network could use.
+                passes.sunlight[index] = match shadows {
+                    Some(maps) if !maps.is_empty() => {
+                        let at = ground_here.extend(canopy * iso::METRES_PER_PX_UP);
+                        maps.iter()
+                            .map(|map| map.visibility(at, canopy_normal))
+                            .sum::<f32>()
+                            / maps.len() as f32
+                    }
+                    _ => 1.0,
+                };
+            }
 
             // Glaze the low canopy back into its neighbourhood, and leave the
             // marks that stand proud of it crisp. Height is the right selector:

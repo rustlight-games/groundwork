@@ -1,17 +1,42 @@
 # The grass reference renderer
 
-The grass has been built against a real-time budget: bake a page in tens of
+The grass was built against a real-time budget: bake a page in tens of
 milliseconds on a background thread, stream it, draw it once. That constraint is
-being lifted. The surface is becoming the **training target for a neural
-renderer**, which means the expensive path no longer has to run at frame rate —
-it has to be *right*, deterministic, and reproducible.
+gone. The surface is now the **training target for a neural renderer**, so the
+expensive path no longer has to run at frame rate — it has to be *right*,
+deterministic, and reproducible.
 
-This document is the plan for that change. It is written to be executed from,
-so it names files, constants and the gate each phase is finished at.
+**Status: built.** All eight phases below are in the binary. This document
+describes what exists and why; the phase headings are kept because each one
+names a decision that is expensive to revisit, not because any of them is
+outstanding.
 
-## What is actually missing
+```sh
+cargo run --release -p bw_grass --example grass_lab      # the laboratory plate
+cargo run --release -p bw_grass --example grass_lab -- --sweep
+cargo run --release -p bw_grass --example grass_bake -- --quality reference
+cargo run --release -p bw_grass --example grass_dataset -- --shards 64 --aovs
+```
 
-Three things separate the current plate from the target art, in order of weight.
+## What it costs
+
+One 256-pixel page at the authoring scale, single-threaded, on a quiet machine:
+
+| Tier | Per page | Supersample | Shadows | Sun samples | Occlusion |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `Preview` | 250 ms | 3× | none | — | blur difference |
+| `Dataset` | 1.00 s | 4× | 3× density | 4 | 8 directions |
+| `Reference` | 4.40 s | 4× | 4× density | 12 | 16 directions |
+
+Against 65 ms before this work, at a quality the tiers did not previously
+distinguish. A four-shard paired corpus with every auxiliary pass takes about a
+second a shard on sixteen cores, so a four-thousand-shard corpus is minutes.
+
+## What was actually missing
+
+Three things separated the plate from the target art, in order of weight. All
+three are addressed; the diagnosis is kept because it is the reasoning the
+design rests on.
 
 **There are no normals anywhere in the system.** Every lighting term in the
 baker is derived from a height field: `Ground::lit` is a scalar dome-facing
@@ -61,9 +86,23 @@ reading as fur.
 | Lowest supported sun elevation | **35°** | Shadow reach 1.43 × canopy height; scene footprint grows about half again |
 | The streaming runtime (`plugin.rs`) | **Preview quality only** | No `Page::for_view` wiring, no atlas, no mip chain — the reference path is free of every real-time constraint |
 
-The second decision deliberately deprioritises what `CLAUDE.md` currently calls
-"the single largest remaining win in this crate". It stops being a win when the
-runtime it optimises is no longer the product.
+The second deliberately deprioritises what used to be called the single largest
+remaining win in this crate. It stops being a win when the runtime it optimises
+is no longer the product.
+
+### Elevation is a world angle, and image `+Z` is not up
+
+Worth its own heading because it cost a day and would cost anyone else the same.
+The renderer authors its key light in *image* coordinates where `+Z` points at
+the **viewer**, and this camera looks down at 35° — so a light built as
+`(plane · cos θ, sin θ)` sits nowhere near `θ` above the horizon. A "35° sun"
+constructed that way measured 55°, and the shadow guard band, which is sized
+from one over the tangent of the elevation, came out a third short of what the
+field actually casts.
+
+`iso::image_to_world` is the bridge and carries the warning; `lab::Key` places
+the sun in the world and solves for the image vector that keeps the screen
+bearing. Both have tests that pin the trap rather than the fix.
 
 ## Architecture
 

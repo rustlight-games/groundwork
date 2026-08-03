@@ -49,7 +49,7 @@ fn main() {
     let mut params = BakeParams {
         // The example exists to judge the picture, so it renders the tier the
         // picture is judged at.
-        quality: bw_grass::GrassRenderQuality::Reference,
+        quality: options.quality,
         seed: options.seed,
         ..default()
     };
@@ -307,6 +307,9 @@ fn write_png(path: &str, colours: &[Vec3], width: usize, height: usize) {
 }
 
 struct Options {
+    /// Which tier to render. The example exists to judge the picture, so it
+    /// defaults to the tier the picture is judged at.
+    quality: bw_grass::GrassRenderQuality,
     out: String,
     width: usize,
     height: usize,
@@ -328,6 +331,7 @@ struct Options {
 impl Options {
     fn parse() -> Self {
         let mut options = Self {
+            quality: bw_grass::GrassRenderQuality::Reference,
             out: "grass_plate.png".to_string(),
             width: 1448,
             height: 1086,
@@ -392,6 +396,14 @@ impl Options {
                 }
                 "--ruler" => options.ruler = true,
                 "--tiled" => options.tiled = true,
+                "--quality" => {
+                    options.quality = match value(index).as_str() {
+                        "preview" => bw_grass::GrassRenderQuality::Preview,
+                        "dataset" => bw_grass::GrassRenderQuality::Dataset,
+                        _ => bw_grass::GrassRenderQuality::Reference,
+                    };
+                    index += 1;
+                }
                 other => eprintln!("ignoring unknown argument {other}"),
             }
             index += 1;

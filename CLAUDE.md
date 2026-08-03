@@ -37,7 +37,7 @@ crates/
   bw_ai        observation encoding, DQN, policies
   bw_bench     benchmark fixtures, metrics, reporting
   bw_render    presentation: interpolation, camera, debug overlays
-  bw_grass     grass: a baked isometric ground-surface cache and its renderer
+  bw_grass     grass: an offline reference renderer and a baked page cache
   bw_ui        screens and HUD, plus GameState
   bw_app       composition root
 
@@ -123,7 +123,12 @@ reason generalises: **descriptors are for deciding whether something looks
 right; they are useless for deciding what an optimisation cost.** A plate can
 lose a fifth of its stroke texture and hold every descriptor inside its band.
 
-The look is settled, so the grass suite now measures speed and self-similarity:
+The suite therefore measures speed and self-similarity. Note that
+self-similarity is the right gate for an *optimisation* and the wrong one for a
+deliberate look change — the reference-renderer work moved every pixel on
+purpose, and the snapshot baseline was retired rather than obeyed. What gates a
+look change instead is the structural invariants: seams, reach bounds,
+world-coordinate purity, stable streams, and the laboratory plate.
 
 - `cargo bench -p bw_grass` — criterion, and deliberately **granular**. `bake()`
   is five public stages (`fields`, `lattice`, `floor`, `strokes`, `shade`), each
@@ -194,6 +199,10 @@ rtk cargo run -p bw_forge -- validate            # every content change
 rtk cargo run -p bw_forge -- score-rocks         # rock generator metrics
 rtk cargo run -p bw_train --release -- --episodes 10
 rtk cargo run --release -p bw_grass --example grass_bake     # a plate, headless
+rtk cargo run --release -p bw_grass --example grass_bake -- --quality reference
+rtk cargo run --release -p bw_grass --example grass_lab      # the laboratory plate
+rtk cargo run --release -p bw_grass --example grass_lab -- --sweep   # turn the sun
+rtk cargo run --release -p bw_grass --example grass_dataset -- --aovs
 rtk cargo run --release -p bw_grass --example grass_snapshot # photograph, compare
 rtk cargo run --release -p bw_grass --example grass_sandbox  # the live renderer
 rtk cargo bench -p bw_grass                                  # where the time goes
@@ -282,28 +291,29 @@ Real, currently true, and worth knowing before you trip over them:
   no such test, and its generator registry currently omits `bw_fx_rocks`. The
   trainer/game parity invariant is therefore unenforced.
 - The grass has no wind, no trampling and no animated crown layer. The baked
-  surface is static, and the guide's rear/front crown split — the thing that
-  lets a unit stand *in* the grass rather than on it — is not built.
+  surface is static, and the rear/front crown split — the thing that lets a unit
+  stand *in* the grass rather than on it — is not built.
 - Each grass page is its own texture and its own draw call, so a 1080p view is a
   couple of hundred draws rather than the handful an atlas-packed cache would
-  need. It runs at 60 fps today; it will not scale. `grass.view_pages` in the
-  snapshot report is the count, per camera height. `Page::for_view` cuts this by
-  the square of the camera's display scale — about twenty-four times at the
-  shipping height — but **`bw_grass::plugin` does not call it yet**: it still
-  streams every page at the authoring scale. Wiring it up is the single largest
-  remaining win in this crate and it is a renderer change, not a baker one.
+  need. `Page::for_view` would cut this by the square of the camera's display
+  scale and `bw_grass::plugin` still does not call it. **This is deliberately
+  parked**: the streaming renderer is now a development tier only — see
+  [docs/GRASS_REFERENCE_RENDERER.md](docs/GRASS_REFERENCE_RENDERER.md) — and
+  optimising a runtime that is being replaced by a neural renderer is work with
+  no destination.
 - A page's bake scale is now a parameter (`Page::at_detail`), and the art
   constants scale with it — see `Page::detail` for what does and does not. Pages
   still have no mip chain, so a page is only sampled cleanly near the scale it
   was baked at; the difference is that the scale is now chosen rather than fixed
   at 96 cache pixels per world metre.
-- A page is baked in isolation but its macro lattice is laid out from its own
-  origin at a six-pixel stride, and 256 is not a multiple of six. So neighbouring
-  pages read the composition fields from points up to four pixels apart, and a
-  region baked whole differs from the same region baked as pages across about a
-  fifth of its pixels. The join itself is continuous — `pages_meet_without_a_seam`
-  measures that — but the two bake paths are not interchangeable, and a
-  comparison must use the same one on both sides.
+- A page baked with `bake` rather than `bake_padded` has its neighbourhood-
+  reading shading terms computed against whatever part of the neighbourhood fell
+  inside it, and the directional relief offset collapses within seventeen pixels
+  of the page's left edge. `bake_padded` — which `BakeRegion` and the dataset
+  exporter both use — rasterises the surrounding ground and crops, and its pad is
+  derived from the chain of reaches rather than picked. Plain `bake` keeps the
+  artefact and is the streaming tier's path, where a page popping in with a
+  slightly different relief at one edge is not what anybody notices.
 - `bw_fx_rocks` varies its palette by applying one hue drift to all three tones
   equally, which leaves the lightest-to-darkest spread unchanged. So
   `luminance_spread` reads exactly 0.360 for all ten seeds — a dead column that

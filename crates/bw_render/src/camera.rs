@@ -30,32 +30,33 @@ impl Default for BattleCamera {
         // twenty-six metres at the conventional two metres to a tile, and
         // plenty of RTS cameras go wider still.
         //
-        // Thirty-five: about 62 × 35 metres of ground. On a 1080-pixel window a
-        // 1.8-metre figure stands about fifty-six pixels tall, close to the
-        // intimate isometric action framing used by Diablo rather than the much
-        // wider Warcraft/Age-of-Empires strategy view. It still leaves enough
+        // Twenty-eight: about 50 × 28 metres of ground. On a 1080-pixel window a
+        // 1.8-metre figure stands about seventy pixels tall, inside the intimate
+        // isometric action framing used by Diablo rather than the much wider
+        // Warcraft/Age-of-Empires strategy view. It still leaves enough
         // battlefield around a formation to read the fight rather than only the
         // selected character.
         //
         // What the width costs is worth writing down, because it is the kind of
         // thing someone later "fixes" without knowing it was decided. The ground
         // is a baked cache at ninety-six pixels to the metre and is displayed at
-        // `window_height / view_height / 96` — here, just under a third. A blade
-        // of grass roughly a quarter of a metre long lands at about eight screen
+        // `window_height / view_height / 96` — here, about two fifths. A blade of
+        // grass roughly a quarter of a metre long lands at about ten screen
         // pixels, so the painterly mark language remains visible instead of
         // collapsing entirely into distant texture.
         //
         // Which settles an argument rather than losing one. Both art critiques of
         // this surface asked for the same things — larger regional shapes, calmer
         // ground between the clumps, less uniform micro-detail — and at a close
-        // camera those are matters of taste. At this one they are forced:
-        // anything below about ten screen pixels cannot be seen as detail, only
-        // as noise, so everything the eye is going to read still needs a clear
-        // middle and broad scale. Tune the ground against a `--view 35 --ruler`
-        // render, never against a 1:1 plate.
+        // camera those are matters of taste. At this one they are still close to
+        // forced: anything below about ten screen pixels cannot be seen as
+        // detail, only as noise, and a blade sits right on that line here, so
+        // everything the eye is going to read still needs a clear middle and
+        // broad scale. Tune the ground against a `--view 28 --ruler` render,
+        // never against a 1:1 plate.
         //
         // `BW_VIEW` overrides it at run time — see `bw_app`.
-        Self { view_height: 35.0 }
+        Self { view_height: 28.0 }
     }
 }
 
@@ -113,7 +114,7 @@ mod tests {
 
     #[test]
     fn the_default_uses_the_close_action_framing() {
-        assert_eq!(BattleCamera::default().view_height, 35.0);
+        assert_eq!(BattleCamera::default().view_height, 28.0);
     }
 
     #[test]

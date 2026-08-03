@@ -252,13 +252,19 @@ impl Bed<'_> {
 /// How high anything in the field can stand, world metres.
 ///
 /// The tallest mark the vocabulary can grow: the longest arc a `Tangle` reaches
-/// at full vigour, at full tall-accent reach, standing near upright so almost
-/// all of that length becomes height. A bound rather than a measurement, because
-/// the guard band has to be sized before the field exists.
+/// at full vigour, at full tall-accent reach, on the leading flank of a piled
+/// crown, standing near upright so almost all of that length becomes height. A
+/// bound rather than a measurement, because the guard band has to be sized
+/// before the field exists.
+///
+/// It costs real work to raise. The shadow guard is this times one over the
+/// tangent of the sun's elevation, and the guard is area every scatter pass
+/// walks on every page — so a metre added here is paid for a few hundred
+/// thousand times.
 ///
 /// [`crate::bake::tests::the_canopy_bound_is_never_beaten`] sweeps the
 /// vocabulary against it rather than trusting this paragraph.
-pub const CANOPY_METRES: f32 = 0.95;
+pub const CANOPY_METRES: f32 = 1.20;
 
 /// Walk a jittered grid over the page's world footprint, placing one thing per
 /// cell.
@@ -407,7 +413,7 @@ pub const MARGIN: f32 = 140.0;
 fn plant_light(draw: &mut Draw, ground: &Ground, params: &BakeParams) -> f32 {
     params.base_light
         + draw.normal() * params.scatter
-        + ground.crown * 0.05
+        + ground.crown * 0.02
         // Roots that overhang bare ground darken. Placement alone does not make
         // a patch read as a depression; this does.
         // Lifted, not lowered, over bare ground. A stroke lying across pale
@@ -474,7 +480,7 @@ fn fine_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &BakeParams
         azimuth,
         // Short. This layer is a surface, and a surface made of long marks is
         // a surface made of objects.
-        length: draw.range(0.055, 0.125) * (0.80 + ground.density * 0.40),
+        length: draw.range(0.048, 0.105) * (0.80 + ground.density * 0.40),
         bend: draw.range(0.55, 1.25),
         curl: draw.range(0.0, 0.5),
         sway: draw.signed() * 0.35,
@@ -489,7 +495,7 @@ fn fine_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &BakeParams
         tone: Tone::Grass,
         base_light: (params.base_light - 0.05
             + draw.normal() * 0.07
-            + ground.crown * 0.05
+            + ground.crown * 0.02
             + ground.bare * 0.10)
             .clamp(0.05, 0.95),
         tip_light: params.tip_light * draw.range(0.5, 0.9),
@@ -689,7 +695,7 @@ fn grow_tuft(
     // world. Seeded from the tuft, so it is still a pure function of position.
     let mut inner = Draw::from_seed(draw.seed() ^ ((Stream::Tiller as u64) << 48));
 
-    let crown = Crown::grow(&mut inner, ground);
+    let crown = Crown::grow(&mut inner, ground, flow);
 
     // The dark under-canopy goes down first, and it goes down *before* anything
     // that will stand over it. Not for correctness — the depth test sorts it out
@@ -801,14 +807,26 @@ fn grow_tuft(
             // keeps that reading from tuft to tuft.
             let age = 1.0 - (blade as f32 / blades as f32) * inner.range(0.35, 0.62);
 
+            // How high this side of the crown stands. The leaning flank grows
+            // taller and stays more upright; the trailing one is shorter and lies
+            // further over, which is what turns a dome into something with a front
+            // and a back.
+            let pile = crown.pile(*root);
+
             let mut stroke = pick_mark(&mut inner, ground, role).shape(&mut inner, params, ground);
             // A tiny offset within the bundle, so the leaves share a root
             // without being coincident.
             let jitter = Vec2::new(inner.signed(), inner.signed()) * crown.spacing * 0.18;
             stroke.root = (centre + *root + jitter).extend(0.0);
             stroke.azimuth = tiller_heading + across * fan + inner.signed() * 0.09;
-            stroke.length *= vigour * reach * role.length(&mut inner) * age;
-            stroke.bend += role.lean(&mut inner);
+            // The pile moves length at half strength and bend at full. Height
+            // is the expensive half — every metre of canopy widens the shadow
+            // guard band on every page — and lying over is the half that
+            // actually reads, because a trailing skirt is a silhouette rather
+            // than a measurement.
+            stroke.length *=
+                vigour * reach * role.length(&mut inner) * age * (1.0 + (pile - 1.0) * 0.5);
+            stroke.bend += role.lean(&mut inner) + (1.0 - pile) * 1.1;
             stroke.width *= role.width(&mut inner) * (0.72 + age * 0.38);
             stroke.twist *= role.twist();
 
@@ -845,9 +863,9 @@ fn grow_tuft(
                 // neighbourhood rather than be averaged with it — and it has to
                 // catch the light whether or not this particular mark drew a
                 // glint.
-                stroke.base_light = (stroke.base_light + 0.10).min(0.95);
+                stroke.base_light = (stroke.base_light + 0.03).min(0.95);
                 stroke.glint = stroke.glint.max(params.glint * inner.range(0.75, 1.15));
-                stroke.tip_light *= 1.3;
+                stroke.tip_light *= 1.45;
             }
             emit(marks, page, stroke);
         }
@@ -874,6 +892,19 @@ struct Crown {
     count: usize,
     /// The bounding ellipse, tuft-local metres.
     radius: Vec2,
+    /// Which way the crown piles up, and how hard.
+    ///
+    /// A clump is not a dome. It grows into its own flow, so one flank stands
+    /// high and the opposite one trails away — and *that* asymmetry is what
+    /// gives a tuft a lit side and a dark side under a fixed sun. A symmetric
+    /// crown has neither: every flank of it faces the light equally, so the
+    /// whole thing reads as uniformly bright and the field turns into a carpet
+    /// with brighter patches rather than a field of plants.
+    ///
+    /// Derived from the tuft's own flow, never from the sun. Which tufts catch
+    /// the light and which do not is then a property of where they grew, and
+    /// turning the key relights the field instead of regrowing it.
+    lean: Vec2,
     /// How tall the blades on it want to be, metres.
     height: f32,
     /// How far apart the shoots want to sit, metres.
@@ -892,7 +923,7 @@ struct Lobe {
 }
 
 impl Crown {
-    fn grow(draw: &mut Draw, ground: &Ground) -> Self {
+    fn grow(draw: &mut Draw, ground: &Ground, flow: Vec2) -> Self {
         // The footprint, well inside the guard band's `TUFT_RADIUS`. The lobes
         // are offset within it and every one of them has to stay inside, or a
         // tuft could root a blade further out than the band allows for — which
@@ -900,6 +931,11 @@ impl Crown {
         let span = draw.range(0.55, 1.0);
         let aspect = draw.range(0.60, 1.0);
         let radius = Vec2::new(TUFT_RADIUS * span, TUFT_RADIUS * span * aspect);
+
+        // Which way this crown piles up. Along its own flow, with enough spread
+        // that neighbouring tufts do not all lean the same way — a field of
+        // identically leaning clumps is a comb at a larger scale.
+        let lean = Vec2::from_angle(flow.to_angle() + draw.signed() * 0.8);
 
         let count = 2 + draw.index(MAX_LOBES - 1);
         let mut lobes = [Lobe::default(); MAX_LOBES];
@@ -913,8 +949,11 @@ impl Crown {
                 (LOBE_OFFSET, LOBE_SIZE, draw.range(0.55, 0.95))
             };
             let angle = draw.range(0.0, std::f32::consts::TAU);
+            // Pulled toward the lean, so the satellite mass gathers on one
+            // flank instead of ringing the middle.
+            let direction = (Vec2::from_angle(angle) + lean * LOBE_LEAN).normalize_or(Vec2::X);
             *lobe = Lobe {
-                centre: Vec2::from_angle(angle) * radius * offset * draw.unit().sqrt(),
+                centre: direction * radius * offset * draw.unit().sqrt(),
                 radius: radius * size * draw.range(0.75, 1.0),
                 density,
             };
@@ -925,6 +964,7 @@ impl Crown {
             lobes,
             count,
             radius,
+            lean,
             height,
             // Denser in a vigorous clump. Around a centimetre and a half, which
             // is what a shoot bundle actually occupies.
@@ -976,6 +1016,21 @@ impl Crown {
             .min(1.0)
     }
 
+    /// How much taller a blade at this local point should stand, as a multiple.
+    ///
+    /// The high flank and the trailing skirt, in one number. Nothing else in the
+    /// tuft needs to know which way the crown leans; every blade just asks how
+    /// tall it is where it stands, which is what keeps the asymmetry a property
+    /// of the shape rather than a special case in the blade loop.
+    fn pile(&self, local: Vec2) -> f32 {
+        let along = local.normalize_or_zero().dot(self.lean);
+        let out = self.radius_of(local);
+        // Only felt away from the middle — a clump's centre is its centre
+        // whichever way it leans, and scaling there would just make the whole
+        // tuft taller or shorter.
+        1.0 + along * out * CROWN_PILE
+    }
+
     /// Which way is outward from the nearest lobe's centre.
     ///
     /// From the *lobe* rather than from the tuft, so shoots on a satellite lobe
@@ -998,6 +1053,17 @@ impl Crown {
 /// How far a satellite lobe's centre may sit from the tuft's, as a fraction of
 /// the bounding radius.
 const LOBE_OFFSET: f32 = 0.30;
+/// How hard a satellite lobe is pulled onto the crown's leaning flank.
+const LOBE_LEAN: f32 = 0.55;
+
+/// How much taller the leaning flank of a crown stands than its trailing one.
+///
+/// Nearly half again at the rim, which sounds like a great deal and is what the
+/// difference between a plant and a patch costs. A crown that varies by a tenth
+/// reads as a slightly uneven dome; one that varies by a half has a *top* and a
+/// *back*, and only the second one catches the light on one side.
+const CROWN_PILE: f32 = 0.45;
+
 /// How large a satellite lobe may be, likewise.
 ///
 /// `LOBE_OFFSET + LOBE_SIZE` must not exceed one, or a lobe reaches outside the
@@ -1577,7 +1643,7 @@ mod tests {
         let mut worst = 0.0f32;
         for seed in 0..400u64 {
             let mut draw = Draw::from_seed(seed);
-            let crown = Crown::grow(&mut draw, &ground);
+            let crown = Crown::grow(&mut draw, &ground, Vec2::X);
             // The bounding ellipse itself must fit.
             worst = worst.max(crown.radius.x).max(crown.radius.y);
             // And every lobe inside it.
@@ -1623,7 +1689,7 @@ mod tests {
         let mut lumpy = 0;
         for seed in 0..64u64 {
             let mut draw = Draw::from_seed(seed ^ 0xc0ffee);
-            let crown = Crown::grow(&mut draw, &ground);
+            let crown = Crown::grow(&mut draw, &ground, Vec2::X);
             let ring: Vec<f32> = (0..48)
                 .map(|step| {
                     let angle = step as f32 / 48.0 * std::f32::consts::TAU;

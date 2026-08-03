@@ -66,6 +66,15 @@ struct StepSample {
     widths: [f32; 4],
 }
 
+/// How sharply the tip lift gathers toward the end of a blade.
+///
+/// Raised from 1.4, and the reason is a critique rather than a measurement: a
+/// gentle lift spread over the upper half makes the whole blade pale, so a tuft
+/// of them is a *bright object* rather than a green object with lit tips. The
+/// reference art has bright tips everywhere and bright blades almost nowhere,
+/// and the difference between those two readings is entirely this exponent.
+const TIP_CURVE: f32 = 2.4;
+
 /// How the twist is distributed along a blade.
 ///
 /// Above one, so the surface turns slowly near the sheath and quickly toward the
@@ -88,7 +97,7 @@ fn step_table(steps: usize) -> &'static [StepSample] {
                     s,
                     s8: s.powi(8),
                     bend: fastmath::pow_from_log2(log_s, 1.55),
-                    tip: fastmath::pow_from_log2(log_s, 1.4),
+                    tip: fastmath::pow_from_log2(log_s, TIP_CURVE),
                     root_shade: 0.085 * fastmath::pow_from_log2(log_rest, 2.5),
                     twist: fastmath::pow_from_log2(log_s, TWIST_CURVE),
                     widths: [

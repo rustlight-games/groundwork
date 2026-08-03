@@ -5,15 +5,15 @@
 #   BW_DEV=1 ./run        dynamic Bevy linking, much faster incremental builds
 #   BW_RELEASE=1 ./run    optimised build
 #
-#   BW_VIEW=35 ./run      world metres visible vertically; default 55
+#   BW_VIEW=35 ./run      world metres visible vertically; default 28
 #
-# The default frames about 98 x 55 metres of ground. The number that decides it
+# The default frames about 50 x 28 metres of ground. The number that decides it
 # is how tall a person is on screen rather than how much ground is visible: at
 # 55 a 1.8 m figure is about 35 pixels on a 1080p window, which is where
-# Warcraft III and Age of Empires sit. At 35 the same figure is 56 pixels and
+# Warcraft III and Age of Empires sit. At 28 the same figure is 69 pixels and
 # the view reads as an action game rather than a strategy one.
 #
-#   cargo run --release -p bw_grass --example grass_bake -- --view 55 --ruler
+#   cargo run --release -p bw_grass --example grass_bake -- --view 28 --ruler
 #
 # renders exactly what the window will show at a given height, with unit-sized
 # markers for scale. Judge the ground with that, never with a 1:1 plate.

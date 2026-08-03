@@ -80,15 +80,21 @@ pub struct FormWeights {
 
 impl Default for FormWeights {
     fn default() -> Self {
-        // Fifteen, thirty, fifty-five. The blade leads because it is what the
-        // eye resolves; the canopy is the largest single share of what survives
-        // being squinted at, which is the reading the field measured flattest
-        // at; and the ground is small because terrain in this art is a rhythm
-        // rather than a subject.
+        // Fifteen, forty, forty-five. The canopy takes a share off the blade,
+        // and the reason is a critique the first split earned: with the blade
+        // leading, every tuft was lit the same amount and the field read as a
+        // carpet with brighter patches rather than as plants. A tuft's *crown*
+        // is the thing that has a lit flank and a dark one, and describing that
+        // is worth more than describing which edge of each leaf inside it
+        // catches — because the crown is what survives being squinted at, and
+        // the leaf is not.
+        //
+        // The ground stays small: terrain in this art is a rhythm rather than a
+        // subject.
         Self {
             ground: 0.15,
-            canopy: 0.30,
-            blade: 0.55,
+            canopy: 0.40,
+            blade: 0.45,
         }
     }
 }

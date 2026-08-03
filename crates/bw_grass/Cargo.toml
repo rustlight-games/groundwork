@@ -39,6 +39,11 @@ path = "examples/grass_sandbox.rs"
 name = "grass_lab"
 path = "examples/grass_lab.rs"
 
+# Paired training data: one scene, rendered cheaply and expensively.
+[[example]]
+name = "grass_dataset"
+path = "examples/grass_dataset.rs"
+
 # The performance suite. `harness = false` because criterion supplies its own.
 [[bench]]
 name = "bake"

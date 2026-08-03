@@ -279,6 +279,117 @@ pub fn shade(tone: Tone, q: f32) -> Vec3 {
     )
 }
 
+/// What a surface is, beyond how lit it is.
+///
+/// ## Why one light index is not enough any more
+///
+/// A ramp lookup answers "how bright is this" and the ramps answer it well —
+/// they carry the hue shift that a multiply cannot, which is why shading here
+/// has always been a lookup. What a single index cannot carry is *which* of
+/// several things is bright.
+///
+/// The reference art's brightest paint is a sunlit tip: warm, yellow-green,
+/// and only on the exposed upper third of a mature blade. Its darkest is a tuft
+/// interior: cool emerald, saturated, nowhere near grey. Both are the same
+/// green underneath and a one-dimensional ramp has to choose — either its top
+/// is yellow, in which case every bright thing in the field goes yellow
+/// including the ones that should not, or its top is not, in which case the
+/// tips never catch.
+///
+/// The plate showed exactly that. Bright meant lime everywhere, and a field
+/// where a colour is *everywhere* has no colour at all — it has a cast.
+///
+/// So the axes that decide which kind of bright this is travel with the pixel.
+#[derive(Clone, Copy, Debug)]
+pub struct Material {
+    /// How much light of any kind reaches it, `0..1`.
+    pub exposure: f32,
+    /// Root-to-tip position on its own mark, `0..1`.
+    pub along: f32,
+    /// How old and established the mark is, `0..1`.
+    pub maturity: f32,
+}
+
+impl Default for Material {
+    fn default() -> Self {
+        Self {
+            exposure: 1.0,
+            along: 0.5,
+            maturity: 0.5,
+        }
+    }
+}
+
+/// How far the warm and cool ends may travel from the measured ramp.
+///
+/// Small numbers doing a large amount of work, because they are *hue* moves at
+/// constant luminance and the eye reads a few degrees of hue far more readily
+/// than it reads a few percent of value. Push either much past this and the
+/// field stops being one meadow with light on it and becomes two materials.
+const WARM: f32 = 0.30;
+const COOL: f32 = 0.26;
+
+/// Shade a surface through its ramp and then along the material axes.
+///
+/// The lookup first, so the measured relationship between the channels survives
+/// intact and only its balance moves afterwards. Both shifts are
+/// luminance-preserving — see [`crate::bake`]'s `hue_only` for why that matters
+/// so much more than it sounds: a hue move that also darkens turns "this is a
+/// different green" into "this is dimmer", and whole regions of the field lose
+/// light for a reason nobody asked for.
+pub fn shade_material(tone: Tone, q: f32, material: Material) -> Vec3 {
+    let base = shade(tone, q);
+    // Soil and dry straw are not leaves and have no upper surface to catch the
+    // sun on; shifting them by leaf rules turns bare earth green at its edges.
+    if matches!(tone, Tone::Soil | Tone::Dry) {
+        return base;
+    }
+
+    // Warm: sunlit, high on the blade, and mature. All three, multiplied — a
+    // highlight is a coincidence of conditions rather than a property of
+    // brightness, and requiring all three is what keeps the population of warm
+    // pixels small enough to read as accents.
+    let exposed = smoothstep(0.55, 1.0, material.exposure);
+    let upper = smoothstep(0.45, 0.95, material.along);
+    let warm = WARM * exposed * upper * (0.45 + material.maturity * 0.55);
+
+    // Cool: whatever the light did not reach. Not gated on anything else,
+    // because shade is not a coincidence — everything the sun misses is cooler,
+    // and a field whose shadows are merely darker gives itself away as one
+    // colour under a dimmer lamp.
+    let cool = COOL * (1.0 - material.exposure) * (1.0 - upper * 0.35);
+
+    let luma = base.dot(LUMA);
+    // Toward straw at one end and emerald at the other, both at the pixel's own
+    // luminance. Red is the channel that moves: in a palette whose blue sits
+    // near 0.04, adding blue is a forty-percent change to a channel nobody
+    // sees, while red sitting close to green is exactly what "too lime" means.
+    let warmed = Vec3::new(base.x * 1.26, base.y, base.z * 0.72);
+    let cooled = Vec3::new(base.x * 0.70, base.y, base.z + base.y * 0.085);
+    let shifted = base.lerp(warmed, warm.clamp(0.0, 1.0));
+    let shifted = shifted.lerp(cooled, cool.clamp(0.0, 1.0));
+
+    // Renormalised to the luminance it started with, so neither shift costs
+    // exposure. Exact at every input colour rather than at the one a constant
+    // was derived from, which is what lets the multipliers above be stated as
+    // the effect they are meant to have.
+    let after = shifted.dot(LUMA);
+    if after > 1.0e-6 {
+        shifted * (luma / after)
+    } else {
+        shifted
+    }
+}
+
+/// Rec. 709 luminance weights.
+const LUMA: Vec3 = Vec3::new(0.2126, 0.7152, 0.0722);
+
+#[inline]
+fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
+    let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// Convert a linear colour to the sRGB bytes a PNG or a texture wants.
 ///
 /// The ramps are stored as the reference's own sRGB values, so this is only the
@@ -348,6 +459,124 @@ mod tests {
     fn lookups_clamp_rather_than_wrap() {
         assert_eq!(shade(Tone::Grass, -5.0), shade(Tone::Grass, -SHADOW_DEPTH));
         assert_eq!(shade(Tone::Grass, 5.0), shade(Tone::Grass, 1.0));
+    }
+
+    #[test]
+    fn the_material_axes_move_hue_and_not_exposure() {
+        // The property both shifts are built around. A hue move that also
+        // darkened would turn "this part of the field is a different green" into
+        // "this part of the field is dimmer", and whole regions would lose light
+        // for a reason nobody asked for.
+        for tone in [Tone::Grass, Tone::Thatch, Tone::Leaf] {
+            for step in 0..=10 {
+                let q = step as f32 / 10.0;
+                let plain = luma(shade(tone, q));
+                for exposure in [0.0f32, 0.5, 1.0] {
+                    for along in [0.0f32, 0.6, 1.0] {
+                        let shifted = luma(shade_material(
+                            tone,
+                            q,
+                            Material {
+                                exposure,
+                                along,
+                                maturity: 1.0,
+                            },
+                        ));
+                        assert!(
+                            (shifted - plain).abs() < 1.0e-4,
+                            "{tone:?} at q {q} exposure {exposure} along {along} \
+                             moved luminance {plain:.4} → {shifted:.4}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_sunlit_tip_is_warmer_than_a_shaded_root() {
+        // The whole point of the axes. Both are the same green underneath and a
+        // one-dimensional ramp has to choose between them.
+        let warmth = |c: Vec3| c.x / c.y.max(1.0e-6);
+        let tip = shade_material(
+            Tone::Grass,
+            0.75,
+            Material {
+                exposure: 1.0,
+                along: 1.0,
+                maturity: 1.0,
+            },
+        );
+        let root = shade_material(
+            Tone::Grass,
+            0.75,
+            Material {
+                exposure: 0.1,
+                along: 0.05,
+                maturity: 1.0,
+            },
+        );
+        // A sixth, which sounds small and is not: this is a hue separation at
+        // constant luminance, and the eye reads a few degrees of hue far more
+        // readily than it reads a few percent of value. Bigger than this and the
+        // two stop being one meadow with light on it.
+        assert!(
+            warmth(tip) > warmth(root) * 1.12,
+            "a sunlit tip {tip:?} is no warmer than a shaded root {root:?}"
+        );
+        // And both are still green.
+        assert!(tip.y > tip.x, "the tip went orange: {tip:?}");
+        // Both compared at the same `q` so the shift is the only difference,
+        // which puts the "shaded root" higher up the ramp than a real one ever
+        // sits — the measured ramp is already warm at three quarters. A root
+        // this bright staying this green is the stronger claim anyway.
+        assert!(root.y > root.x * 1.4, "the root lost its hue: {root:?}");
+    }
+
+    #[test]
+    fn a_shaded_tip_does_not_get_the_warm_treatment() {
+        // Warmth is a coincidence of three conditions rather than a property of
+        // height on the blade. A tip in shade is just a tip in shade.
+        let warmth = |c: Vec3| c.x / c.y.max(1.0e-6);
+        let lit = shade_material(
+            Tone::Grass,
+            0.7,
+            Material {
+                exposure: 1.0,
+                along: 1.0,
+                maturity: 1.0,
+            },
+        );
+        let shaded = shade_material(
+            Tone::Grass,
+            0.7,
+            Material {
+                exposure: 0.2,
+                along: 1.0,
+                maturity: 1.0,
+            },
+        );
+        assert!(warmth(shaded) < warmth(lit));
+    }
+
+    #[test]
+    fn earth_and_straw_are_left_alone() {
+        // They are not leaves. Shifting bare soil by leaf rules turns the edge
+        // of every opening green, which is the one thing an opening must not do.
+        for tone in [Tone::Soil, Tone::Dry] {
+            for exposure in [0.0f32, 1.0] {
+                let shifted = shade_material(
+                    tone,
+                    0.6,
+                    Material {
+                        exposure,
+                        along: 1.0,
+                        maturity: 1.0,
+                    },
+                );
+                assert_eq!(shifted, shade(tone, 0.6));
+            }
+        }
     }
 
     #[test]
