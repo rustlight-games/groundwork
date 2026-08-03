@@ -18,19 +18,49 @@ pub struct BattleCamera {
 
 impl Default for BattleCamera {
     fn default() -> Self {
-        // Pitched against Warcraft III's default melee camera, which is the
-        // reference this game's art is aimed at. That camera sits 1650 units
-        // out at a 70° field of view and shows roughly 24 × 13 terrain tiles;
-        // at the conventional two metres to a tile that is about 1400 m² of
-        // ground.
+        // The projection is orthographic and 2:1 dimetric, so a `view_height` of
+        // h shows h metres vertically and 16h/9 horizontally on a widescreen
+        // window — h × 16h/9 square metres of ground.
         //
-        // This projection is orthographic and 2:1 dimetric, so a `view_height`
-        // of h shows h units vertically and 16h/9 horizontally on a widescreen
-        // window, and the ground under it works out to h × 16h/9 square metres.
-        // Thirty-two gives about 1800 m² — deliberately wider than Warcraft,
-        // because an auto-battler is watched rather than driven and the whole
-        // engagement wants to be on screen at once.
-        Self { view_height: 26.0 }
+        // The genres this framing has to serve do not agree with each other.
+        // Isometric farming and exploration games sit close: Stardew Valley
+        // shows about fifteen metres vertically, and its relatives cluster
+        // between fourteen and twenty. Real-time strategy sits much further
+        // back — Warcraft III's melee camera shows roughly 24 × 13 tiles, about
+        // twenty-six metres at the conventional two metres to a tile, and
+        // plenty of RTS cameras go wider still.
+        //
+        // Fifty-five: about 98 × 55 metres of ground, which is a strategy camera
+        // rather than a farming one. The deciding measurement is not how much
+        // ground is visible but how big a *person* is on screen, because that is
+        // the thing the eye actually calibrates against. At this height on a
+        // 1080-pixel window a 1.8-metre figure stands about thirty-five pixels
+        // tall, which is where Warcraft III and Age of Empires sit and is the
+        // size a unit has to be for a formation to read as a formation. At
+        // thirty-five metres the same figure is fifty-six pixels and the view
+        // feels intimate — closer to an action game looking over one character
+        // than to a commander watching a battle.
+        //
+        // What the width costs is worth writing down, because it is the kind of
+        // thing someone later "fixes" without knowing it was decided. The ground
+        // is a baked cache at ninety-six pixels to the metre and is displayed at
+        // `window_height / view_height / 96` — here, a fifth. A blade of grass is
+        // roughly a quarter of a metre, so it lands at about five screen pixels,
+        // and the tip highlights average down to well under half the share that
+        // was baked. At this framing the grass is a *texture*. It is not a field
+        // of legible blades and no amount of per-blade work will make it one.
+        //
+        // Which settles an argument rather than losing one. Both art critiques of
+        // this surface asked for the same things — larger regional shapes, calmer
+        // ground between the clumps, less uniform micro-detail — and at a close
+        // camera those are matters of taste. At this one they are forced:
+        // anything below about ten screen pixels cannot be seen as detail, only
+        // as noise, so everything the eye is going to read has to be built at the
+        // scale of metres. Tune the ground against a `--view 55 --ruler` render,
+        // never against a 1:1 plate.
+        //
+        // `BW_VIEW` overrides it at run time — see `bw_app`.
+        Self { view_height: 55.0 }
     }
 }
 

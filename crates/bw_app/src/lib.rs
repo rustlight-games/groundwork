@@ -35,8 +35,38 @@ impl Plugin for GamePlugin {
 /// were measured to be, and `bw_render` decides how much ground it frames. Only
 /// the composition root knows both.
 fn spawn_camera(mut commands: Commands) {
-    let framing = BattleCamera::default();
+    let framing = BattleCamera {
+        view_height: view_height_override().unwrap_or(BattleCamera::default().view_height),
+    };
     commands.spawn((grass_camera(framing.view_height), framing));
+}
+
+/// `BW_VIEW`, in world metres visible vertically.
+///
+/// Read here rather than in [`BattleCamera::default`] because the composition
+/// root is the layer allowed to know about the environment the game was launched
+/// from; a default that reads a variable is a default that behaves differently
+/// in a test than in the binary.
+///
+/// It exists because how much ground is on screen is the single number that
+/// decides whether the baked grass reads as blades or as texture, and finding
+/// the right one is a matter of looking rather than of arithmetic. Rebuilding
+/// between looks is the thing that stops anybody doing it.
+///
+/// ```sh
+/// BW_VIEW=35 ./run     # a wide strategy camera
+/// BW_VIEW=15 ./run     # a farming-sim camera
+/// ```
+///
+/// Ignored if it does not parse or is not positive, because a typo in a
+/// convenience variable should not decide the framing of the game silently.
+fn view_height_override() -> Option<f32> {
+    std::env::var("BW_VIEW")
+        .ok()?
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|metres| *metres > 0.0)
 }
 
 /// Leave the boot screen.
