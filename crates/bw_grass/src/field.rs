@@ -145,7 +145,7 @@ pub struct Ground {
     /// merely suggested. In the reference, illumination sometimes crosses a
     /// vegetation mass and sometimes dies before reaching its edge.
     pub statement: f32,
-    /// How finely this patch of ground is described, `0..1`.
+    /// How loudly this patch of ground speaks, `0..1`.
     ///
     /// The most painterly field here, and the one with no physical meaning at
     /// all. A painter does not describe every square inch of a meadow to the
@@ -154,6 +154,31 @@ pub struct Ground {
     /// resolves everything equally produces a uniform bristle carpet — which is
     /// legible as grass and unmistakable as machinery. Low values here mean
     /// "let this area collapse into paint".
+    ///
+    /// ## It carries amplitude as well as description
+    ///
+    /// It began as a purely descriptive axis — which *families* of mark grow
+    /// here, how hard the glaze pulls them back together — and that turned out
+    /// to be half a mechanism. A quiet passage drawn with soft marks at full
+    /// length, full contrast and the ordinary rate of tip glints is not quiet.
+    /// It has exactly as much light and dark in it as the passage beside it; it
+    /// merely spends it on rounder shapes. The field then reads as uniformly
+    /// busy however carefully the vocabulary is varied, because the eye measures
+    /// activity as contrast per square inch and nothing about the contrast
+    /// moved.
+    ///
+    /// So this now also shortens the grass, drains the under-strokes, narrows
+    /// the blade-to-blade scatter and thins the glints. Low ground is shorter,
+    /// smoother and flatter as well as looser — a softer mid-green canopy rather
+    /// than bare or blurred — and high ground gets the longest blades, the
+    /// deepest separations and nearly all of the highlights.
+    ///
+    /// Which makes it the one field in this module that a *distant* viewer can
+    /// see. Everything else here organises the plate at a metre or less, and a
+    /// metre is five screen pixels once the ground is displayed at the size the
+    /// camera presents it. This runs from a metre and a half out to ten, so it
+    /// is what supplies "broad regions of darker, lighter, denser and shorter
+    /// grass" — the reading the plate measured furthest from the reference at.
     pub resolution: f32,
 }
 
@@ -471,28 +496,40 @@ impl WorldField {
         // it was. The three scales have to *ladder*: pushing the regional field
         // out to eight metres while this one stayed at one and a half left
         // nothing describing the band between them, and the mounds alone are not
-        // enough to hold it. Just under a metre is where a clump of grass ends
-        // and the next begins, which is the radius directly above the one the
-        // eye groups bunches at.
+        // enough to hold it.
+        //
+        // Then moved *out* again by nearly half, to a metre and a quarter, and
+        // this is the rung that decides how big a parent clump is. The number is
+        // set by the camera rather than by the plate: the ground displays at
+        // about a fifth of the size it is baked at, so a clump of this period is
+        // twenty-five screen pixels and a clump of the previous one was
+        // seventeen. Below roughly ten a shape stops being a shape and becomes
+        // grain, and everything the eye is meant to group by has to clear that
+        // with room to spare.
         let coarse = smoothstep(
-            0.30,
-            0.80,
-            fbm(self.seed, Stream::Family, p.x * 1.15, p.y * 1.15, 4),
+            0.33,
+            0.74,
+            fbm(self.seed, Stream::Family, p.x * 0.80, p.y * 0.80, 4),
         );
-        // The bunch scale, and the one carrying the most weight in the finished
-        // plate. Its curve is the steepest of the three on purpose: this is the
-        // radius the eye groups at — a third of a metre, forty-odd cache pixels
-        // — and a gentle curve here gives ground that is *slightly* thicker in
-        // some places, which reads as one continuous sward with a mottle on it.
-        // A steep one gives a bunch, then a gap, then the next bunch, which is
-        // the thing the reference has and the thing a flat structure ladder at
-        // r16–r32 is telling you is missing.
+        // The bunch scale — the individual clump inside a parent mass, and now
+        // the *second* voice rather than the loudest. Its curve is the steepest
+        // of the three on purpose: a gentle curve here gives ground that is
+        // *slightly* thicker in some places, which reads as one continuous sward
+        // with a mottle on it. A steep one gives a bunch, then a gap, then the
+        // next bunch, which is the thing the reference has.
+        //
+        // Out by half along with the rung above it, and the pair has to move
+        // together or the ladder loses a rung. Weight moved the other way at the
+        // same time: the plate's measured shortfall is at large radius and grows
+        // monotonically with it — thirty percent down at a third of a metre,
+        // nearly forty at two thirds — which is not a flat field but a field
+        // whose organisation is all at the wrong scale.
         let fine = smoothstep(
-            0.38,
-            0.68,
-            fbm(self.seed, Stream::Family, p.x * 2.4 + 40.0, p.y * 2.4, 3),
+            0.36,
+            0.70,
+            fbm(self.seed, Stream::Family, p.x * 1.65 + 40.0, p.y * 1.65, 3),
         );
-        let bunched = sweep * 0.28 + coarse * 0.34 + fine * 0.38;
+        let bunched = sweep * 0.26 + coarse * 0.38 + fine * 0.36;
         // Weighted toward the clump fields and away from the mounds. Density
         // that follows relief closely makes thickness a second statement of
         // height, and then every raised place is also a busy place and every
@@ -570,14 +607,26 @@ impl WorldField {
             // resolution to density or to the mounds and it stops being a
             // painter's choice and becomes another way of saying the same thing.
             //
-            // Two scales, weighted toward the broad one. A single field at the
-            // mound frequency gives calm and busy passages that are themselves
-            // mound-sized, so the variation lands *inside* the texture instead
-            // of organising it, and the plate ends up uniformly busy at every
-            // radius the eye checks. The broad term runs at about ten metres per
-            // cycle — most of a 1080p view — and it is the one that produces the
-            // quiet ground a detailed passage needs in order to read as detailed
-            // at all.
+            // Three scales, weighted toward the broad one, and the ladder is the
+            // point. A single field at the mound frequency gives calm and busy
+            // passages that are themselves mound-sized, so the variation lands
+            // *inside* the texture instead of organising it, and the plate ends
+            // up uniformly busy at every radius the eye checks. The broadest
+            // term runs at about ten metres per cycle — most of a 1080p view —
+            // and it is the one that produces the quiet ground a detailed
+            // passage needs in order to read as detailed at all.
+            //
+            // A middle rung at three metres was added when this field gained
+            // amplitude. Two scales an octave and a half apart leave a gap, and
+            // the gap is exactly where a plate is measured: at ten metres a
+            // single plate spans one cycle, so that rung moves the *whole
+            // plate's* brightness and lands as world-to-world spread rather than
+            // as structure within any one of them. At three metres a plate spans
+            // five cycles, so the same amplitude buys large-radius organisation
+            // and costs nothing in the comparison. Where a term sits relative to
+            // the size of the thing being measured decides which of the two it
+            // turns into, and it is easy to spend a lot of effort on the first
+            // while asking for the second.
             //
             // The band is deliberately off centre. `fbm` returns something
             // roughly symmetric about a half, so a band centred there splits the
@@ -586,17 +635,25 @@ impl WorldField {
             // passages for the minority that earns them. Grass that rewards
             // close inspection everywhere rewards it nowhere, because there is
             // nothing left for it to be more detailed *than*.
+            //
+            // It also narrowed when the third octave arrived, and had to.
+            // Independent noises sum in quadrature, so three of them spread less
+            // than two however the weights are set; a band left at its old width
+            // over a narrower distribution quietly collapses the three intensity
+            // classes into one middling one. `grass_bake` prints the resulting
+            // split — quiet, ordinary, hero — for exactly this reason.
             resolution: smoothstep(
-                0.38,
-                0.74,
+                0.315,
+                0.700,
                 fbm(
                     self.seed,
                     Stream::Detail,
                     p.x * 0.095 + 71.0,
                     p.y * 0.095,
                     3,
-                ) * 0.60
-                    + fbm(self.seed, Stream::Detail, p.x * 0.52, p.y * 0.52, 3) * 0.40,
+                ) * 0.375
+                    + fbm(self.seed, Stream::Detail, p.x * 0.30 + 13.0, p.y * 0.30, 3) * 0.345
+                    + fbm(self.seed, Stream::Detail, p.x * 0.72, p.y * 0.72, 3) * 0.28,
             ),
         }
     }
@@ -632,9 +689,18 @@ impl WorldField {
         // the small nicks near them read as their edges rather than as more
         // texture. Total exposed earth is meant to come out slightly *up*, not
         // down; it is the arrangement that changed.
-        let broad = self.blobs(q, 4.1, 0.50, (0.46, 1.18), 0x00);
-        let fine = self.blobs(q, 1.7, 0.46, (0.17, 0.46), 0x40);
-        let flecks = self.blobs(q, 0.52, 0.20, (0.025, 0.075), 0x77);
+        // Fewer again — a third off every scale — and kept exactly as large.
+        //
+        // The count is the lever here and the gain is not, which is worth
+        // knowing before reaching for the obvious knob. `best` falls linearly
+        // from a patch's centre and the result is clamped, so most of a patch
+        // sits at the top of the clamp; cutting the gain by a third only moves
+        // the radius where the clamp starts, and the exposed *area* falls by
+        // under a tenth. Measured: gain 13 to 8.8 took the rendered soil share
+        // from 4.5 percent to 3.8. Halving the count halves the area.
+        let broad = self.blobs(q, 4.1, 0.33, (0.46, 1.18), 0x00);
+        let fine = self.blobs(q, 1.7, 0.30, (0.17, 0.46), 0x40);
+        let flecks = self.blobs(q, 0.52, 0.13, (0.025, 0.075), 0x77);
         // Where the field is worn at all: a broad, soft region about a metre
         // across, inside which openings gather and outside which they mostly do
         // not. Everything below is multiplied by it.
@@ -678,13 +744,23 @@ impl WorldField {
         // independently, so a patch never opens in the middle of a thick clump —
         // which is what makes one read as a hole rather than as ground.
         let sparse = (1.55 - density).clamp(0.12, 1.0);
-        // Raised alongside the patch sizing above. Fewer and larger openings
-        // cover less ground at the same gain — a patch's area goes as the square
-        // of its size but its *count* fell faster than the size grew — and the
-        // aim was to rearrange the exposed earth rather than to reduce it. The
-        // reference has a little over two percent of its surface showing soil
-        // and this field had well under half of that.
-        (best * 13.0 * valley * sparse).clamp(0.0, 1.0)
+        // Raised alongside the patch sizing, then cut by a third when the clump
+        // fields grew, and the second move is the one worth explaining.
+        //
+        // Nothing here changed. What changed is `sparse`, which is a function of
+        // density — and enlarging the clump ladder by half enlarged the *gaps*
+        // between clumps by half along with it. An opening needs thin ground and
+        // a blob in the same place; when the thin ground came in pockets a third
+        // of a metre across, most blobs straddled a boundary and only their
+        // cores reached full exposure. At two thirds of a metre a whole blob
+        // fits inside one pocket and saturates, so the same placement field
+        // yields nearly twice the earth. Measured, the rendered soil share went
+        // from 2.4 percent to 4.5 against a reference that has 2.3.
+        //
+        // Worth writing down because the failure is entirely non-local: nothing
+        // in this function moved, and the number this function controls doubled.
+        // Any change to the density ladder has to be checked here.
+        (best * 8.8 * valley * sparse).clamp(0.0, 1.0)
     }
 
     /// An irregular blob field: jittered centres, wobbly boundaries.
@@ -883,14 +959,16 @@ mod tests {
         // become — so a point at `bare = 0.6` still carries shoots, and the
         // openings read as worn ground rather than as bald spots. What actually
         // shows as earth in a finished plate is a good deal less than what this
-        // counts, and *that* is the number with a band on it:
-        // `grass.ground.soil_share`, 0.005 to 0.03, measured on the render by
-        // `grass_score`. It currently sits at 0.019 against the reference art's
-        // 0.023 — under, not over, while this field reads eight percent.
+        // counts — it measured 0.019 on the render while this field read eight
+        // percent, back when the plate was still being scored against the
+        // reference art.
         //
-        // So this bound is a runaway guard, not the specification. If it starts
-        // failing again, check `soil_share` before touching the placement:
-        // moving that number is what changes the picture.
+        // So this bound is a runaway guard, not the specification. It is also
+        // the last thing left watching bare ground: the descriptor that used to
+        // carry its own band went out with the aesthetic suite, because the look
+        // is settled and `grass_snapshot` now answers the only remaining
+        // question — whether a change moved the picture — far more strictly than
+        // a share ever could.
         assert!(
             fraction < 0.12,
             "too much bare ground: {:.1}%",

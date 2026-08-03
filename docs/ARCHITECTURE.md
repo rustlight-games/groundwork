@@ -182,6 +182,27 @@ the ten seeded worlds spread apart in mean luminance. A compensating lift
 elsewhere restores the mean and leaves the spread exactly where it was, which is
 why the fix belongs at the shift rather than after it.
 
+**Volume is amplitude, not vocabulary.** The field carries a `resolution` term —
+how finely a passage of ground is described — and for a long time it decided only
+*which* marks grew there: broad strokes and buried fragments where it was low,
+legible blades where it was high. That is half a mechanism, and the missing half
+is the one the eye actually reads. A quiet passage drawn with soft marks at full
+length, full contrast and the ordinary rate of tip glints is not quiet; it has
+exactly as much light and dark per square inch as the passage beside it and
+merely spends it on rounder shapes. So the same field now also shortens the
+blades, drains the under-strokes, narrows the blade-to-blade scatter and thins
+the highlights, and the ground divides into roughly a quarter quiet, half
+ordinary, a fifth hero. `grass_bake` prints that split, because it is invisible
+in every descriptor — a plate with no quiet ground and a plate with plenty
+measure almost identically on any ladder that sums over the whole image.
+
+Two things about it are worth keeping. Getting the *proportions* wrong is
+expensive and silent: the first attempt put half the field in the quiet class,
+which cost a tenth of the plate's contrast at every small radius and read as
+mush. And the field has to ladder — its broadest octave is at ten metres, which
+is most of a screen, so on its own it moves whole plates rather than organising
+any one of them.
+
 **Isotropy is a look, and it is the wrong one.** Grass with a uniformly random
 heading looks the same in every direction, so nothing at the middle scale
 survives except the outline of each clump. One low-frequency flow field orients
@@ -199,6 +220,39 @@ which shows up as faint creases in the one thing that must not have any. The
 canopy is also translucent rather than opaque, so its shaded side falls away at
 about half the rate its lit side climbs and picks up a transmitted term where the
 grass is thinnest. That is what makes a mound read as lit rather than cut out.
+
+**Page independence has exactly one leak, and it is measurable.** Placement is a
+pure function of world coordinates, so two pages agree on *what grows* along a
+shared edge by construction. Lighting is not: three terms read a neighbourhood of
+the rasterised canopy, and near a page edge that neighbourhood is cropped. Only
+one of them matters. Micro-occlusion reads three pixels and the self-shadow about
+twelve; the bunch-relief term reads fifty-two, and measured against a
+single-page bake of the same ground it accounts for essentially the whole
+disagreement — scaling its weight by a third scaled the edge error by a third.
+The symptom is not a line but a soft brightness ramp over the outermost fifty
+pixels of every page, which at a 256-pixel page is a good third of it.
+
+That makes the term's weight a *budget* rather than a free knob, and it is the
+strongest lever the baker has on large-radius structure, so the two pull against
+each other. Buying structure from the mound and regional fields instead costs
+nothing here, because both are read off a world-space lattice and are exactly
+page-independent. Closing the leak properly means rasterising into a margin and
+cropping, which roughly doubles the fill per page; that trade has not been taken.
+
+**A guard band is an assumption about the mark vocabulary.** `bake::footprint`
+is asymmetric — the band above a page is a third of the one below it — because
+grass grows up the screen and only a curled tip ever descends. That is a fact
+about the marks, not about the geometry, and it silently stops being true when
+the vocabulary changes. It nearly did when a minority of each tuft's blades were
+turned down-screen to lay a near-side skirt. The failure would have been the
+worst kind this design has: not a shading difference but a tuft rooted off the
+top of a page, leaning into it, whose cell is never *visited* — a stroke present
+on one side of a join and absent on the other. The page-join test cannot see it,
+because it splits left from right and gives both halves the same top edge. So the
+bands are measured by sweeping the vocabulary rather than reasoned about, per
+direction. (The assumption survived, as it happens: a blade laid over travels
+down-screen and loses height doing it, and in a dimetric projection those two
+nearly cancel.)
 
 There is no simulation here yet. Wind, trampling and the animated crown layer
 that would carry them are the next piece of work; today the surface is static.

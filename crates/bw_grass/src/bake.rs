@@ -24,6 +24,7 @@
 //! before the canopy exists is occlusion of nothing.
 
 use bevy::prelude::*;
+use rayon::prelude::*;
 
 use crate::field::{Ground, WorldField};
 use crate::iso;
@@ -286,9 +287,31 @@ impl Default for BakeParams {
             // those gaps are where a fifth of a metre of structure comes from:
             // the scale the reference has most of its variance at, and the one
             // this field was flattest at.
-            tufts: 65.0,
-            blades_per_tuft: (6, 20),
-            thatch: 340.0,
+            //
+            // Down again by a quarter, with the blade count up by a third and
+            // the tuft radius up by nearly half, and the arithmetic is the same
+            // arithmetic: total ink held while the unit it is organised into
+            // grows. Fewer, larger, fuller bunches is the whole of the change,
+            // and it is the one the eye asks for as "broad masses of grass
+            // breaking into blades, rather than thousands of small tufts
+            // assembling into a surface". The two readings differ only in the
+            // size of the repeating unit, which is why this is a count and not a
+            // shape.
+            tufts: 50.0,
+            // Blades per tuft rises faster than the tuft count falls, and it has
+            // to. Ink per square metre is count times blades and would be held
+            // by matching them; *closure* is not ink, it is overlap, and overlap
+            // falls with the square of the radius the blades are spread over. A
+            // bunch half again as wide with the same blades in it is a looser
+            // bunch, and the floor comes through — measured, the exposed-earth
+            // share doubled on the first attempt at this while every other
+            // number improved. So the count carries the extra.
+            blades_per_tuft: (10, 30),
+            // And the mat carries the rest. It is the layer that actually roofs
+            // a canopy — three hundred and eighty short strokes to a square
+            // metre, nearly all of them buried — and it is far cheaper per unit
+            // of closure than a blade, because it is drawn to be lost.
+            thatch: 395.0,
             leaves: 4.0,
 
             blade_length: (0.05, 0.40),
@@ -303,7 +326,15 @@ impl Default for BakeParams {
 
             base_light: 0.556,
             tip_light: 0.42,
-            glint: 0.775,
+            // Up, while the *number* of marks carrying one came down by a third.
+            // The two moves are the same instruction: a highlight should be a
+            // reward on a chosen tip rather than a property of the surface. Peak
+            // brightness was never what made this field read as lime — the
+            // reference reaches the same peak — it was how much of the plate was
+            // up there with it, and taking area out and putting amplitude back
+            // widens the gap between a lit tip and its surround in both
+            // directions at once.
+            glint: 0.85,
             side_light: 0.118,
             // Barely pulled back, and the restraint is the lesson. The obvious
             // reading of "too visually active" is to take contrast out of the
@@ -313,7 +344,17 @@ impl Default for BakeParams {
             // is not the same quantity as contrast. What makes a surface read as
             // busy is contrast that is *evenly distributed*, and the repair for
             // that is at the bunch scale, not this one.
-            under: 0.60,
+            //
+            // Then raised, once the highlight population came down by a third.
+            // Local contrast is not one quantity, and the critique that asks for
+            // fewer glossy strands and the one that asks for deeper cavities are
+            // asking for opposite halves of the same number. Spending on the
+            // dark side is the better half here: the plate carries barely two
+            // thirds of the reference's share of genuinely dark pixels, the dark
+            // it is missing is exactly the narrow separation between one blade
+            // and the next, and narrow dark is the kind [`BROAD_DARK`] has no
+            // quarrel with.
+            under: 0.68,
 
             // Down by a seventh rather than the third the eye asked for, and the
             // difference is what the structure ladder costs. This term is the
@@ -323,19 +364,49 @@ impl Default for BakeParams {
             // carpet, which is a worse failure than reading as cushions. The
             // ridges and the shared flow already did most of the work the
             // critique was asking this number to do.
-            mound_light: 0.31,
+            // Back up a little, and the reason it is safe to raise now is that
+            // what it lights has changed. When this was cut, every mound was a
+            // rounded cushion and the term's only possible statement was "bright
+            // in the middle, dark round the edge" — the more of it, the more the
+            // field read as a bed of them. The mounds are elongated ridges along
+            // a shared flow now, shaded from the geometry of the domes rather
+            // than from a gradient, and modulated by `statement` so some are
+            // described and some merely suggested. Under those conditions the
+            // term says the thing the eye has been asking for instead: one
+            // light-facing crown, one mid body, one shadow flank, per mass.
+            //
+            // It is also the only lighting term whose scale is larger than half
+            // a metre, which is where the plate is still measurably flat.
+            mound_light: 0.42,
             elevation_light: 0.035,
             crown_light: 0.038,
-            micro_occlusion: 0.108,
+            micro_occlusion: 0.125,
             // Up by half, and now directional. This is where the volume that
             // came out of `mound_light` goes, and it is a better place for it:
             // it describes the bunches the eye actually groups by rather than
             // the metre-scale swells underneath them.
-            canopy_relief: 0.42,
-            shadow: 0.10,
-            transmission: 0.17,
+            //
+            // Up again, and this is the term the structure ladder was asking
+            // for. Its blur radius sets its scale — half a metre — so it is the
+            // only lighting term that lands squarely in the band the plate
+            // measures thirty percent short at. Every other candidate for that
+            // shortfall varies at the scale of a *plate* and would be paid for
+            // in world-to-world spread; this one varies at the scale of a bunch
+            // and is paid for in nothing.
+            canopy_relief: 0.38,
+            // The contact under the near side of a bunch, and worth more than
+            // its size suggests. It is derived from the canopy heights, so it
+            // falls where a mass actually stands above what is in front of it,
+            // and it falls *down-screen* because the key is up and to the left.
+            // In a fixed isometric view that one-sided darkness at the foot of a
+            // clump is most of what separates a canopy seen from above and in
+            // front from a pattern seen from directly overhead — and unlike the
+            // lighting terms it is narrow, so [`BROAD_DARK`] has no quarrel with
+            // it.
+            shadow: 0.14,
+            transmission: 0.205,
             light_blur: 4,
-            region: 0.29,
+            region: 0.32,
             // The one term that raises mid-scale organisation without touching
             // a single pixel of high-frequency contrast, because it varies from
             // tuft to tuft and a tuft is a fifth of a metre — exactly the radius
@@ -343,11 +414,11 @@ impl Default for BakeParams {
             // the field; variation *within* one only makes it noisy. They cost
             // the same and this is the one worth having.
             scatter: 0.50,
-            glaze: 0.155,
+            glaze: 0.128,
             cool: 0.155,
             temper: 0.165,
             drift: 0.52,
-            soften: 0.065,
+            soften: 0.048,
         }
     }
 }
@@ -359,7 +430,7 @@ impl Default for BakeParams {
 /// would cost more than every blade in the page put together. The fields it
 /// holds have nothing above the mound frequency, so a lattice this coarse loses
 /// nothing.
-struct Macro {
+pub struct Macro {
     stride: usize,
     width: usize,
     height: usize,
@@ -377,7 +448,7 @@ struct Macro {
 const MACRO_STRIDE: usize = 6;
 
 impl Macro {
-    fn build(page: &Page, field: &WorldField) -> Self {
+    pub fn build(page: &Page, field: &WorldField) -> Self {
         let width = page.width.div_ceil(MACRO_STRIDE) + 2;
         let height = page.height.div_ceil(MACRO_STRIDE) + 2;
         let mut height_field = vec![0.0; width * height];
@@ -435,24 +506,90 @@ impl Macro {
 }
 
 /// Bake one page and return its final-resolution linear colour.
+///
+/// Five stages, and they are public individually because that is the only way
+/// to find out where a page's time goes. A single opaque number for "a page
+/// costs 100 ms" tells an optimiser nothing about which of these to attack, and
+/// the answer is not guessable from reading the code — the stroke pass looks
+/// like the expensive one and the shading pass is nine times the pixels.
+/// `benches/bake.rs` times each of them separately for exactly that reason.
 pub fn bake(page: Page, params: &BakeParams) -> Vec<Vec3> {
     let field = WorldField::lit_by(params.seed, params.light);
     let lattice = Macro::build(&page, &field);
     let mut surface = Surface::new(page.width, page.height);
 
     lay_floor(&mut surface, &page, &field, &lattice);
-    {
-        let mut painter = Painter::new(&mut surface, page.origin, params.light);
-        plant(
-            &mut painter,
-            &Bed {
-                page: &page,
-                field: &field,
-                params,
-            },
-        );
-    }
+    plant_strokes(&mut surface, &page, &field, params);
     resolve(&surface, &page, &lattice, params)
+}
+
+/// Grow every mark the page holds onto an already-floored surface.
+///
+/// The stroke pass, wrapped so it can be run — and timed — on its own. The
+/// [`Painter`] borrows the surface for the duration and has to be dropped before
+/// anything reads it back, which is the only reason this is a function rather
+/// than three lines inside [`bake`].
+pub fn plant_strokes(surface: &mut Surface, page: &Page, field: &WorldField, params: &BakeParams) {
+    let mut painter = Painter::new(surface, page.origin, params.light);
+    plant(
+        &mut painter,
+        &Bed {
+            page,
+            field,
+            params,
+        },
+    );
+}
+
+/// Side of the page the tiled baker splits a region into.
+///
+/// The same size the streaming renderer uses, deliberately. A benchmark that
+/// tiled at some other size would be measuring a page shape that never ships,
+/// and page size is not neutral — it sets the ratio of guard band to interior,
+/// which is real work that scales with the perimeter rather than the area.
+pub const TILE_PIXELS: usize = 256;
+
+/// Bake a region larger than a page as independent pages, in parallel, and
+/// stitch them.
+///
+/// The point is not only speed, though a twenty-megapixel screenful is thirteen
+/// seconds on one core and about a second on all of them. It is that a stitched
+/// plate shows page seams if there are any, and seams are the one failure of
+/// this design that a single-page bake cannot possibly reveal. Every placement
+/// decision is a pure function of world coordinates, so the tiles agree along
+/// their edges or the design is broken — and this is what asks.
+/// A screenful at the widest camera is thirty-seven megapixels, so the tiles are
+/// written straight into the finished plate a band at a time rather than
+/// collected and stitched afterwards. Collecting them first holds the whole
+/// region twice — nearly a gigabyte for that view — for no gain, since the
+/// stitch is a memcpy either way.
+pub fn bake_grid(region: Page, params: &BakeParams) -> Vec<Vec3> {
+    if region.width == 0 || region.height == 0 {
+        return Vec::new();
+    }
+    let across = region.width.div_ceil(TILE_PIXELS);
+    let mut plate = vec![Vec3::ZERO; region.width * region.height];
+
+    plate
+        .par_chunks_mut(TILE_PIXELS * region.width)
+        .enumerate()
+        .for_each(|(band, rows)| {
+            // The last band is short whenever the region is not a whole number
+            // of pages tall, which is the usual case.
+            let height = rows.len() / region.width;
+            for tx in 0..across {
+                let width = TILE_PIXELS.min(region.width - tx * TILE_PIXELS);
+                let origin = region.origin
+                    + Vec2::new((tx * TILE_PIXELS) as f32, (band * TILE_PIXELS) as f32);
+                let tile = bake(Page::new(origin, width, height), params);
+                for y in 0..height {
+                    let source = y * width;
+                    let target = y * region.width + tx * TILE_PIXELS;
+                    rows[target..target + width].copy_from_slice(&tile[source..source + width]);
+                }
+            }
+        });
+    plate
 }
 
 /// The floor under everything: soil where the ground is bare, dark mat where it
@@ -463,7 +600,7 @@ pub fn bake(page: Page, params: &BakeParams) -> Vec<Vec3> {
 /// have to be dark green, not brown, or the field reads as grass scattered on
 /// dirt; but they do not have to be *textured* dark green, because almost none
 /// of it survives the canopy.
-fn lay_floor(surface: &mut Surface, page: &Page, field: &WorldField, lattice: &Macro) {
+pub fn lay_floor(surface: &mut Surface, page: &Page, field: &WorldField, lattice: &Macro) {
     for y in 0..page.height {
         for x in 0..page.width {
             let cache = page.origin + Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
@@ -520,10 +657,18 @@ fn lay_floor(surface: &mut Surface, page: &Page, field: &WorldField, lattice: &M
             // than as soil — what makes a surface look like packed ground is
             // that it is *smoother* than the vegetation around it, and the
             // texture belongs at the disturbed edge where the thatch broke up.
-            let light = 0.17
+            // The middle of an opening lifts clear of its own rim, and the pair
+            // is what makes a scuff read as recessed. Three zones, from the
+            // outside in: a dark compressed boundary where the thatch broke up,
+            // the grain of disturbed earth, then a slightly clearer and warmer
+            // centre where nothing has been growing. Only the first two were
+            // here, and two of the three zones is a feathered edge between green
+            // and brown — which reads as a stain rather than as ground, however
+            // irregular the outline.
+            let light = 0.228
                 + mottle * 0.54
                 + grain * 0.36 * soil * (1.0 - soil * 0.55)
-                + bare * 0.05
+                + bare * 0.09
                 + loose * 0.10
                 - rim * 0.14;
 
@@ -554,13 +699,31 @@ fn footprint(page: &Page) -> (Vec2, Vec2) {
     // that direction, because this rectangle decides which cells are *visited*
     // at all and [`reaches_page`] only narrows it afterwards.
     //
-    // Measured the way [`MARGIN`] is, the longest mark reaches about 100 pixels
-    // sideways, 125 upward, and barely 30 down — a mark climbs as it grows, so
-    // only its curled tip ever descends, and `ABOVE` is guarding against very
-    // little. Each of these sits a fifth to a half above its requirement, which
-    // is worth keeping an eye on in the other direction too: widening this
-    // rectangle costs bake time on every page in proportion to its area, and an
-    // extra thirty pixels all round is fourteen percent of a page.
+    // Measured the way [`MARGIN`] is, by
+    // [`tests::the_placement_rectangle_covers_every_direction_a_mark_reaches`],
+    // which sweeps the vocabulary rather than reasoning about it. Each of these
+    // sits comfortably above its requirement, which is worth keeping an eye on
+    // in the other direction too: widening this rectangle costs bake time on
+    // every page in proportion to its area, and an extra thirty pixels all round
+    // is fourteen percent of a page.
+    //
+    // `ABOVE` is a third of `BELOW` because grass grows up the screen, and that
+    // asymmetry is an assumption about the mark vocabulary rather than about
+    // geometry. It looked like it had just been broken: a minority of each
+    // tuft's blades are now deliberately turned down-screen and laid over to
+    // make a near-side skirt (see [`DOWN_SCREEN`]), and a tuft rooted above a
+    // page and leaning into it whose cell is never *visited* is the nastiest
+    // failure this design has — not a shading difference but a stroke that is
+    // simply absent, present on one side of a join and missing on the other.
+    // The page-join test cannot see it either, since it splits left from right
+    // and gives both halves the same top edge.
+    //
+    // Measured, the assumption survived, for a reason worth keeping: a blade
+    // laid over travels down-screen along the ground and *loses height* doing
+    // it, and in a dimetric projection those two nearly cancel. Even at the
+    // skirt's full extra bend the furthest any mark descends from its own root
+    // is about seven pixels. Almost all of what `ABOVE` guards is the tuft
+    // radius, not the mark.
     const SIDE: f32 = 122.0;
     const BELOW: f32 = 156.0;
     const ABOVE: f32 = 46.0;
@@ -807,7 +970,7 @@ fn mat_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &BakeParams)
         } else {
             Tone::Thatch
         },
-        base_light: (0.48
+        base_light: (0.532
             + draw.normal() * 0.16
             + ground.crown * 0.06
             + (1.0 - ground.resolution) * 0.06
@@ -819,6 +982,30 @@ fn mat_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &BakeParams)
         ..default()
     }
 }
+
+/// Straight down the screen, as a world azimuth.
+///
+/// A world step of `(dx, dy)` moves `(dx - dy)` across the screen and `(dx + dy)`
+/// halved down it, so the direction that runs straight down the screen with no
+/// sideways component at all is the one where `dx == dy` — a quarter turn. It is
+/// the only direction in this projection that means anything to the viewer
+/// rather than to the world, which is what makes it the right one to lay a skirt
+/// along.
+const DOWN_SCREEN: f32 = std::f32::consts::FRAC_PI_4;
+
+/// How far from its centre a tuft may root a blade, metres.
+///
+/// Named rather than written into the draw because both guard-band tests have to
+/// add it to the reach they measure, and a copy of it in a test is a copy that
+/// goes stale silently — the test then certifies a band as sufficient for a
+/// narrower tuft than the one the baker actually grows.
+const TUFT_RADIUS: f32 = 0.185;
+
+/// Extra bend a skirt blade is laid over by, at most, radians.
+///
+/// Only here so the guard-band test can sweep to the same limit the baker
+/// reaches. See the skirt in [`grow_tuft`].
+const SKIRT_BEND: f32 = 0.75;
 
 /// One tuft: a handful of blades that agree with each other.
 ///
@@ -855,8 +1042,22 @@ fn grow_tuft(
     // the count takes it out linearly. So the marks in a clearing get more
     // numerous and much smaller at the same time, which is speckle, and the ink
     // on the soil goes *down* rather than up.
+    // And the last factor is how loudly this passage speaks at all — see
+    // [`Ground::resolution`]. Quiet ground grows *shorter* grass, not merely
+    // rounder-shaped grass, and that distinction is the difference between a
+    // hierarchy and a change of vocabulary. Two passages drawn with different
+    // mark families at the same length and the same contrast carry the same
+    // activity per square inch, and activity per square inch is what the eye
+    // measures. Length is the cheapest way to move it, because a shorter mark
+    // takes area out of the picture as the square.
+    //
+    // Centred, so the mean length is unchanged and only its spread grows. A
+    // multiplier that ran from one downward would quietly shave the whole
+    // canopy and would show up in the comparison as an exposure fault rather
+    // than as the organisation it is.
     let vigour = ((0.16 + ground.crown * 0.30 + ground.density * 0.80)
-        * (1.0 - ground.bare * 0.62))
+        * (1.0 - ground.bare * 0.62)
+        * (0.76 + ground.resolution * 0.44))
         .clamp(0.24, 1.45);
     // One tuft in eight stands well clear of its neighbours. Sparse tall accents
     // are what stop the canopy reading as a mown line.
@@ -906,7 +1107,11 @@ fn grow_tuft(
     // How far the blades fan out from the shared lean. A tight tuft reads as a
     // spike, a loose one as a rosette; the reference has both.
     let fan = draw.range(0.25, 2.1);
-    let radius = draw.range(0.035, 0.15);
+    // Half again as wide, in step with the tuft count coming down. A bunch is
+    // now a fifth of a metre across at the top of the range rather than a
+    // seventh, which at the size the ground is displayed is the difference
+    // between a mass with an outline and a dot with blades on it.
+    let radius = draw.range(0.045, TUFT_RADIUS);
     let shade = plant_light(draw, ground, params) - params.base_light;
     let (fewest, most) = params.blades_per_tuft;
     let blades = fewest + draw.index(most - fewest + 1);
@@ -945,6 +1150,25 @@ fn grow_tuft(
         if leaning {
             stroke.bend += draw.range(0.15, 0.4);
         }
+        // A skirt on the near side, and it is the cheapest isometric cue there
+        // is.
+        //
+        // A fixed three-quarter camera has a front and a back, and a tuft whose
+        // blades radiate evenly has neither — it is a rosette seen from directly
+        // above, which is what makes a field of them read as a top-down carpet
+        // however much volume the lighting gives it. What says "in front of"
+        // rather than "beside" is one thing lying over another, so a minority of
+        // each bunch's blades are turned down-screen and laid well over, where
+        // they overhang the ground the eye reads as nearer.
+        //
+        // A minority, and *within* a tuft rather than across the field. Every
+        // bunch keeps its own heading and its own fan; this only decides which
+        // few of its blades fall toward the viewer. Applied globally the same
+        // idea is a comb, and a combed field is a worse failure than a flat one.
+        if draw.chance(0.17) {
+            stroke.azimuth = DOWN_SCREEN + draw.signed() * 0.6;
+            stroke.bend += draw.range(0.3, SKIRT_BEND);
+        }
         // Blades within a tuft differ as much as tufts differ from each other.
         // The reference has bright single blades standing in dim clumps and dim
         // ones in bright clumps, and a tuft whose blades all agree exactly reads
@@ -955,7 +1179,17 @@ fn grow_tuft(
         // on the grass; variation *between* bunches is the frequency that groups
         // them into something the eye can read at a glance. They cost the same
         // and they are not worth the same.
-        stroke.base_light = (stroke.base_light + shade + draw.normal() * 0.085).clamp(0.05, 0.95);
+        // And narrowed further where the ground is quiet. This is the other half
+        // of the intensity classes — the first being length — and it is the half
+        // that decides whether a passage reads as a *canopy* or as a collection
+        // of blades. Blades that differ from each other are individually
+        // legible; blades that agree merge into a mass of one colour, which is
+        // exactly what "still lush but smoother, lower in local contrast" asks
+        // for. Nothing is taken away to get it: the same marks are drawn, they
+        // simply stop arguing with their neighbours.
+        stroke.base_light =
+            (stroke.base_light + shade + draw.normal() * 0.085 * (0.62 + ground.resolution * 0.76))
+                .clamp(0.05, 0.95);
         if spark {
             // Applied after the clamp's inputs are gathered rather than folded
             // into `shade`, because a spark has to survive a dim neighbourhood
@@ -1029,15 +1263,23 @@ impl Mark {
         // it is not the individual shape that carries it, it is what fraction of
         // the marks curl. Grass is a straight tapered blade with at most one
         // bend in it, and the reading flips somewhere around a fifth.
+        // Cut a third time, and this is where it stops. Between them `Sway`,
+        // `Hook` and `Tangle` are now about a ninth of the field, which is the
+        // proportion a botanist's eye reads as "grass with some character in it"
+        // rather than as fern, moss or clover. Below a twentieth the field
+        // starts reading as printed strokes; above a fifth it stops reading as
+        // grass. There is no more to win here — the remaining complaint about
+        // the shape language is answered by how *long* the marks are and how
+        // they group, not by which curve family they belong to.
         let weights = [
-            0.31 - loose * 0.11,  // Dash
-            0.14 - loose * 0.05,  // Kink
-            0.085 - loose * 0.03, // Sway
-            0.05 - loose * 0.02,  // Hook
-            0.10 + loose * 0.05,  // Fleck
-            0.15 + loose * 0.08,  // Broad
-            0.03 + loose * 0.015, // Tangle
-            0.135 + loose * 0.06, // Buried
+            0.335 - loose * 0.115, // Dash
+            0.145 - loose * 0.05,  // Kink
+            0.055 - loose * 0.02,  // Sway
+            0.032 - loose * 0.012, // Hook
+            0.10 + loose * 0.05,   // Fleck
+            0.165 + loose * 0.085, // Broad
+            0.025 + loose * 0.012, // Tangle
+            0.143 + loose * 0.06,  // Buried
         ];
         let total: f32 = weights.iter().sum();
         let mut cursor = 0.0;
@@ -1074,7 +1316,18 @@ impl Mark {
         // pixels spread across a third of the plate stop being highlights and
         // become the base colour, and then the actual base has to read as shadow
         // to get any separation at all.
-        let lit = 0.068 + ground.resolution * 0.082;
+        // Down by another thirty percent, and the strength again did not move.
+        //
+        // This is the third time the same lever has been pulled and the reason
+        // is measured rather than aesthetic: the plate carries a quarter more
+        // pixels above the reference's own bright threshold than the reference
+        // does, while reaching an almost identical peak. Too much of the surface
+        // is up at the top of the ramp, and a highlight population that broad
+        // stops being highlights — it becomes the base colour, and then the
+        // actual base has to read as shade to get any separation at all. What
+        // makes a field look luminous is the *ratio* of lit to unlit, not the
+        // brightness of the lit part.
+        let lit = 0.046 + ground.resolution * 0.058;
         let glint = if draw.chance(lit) {
             // Well-described ground gets brighter accents as well as more of
             // them, which is what keeps its local contrast up while the loosely
@@ -1148,7 +1401,13 @@ impl Mark {
             tip_light: params.tip_light * draw.range(0.7, 1.3),
             glint: if recessive > 0.0 { 0.0 } else { glint },
             side_light: params.side_light,
-            under: params.under * outlined,
+            // The third thing the intensity classes move, after length and
+            // blade-to-blade scatter. The under-stroke is what separates one
+            // blade from the next, so draining it is precisely "let these merge
+            // into a softer canopy" — and it is the term that carries the most
+            // local contrast per pixel of anything in the field, which makes it
+            // the most effective one to spend on the distinction.
+            under: params.under * outlined * (0.77 + ground.resolution * 0.46),
             ..default()
         };
 
@@ -1160,9 +1419,33 @@ impl Mark {
         let bulk = ((base.length - short) / (tall - short).max(1.0e-4)
             + (base.width - thin) / (thick - thin).max(1.0e-4))
             * 0.5;
+        // A glint belongs on a blade, not on a thread.
+        //
+        // The brightest marks in this field are also its thinnest, because the
+        // two reductions above both key on size and nothing keyed on legibility.
+        // A half-pixel stroke at the top of the ramp is not a catch of light on
+        // a leaf; it is a specular pinprick, and a scatter of them is what gives
+        // a surface the wet, varnished, faintly neon reading that no amount of
+        // colour work removes. They are also the pixels most certain to crawl
+        // when the camera moves: a feature narrower than a screen pixel cannot
+        // be resampled, only sampled, so it flickers on and off as the ground
+        // slides under the grid.
+        //
+        // So the two gates now pull in opposite directions and the highlights
+        // land between them — off the threads by this one, off the big soft
+        // masses by `bulk`. Same count, better placed.
+        // Sized to catch only the marks that are genuinely narrower than a
+        // screen pixel, and no wider. The first attempt at this band ran from
+        // half a pixel to one and a quarter, which sounds modest and removed
+        // nearly a third of the remaining highlight area on top of the thirty
+        // percent already taken out by the count — the two gates multiplied, the
+        // plate lost a tenth of its contrast at every small radius, and the
+        // repair was measured rather than seen. Two reductions aimed at the same
+        // population have to be budgeted together.
+        let legible = smoothstep(0.45, 0.95, base.width);
         let base = Stroke {
             base_light: base.base_light - bulk * 0.11,
-            glint: base.glint * (1.0 - bulk * 0.7),
+            glint: base.glint * (1.0 - bulk * 0.55) * legible,
             ..base
         };
 
@@ -1311,14 +1594,22 @@ fn leaf_cluster(
 
 /// How far toward the key the canopy-relief comparison is taken, in pixels.
 ///
-/// About a seventh of a metre: small against the half-metre blur it reads from,
+/// About a sixth of a metre: small against the half-metre blur it reads from,
 /// so the term still says "this bunch against the ground around it" rather than
 /// "this bunch against the next one along", and large enough that the sunward
 /// and shaded sides of one bunch get visibly different answers. Push it much
 /// past a third of the blur radius and the two stop being the same measurement —
 /// a crest starts comparing itself to a neighbouring crest, and the whole field
 /// picks up a directional smear instead of individually lit bunches.
-const RELIEF_REACH: f32 = 14.0;
+///
+/// Sitting at exactly that third now rather than a comfortable quarter of it,
+/// because the asymmetry is the whole product. At a quarter the comparison is
+/// three parts "is this high" to one part "does this face the sun", and a term
+/// that is mostly the first draws a halo round every bunch — a bright centre in
+/// a dark ring, which is the radial cushion reading the field keeps being
+/// accused of. Pushing it to the limit of what stays one measurement is what
+/// turns the halo into a crown on one flank and a shadow on the other.
+const RELIEF_REACH: f32 = 17.0;
 
 /// How much of a broad lighting term's *downward* half survives.
 ///
@@ -1389,7 +1680,7 @@ fn hue_only(from: Vec3, to: Vec3) -> Vec3 {
 }
 
 /// Assemble one light index per pixel and look it up in a ramp.
-fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams) -> Vec<Vec3> {
+pub fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams) -> Vec<Vec3> {
     let (width, height) = (page.width, page.height);
     let (heights, _buried) = surface.height_maps(width, height);
     // A fixed ceiling rather than this page's own tallest blade. Normalising by
@@ -1789,6 +2080,55 @@ mod tests {
     }
 
     #[test]
+    fn pages_meet_without_a_seam() {
+        // The claim page independence rests on, measured rather than asserted:
+        // two pages baked with no knowledge of each other have to join.
+        //
+        // Not by being identical to one big page — they are not, and cannot be.
+        // The macro lattice is laid out from each page's own origin at a
+        // six-pixel stride, and 256 is not a multiple of six, so neighbours
+        // interpolate the composition fields from sample points up to four
+        // pixels apart. A whole-region bake and a tiled one therefore differ
+        // across a fifth of their pixels. That is a property of the lattice, not
+        // a defect, and it is invisible for the reason this test checks: the
+        // fields are smooth at six pixels, so reading them from slightly
+        // different places moves the answer by far less than the grass on top
+        // of it does.
+        //
+        // What would be a defect is a *step* at the join — a column of ground
+        // systematically brighter than the column beside it. Column means are
+        // what expose that: they average the stroke noise away and leave the
+        // slowly-varying part, which is exactly the part a lattice mismatch
+        // would disturb.
+        const WIDTH: usize = 512;
+        const HEIGHT: usize = 256;
+        let region = Page::new(Vec2::new(-256.0, -128.0), WIDTH, HEIGHT);
+        let plate = bake_grid(region, &BakeParams::default());
+
+        let column = |x: usize| -> f32 {
+            (0..HEIGHT)
+                .map(|y| {
+                    let c = plate[y * WIDTH + x];
+                    c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722
+                })
+                .sum::<f32>()
+                / HEIGHT as f32
+        };
+        let step = |x: usize| (column(x) - column(x - 1)).abs();
+
+        let seam = step(WIDTH / 2);
+        let interior: Vec<f32> = (1..WIDTH).filter(|x| *x != WIDTH / 2).map(step).collect();
+        let typical = interior.iter().sum::<f32>() / interior.len() as f32;
+        let worst = interior.iter().copied().fold(0.0f32, f32::max);
+
+        assert!(
+            seam <= worst,
+            "the page join steps by {seam:.5}, more than any ordinary column pair \
+             (typical {typical:.5}, worst {worst:.5})"
+        );
+    }
+
+    #[test]
     fn a_page_bakes_to_grass_rather_than_to_soil() {
         let colours = bake(small_page(), &BakeParams::default());
         assert_eq!(colours.len(), 96 * 96);
@@ -1889,8 +2229,11 @@ mod tests {
         // clamp in `grow_tuft`, and the tall-accent reach draw.
         let longest = params.blade_length.1 * 1.25 * 1.35 * 1.35;
         // The tuft's blades are rooted up to this far from the centre that
-        // `scatter` tests, so the centre has to cover the offset as well.
-        let tuft_radius = 0.17;
+        // `scatter` tests, so the centre has to cover the offset as well. Must
+        // track the radius drawn in [`grow_tuft`]; a stale value here is a test
+        // that reports a guard band as sufficient for a field that no longer
+        // exists.
+        let tuft_radius = TUFT_RADIUS;
 
         let mut worst: f32 = 0.0;
         // Sweep the azimuth, because the projection is anisotropic: a mark laid
@@ -1948,6 +2291,107 @@ mod tests {
             "the guard band is {MARGIN} px for a {needed:.1} px reach, which is \
              paid for on every page"
         );
+    }
+
+    /// The furthest a mark reaches from its own root, per screen direction.
+    ///
+    /// Returns `(left, right, up, down)` in cache pixels, all positive. Sweeps
+    /// the azimuth because the projection is anisotropic, and sweeps the bend
+    /// because a straighter mark reaches further than a longer one — the longest
+    /// arc is not the furthest-reaching stroke.
+    fn reach_by_direction(
+        params: &BakeParams,
+        longest: f32,
+        bends: &[f32],
+    ) -> (f32, f32, f32, f32) {
+        let (mut left, mut right, mut up, mut down) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        for step in 0..64 {
+            let azimuth = step as f32 / 64.0 * std::f32::consts::TAU;
+            for bend in bends {
+                let mut surface = Surface::new(512, 512);
+                let mut painter =
+                    Painter::new(&mut surface, Vec2::new(-256.0, -256.0), params.light);
+                let root = painter.to_ground(Vec2::new(
+                    256.0 * SUPERSAMPLE as f32,
+                    256.0 * SUPERSAMPLE as f32,
+                ));
+                painter.draw(&Stroke {
+                    root: root.extend(0.0),
+                    azimuth,
+                    length: longest,
+                    bend: *bend,
+                    curl: 1.4,
+                    sway: 2.4,
+                    width: params.blade_width.1,
+                    under: params.under,
+                    ..default()
+                });
+                let (heights, _) = surface.height_maps(512, 512);
+                for y in 0..512 {
+                    for x in 0..512 {
+                        if heights[y * 512 + x] > 0.0 {
+                            let (dx, dy) = (x as f32 - 256.0, y as f32 - 256.0);
+                            left = left.max(-dx);
+                            right = right.max(dx);
+                            up = up.max(-dy);
+                            down = down.max(dy);
+                        }
+                    }
+                }
+            }
+        }
+        (left, right, up, down)
+    }
+
+    /// The placement rectangle is asymmetric, so it needs a test that knows
+    /// which way is up.
+    ///
+    /// [`footprint`] decides which cells are *visited* at all, and its four
+    /// margins are different sizes because grass grows up the screen. That
+    /// asymmetry is an assumption about the mark vocabulary, and the vocabulary
+    /// changes: when a minority of blades were turned down-screen to lay a
+    /// near-side skirt, `ABOVE` went from comfortably sufficient to a quarter of
+    /// what it needed to be, and nothing failed.
+    ///
+    /// Nothing *could* fail. The page-join test splits left from right, so both
+    /// halves share a top edge and a shortfall above is invisible to it. The
+    /// symptom would have been a tuft rooted off the top of a page, leaning into
+    /// it, simply absent — a straight line along the join where one page grew
+    /// something its neighbour did not, showing up only once two pages are on
+    /// screen together.
+    #[test]
+    fn the_placement_rectangle_covers_every_direction_a_mark_reaches() {
+        let params = BakeParams::default();
+        // Every multiplier from `blade_length` to a rasterised stroke, at its
+        // maximum: the `Tangle` factor, the vigour clamp, the tall-accent reach.
+        let longest = params.blade_length.1 * 1.25 * 1.45 * 1.35;
+        // Up to `Tangle`'s ceiling, plus what the skirt adds on top of it.
+        let bends = [0.9, 1.4, params.blade_bend.1, 2.0, 2.0 + SKIRT_BEND];
+        let (left, right, up, down) = reach_by_direction(&params, longest, &bends);
+        // A blade is rooted anywhere within its tuft, so the guard has to cover
+        // the offset as well as the reach. Projected, a world radius `r` spans
+        // `2r` across the screen and `r` down it — the anisotropy of the
+        // dimetric projection, which is why the sideways band is the tight one.
+        let across = TUFT_RADIUS * 2.0 * iso::PX_PER_METRE;
+        let downward = TUFT_RADIUS * iso::PX_PER_METRE;
+
+        // Mirrors the constants in `footprint`, which cannot be read from here.
+        for (name, band, needed) in [
+            ("SIDE", 122.0f32, left.max(right) + across),
+            ("BELOW", 156.0, up + downward),
+            ("ABOVE", 46.0, down + downward),
+        ] {
+            assert!(
+                band > needed,
+                "a mark reaches {needed:.1} px in the direction {name} guards \
+                 and the band is {band}"
+            );
+            assert!(
+                band < needed * 2.2,
+                "{name} is {band} px for a {needed:.1} px reach, and every pixel \
+                 of it widens the rectangle each scatter pass walks"
+            );
+        }
     }
 
     #[test]

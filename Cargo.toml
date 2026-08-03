@@ -68,9 +68,13 @@ bitflags = "2.13"
 clap = { version = "4.6", features = ["derive"] }
 rayon = "1.12"
 bytemuck = "1.25"
-# Decoding captured frames and the reference plate, for the texture-match
-# benchmark. Bevy already depends on it, so this costs nothing but the line.
+# Reading snapshot plates back for the visual-similarity comparison, and writing
+# the new ones. Bevy already depends on it, so this costs nothing but the line.
 image = { version = "0.25", default-features = false, features = ["png"] }
+# Performance benchmarks. `html_reports` is off: the suite's durable record is a
+# `bw_bench::Report` under benchmarks/baseline/, and criterion's own HTML wants
+# plotters and a good deal of build time to produce something nothing reads.
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 
 [dependencies]
 bw_app.workspace = true

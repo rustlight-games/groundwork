@@ -116,24 +116,42 @@ convexity 0.85–1.0, luminance spread 0.3–0.6, silhouette variety above 0.1.
 is producing the same shape for every seed, which is a real and easy failure to
 introduce and is invisible to every correctness test.
 
+### The grass is measured differently, and on purpose
+
+The grass used to be scored against reference art. It no longer is, and the
+reason generalises: **descriptors are for deciding whether something looks
+right; they are useless for deciding what an optimisation cost.** A plate can
+lose a fifth of its stroke texture and hold every descriptor inside its band.
+
+The look is settled, so the grass suite now measures speed and self-similarity:
+
+- `cargo bench -p bw_grass` — criterion, and deliberately **granular**. `bake()`
+  is five public stages (`fields`, `lattice`, `floor`, `strokes`, `shade`), each
+  timed separately, plus one mark drawn on its own. A single number for "a page
+  costs 100 ms" tells an optimiser nothing about which fifth to attack.
+- `cargo run --release -p bw_grass --example grass_snapshot` — photographs three
+  places at four camera heights, compares each against the last accepted set
+  pixel for pixel, and prints a verdict from `identical` to `changed`. See
+  `bw_grass::compare`.
+
+Snapshots are working state and live under `target/`. The timings go to
+`benchmarks/grass.ron` against the committed `benchmarks/baseline/grass.ron`.
+
 ### Current state of the harness
 
 Honest status, so nobody reports against a rig that does not exist:
 
 - The fixtures, metrics, reporting, and comparison logic exist and are tested.
-- The criterion `benches/` directories are **not written yet**, and criterion is
-  not yet a workspace dependency. `docs/BENCHMARKS.md` is the standard they
-  should follow.
-- Two end-to-end aesthetic measurements are wired up:
-  `cargo run -p bw_forge -- score-rocks`, and
-  `cargo run --release -p bw_grass --example grass_score`, which scores the
-  baked ground against reference art across all ten seeds and writes
-  `benchmarks/grass.ron`.
+- `crates/bw_grass/benches/bake.rs` is the only criterion suite written. The
+  simulation and navigation crates still have none; `docs/BENCHMARKS.md` is the
+  standard they should follow.
+- End-to-end measurements wired up: `cargo run -p bw_forge -- score-rocks`
+  (still aesthetic — rocks are not settled), and the grass pair above.
 - `benchmarks/baseline/grass.ron` is the only committed baseline.
 
-So for now, a performance claim about the tick path or a generator usually means
-building the benchmark as the first milestone of the work. That is expected —
-"there was no rig" is a reason to build one, not a reason to skip the table.
+So a performance claim about the tick path usually still means building the
+benchmark as the first milestone of the work. That is expected — "there was no
+rig" is a reason to build one, not a reason to skip the table.
 
 ## Finding documentation
 
@@ -175,9 +193,10 @@ rtk cargo fmt --all -- --check
 rtk cargo run -p bw_forge -- validate            # every content change
 rtk cargo run -p bw_forge -- score-rocks         # rock generator metrics
 rtk cargo run -p bw_train --release -- --episodes 10
-rtk cargo run --release -p bw_grass --example grass_bake    # a plate, headless
-rtk cargo run --release -p bw_grass --example grass_score   # score it, ten seeds
-rtk cargo run --release -p bw_grass --example grass_sandbox # the live renderer
+rtk cargo run --release -p bw_grass --example grass_bake     # a plate, headless
+rtk cargo run --release -p bw_grass --example grass_snapshot # photograph, compare
+rtk cargo run --release -p bw_grass --example grass_sandbox  # the live renderer
+rtk cargo bench -p bw_grass                                  # where the time goes
 
 ./run                  # the game, debug
 BW_DEV=1 ./run         # dynamic Bevy linking, much faster incremental builds
@@ -255,8 +274,8 @@ rename can shift ids and invalidate a trained policy.
 
 Real, currently true, and worth knowing before you trip over them:
 
-- No `benches/` directories and no criterion dependency yet; see the harness
-  status above.
+- `crates/bw_grass/benches/` is the only criterion suite; `bw_sim`, `bw_nav` and
+  `bw_ai` still have none. See the harness status above.
 - `tools/bw_train` duplicates the registry lists from `bw_app::registries`
   rather than importing them (importing would pull the renderer into the
   trainer). Its own comment claims a test keeps the two lists honest — there is
@@ -267,9 +286,17 @@ Real, currently true, and worth knowing before you trip over them:
   lets a unit stand *in* the grass rather than on it — is not built.
 - Each grass page is its own texture and its own draw call, so a 1080p view is a
   couple of hundred draws rather than the handful an atlas-packed cache would
-  need. It runs at 60 fps today; it will not scale.
+  need. It runs at 60 fps today; it will not scale. `grass.view_pages` in the
+  snapshot report is the count, per camera height.
 - Baked pages have no mip chain, so the surface only samples cleanly near the
   scale it was baked at (96 cache pixels per world metre).
+- A page is baked in isolation but its macro lattice is laid out from its own
+  origin at a six-pixel stride, and 256 is not a multiple of six. So neighbouring
+  pages read the composition fields from points up to four pixels apart, and a
+  region baked whole differs from the same region baked as pages across about a
+  fifth of its pixels. The join itself is continuous — `pages_meet_without_a_seam`
+  measures that — but the two bake paths are not interchangeable, and a
+  comparison must use the same one on both sides.
 - `bw_fx_rocks` varies its palette by applying one hue drift to all three tones
   equally, which leaves the lightest-to-darkest spread unchanged. So
   `luminance_spread` reads exactly 0.360 for all ten seeds — a dead column that

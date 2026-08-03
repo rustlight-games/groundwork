@@ -15,18 +15,26 @@ rayon.workspace = true
 
 [dev-dependencies]
 bw_bench.workspace = true
-# The headless bake example writes a PNG, and the metrics example reads the
-# reference plate back in to compare descriptors against it.
+criterion.workspace = true
+# The headless examples write PNGs, and the snapshot example reads the previous
+# ones back in to compare against.
 image.workspace = true
+rayon.workspace = true
 
 [[example]]
 name = "grass_bake"
 path = "examples/grass_bake.rs"
 
 [[example]]
-name = "grass_score"
-path = "examples/grass_score.rs"
+name = "grass_snapshot"
+path = "examples/grass_snapshot.rs"
 
 [[example]]
 name = "grass_sandbox"
 path = "examples/grass_sandbox.rs"
+
+# The performance suite. `harness = false` because criterion supplies its own.
+[[bench]]
+name = "bake"
+path = "benches/bake.rs"
+harness = false

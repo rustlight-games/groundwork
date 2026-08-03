@@ -13,7 +13,19 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum ReportError {
     #[error("could not read {path}: {source}")]
-    Io {
+    Read {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// Split from [`ReportError::Read`] because one variant serving both
+    /// directions reports a failed *write* as "could not read", which is what
+    /// it did the first time anything tried to create a baseline in a directory
+    /// that did not exist yet. The message sent the reader looking for a
+    /// missing input file instead of a missing output directory.
+    #[error("could not write {path}: {source}")]
+    Write {
         path: String,
         #[source]
         source: std::io::Error,
@@ -158,14 +170,22 @@ impl Report {
     pub fn save(&self, path: &Path) -> Result<(), ReportError> {
         let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
             .expect("a report is always serialisable");
-        std::fs::write(path, text).map_err(|source| ReportError::Io {
+        let failed = |source| ReportError::Write {
             path: path.display().to_string(),
             source,
-        })
+        };
+        // The first baseline a suite ever writes goes into a directory that
+        // does not exist yet, and failing there is pure friction: the report is
+        // in hand, the path was asked for explicitly, and the only thing
+        // missing is a directory the caller obviously wanted.
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).map_err(failed)?;
+        }
+        std::fs::write(path, text).map_err(failed)
     }
 
     pub fn load(path: &Path) -> Result<Self, ReportError> {
-        let text = std::fs::read_to_string(path).map_err(|source| ReportError::Io {
+        let text = std::fs::read_to_string(path).map_err(|source| ReportError::Read {
             path: path.display().to_string(),
             source,
         })?;
@@ -285,6 +305,29 @@ mod tests {
         let found = current.regressions_against(&baseline, 0.05);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].scenario, "large");
+    }
+
+    #[test]
+    fn saving_creates_the_directory_it_was_asked_for() {
+        let root = std::env::temp_dir().join(format!("bw_bench_save_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join("baseline").join("thing.ron");
+
+        report(&[("a", 1.0, true)])
+            .save(&path)
+            .expect("save should create the missing directory");
+        assert_eq!(Report::load(&path).unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_missing_report_reports_a_read_failure_not_a_write_one() {
+        let error = Report::load(Path::new("does/not/exist.ron")).unwrap_err();
+        assert!(
+            matches!(error, ReportError::Read { .. }),
+            "a failed load must not be described as a write: {error}"
+        );
     }
 
     #[test]

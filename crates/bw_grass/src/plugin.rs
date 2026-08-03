@@ -34,7 +34,12 @@ use crate::material::{GrassSurfaceMaterial, SurfaceSettings};
 /// A little over two and a half metres of ground. Small enough that arriving at
 /// a new one is a few tens of milliseconds of work on a background thread, large
 /// enough that a 1080p view is a couple of dozen draws rather than hundreds.
-pub const PAGE_PIXELS: usize = 256;
+///
+/// The same number the offline baker tiles at, and deliberately one definition
+/// rather than two: page size sets the ratio of guard band to interior, so a
+/// benchmark tiling at some other size would be measuring work that never
+/// ships.
+pub const PAGE_PIXELS: usize = crate::bake::TILE_PIXELS;
 
 /// The grass world: what to grow, and what has been grown so far.
 #[derive(Resource)]

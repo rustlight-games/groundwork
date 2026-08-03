@@ -44,14 +44,26 @@
 //! Iterate with `cargo run --release -p bw_grass --example grass_bake`, which
 //! bakes a plate to a PNG with no window and no GPU, and
 //! `cargo run -p bw_grass --example grass_sandbox` for the live renderer.
+//!
+//! ## Measuring it
+//!
+//! The look is now settled, so the suite measures **speed against the clock and
+//! the picture against itself**. There is no reference art in the loop any more:
+//! `benches/bake.rs` times the baker, and
+//! `cargo run --release -p bw_grass --example grass_snapshot` photographs the
+//! view the player gets at four camera heights and compares it, pixel for pixel,
+//! against the last accepted set. [`compare`] is that comparison. The workflow
+//! it exists for is one sentence long — accept a baseline, optimise, and find
+//! out what the speed cost.
 
 #![forbid(unsafe_code)]
 
 pub mod bake;
+pub mod compare;
 pub mod field;
+pub mod fixtures;
 pub mod iso;
 pub mod material;
-pub mod metrics;
 pub mod palette;
 pub mod plugin;
 pub mod rng;
@@ -59,6 +71,7 @@ pub mod stroke;
 pub mod surface;
 
 pub use bake::{BakeParams, Page, bake};
+pub use compare::{Similarity, Verdict};
 pub use field::WorldField;
 pub use material::GrassSurfaceMaterial;
 pub use palette::Tone;

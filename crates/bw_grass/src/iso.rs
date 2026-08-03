@@ -114,6 +114,35 @@ pub fn from_cache_ground(cache: Vec2) -> Vec2 {
 /// Metres of world height per cache pixel of screen rise.
 pub const METRES_PER_PX_UP: f32 = 1.0 / (Z_SCALE * PX_PER_METRE);
 
+/// How much cache one screenful covers, and how far it is scaled down to be
+/// seen.
+///
+/// The two numbers this reconciles are set a long way apart in the codebase and
+/// neither knows about the other. `bw_render::BattleCamera::view_height` is
+/// world metres visible vertically; [`PX_PER_METRE`] is how many cache pixels a
+/// screen metre is baked at. The ratio between them — how much a finished page
+/// is shrunk before anyone sees it — belonged to neither, so until this existed
+/// it was written down nowhere and was routinely assumed to be one.
+///
+/// It is not close to one. At the default 26-metre camera on a 1080-pixel
+/// window the ground shows at about **43 percent**; at 35 metres, under a third.
+/// A judgement made on a 1:1 plate is a judgement made at more than twice the
+/// size the plate will ever be presented at, which is exactly the size at which
+/// "richly detailed" and "busy" are hardest to tell apart.
+///
+/// Returns the cache-pixel extent to bake, and the scale it is shown at.
+pub fn view_pixels(view_height: f32, screen: (usize, usize)) -> (usize, usize, f32) {
+    let (screen_w, screen_h) = (screen.0.max(1), screen.1.max(1));
+    let metres = view_height.max(0.01);
+    // The projection is area-preserving and 2:1 dimetric, so a screen metre is a
+    // world metre and the horizontal extent is just the aspect times the
+    // vertical one.
+    let across = metres * screen_w as f32 / screen_h as f32;
+    let width = ((across * PX_PER_METRE).round() as usize).max(1);
+    let height = ((metres * PX_PER_METRE).round() as usize).max(1);
+    (width, height, screen_h as f32 / height as f32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +212,27 @@ mod tests {
         let a = project(Vec3::X) - project(Vec3::ZERO);
         let b = project(Vec3::Y) - project(Vec3::ZERO);
         assert!(close((a.x * b.y - a.y * b.x).abs(), 1.0));
+    }
+
+    #[test]
+    fn a_screenful_is_baked_much_larger_than_it_is_shown() {
+        // The number the whole snapshot suite rests on. If this ever came back
+        // near 1.0 the views would be being judged at the wrong scale and every
+        // similarity figure would be measuring a picture nobody sees.
+        let (width, height, scale) = view_pixels(26.0, (1920, 1080));
+        assert_eq!(height, 2496);
+        assert_eq!(width, 4437);
+        assert!((scale - 0.4327).abs() < 1.0e-3, "{scale}");
+
+        // Zooming out shrinks it further, never the other way.
+        let (_, _, far) = view_pixels(48.0, (1920, 1080));
+        assert!(far < scale);
+    }
+
+    #[test]
+    fn a_view_keeps_the_screens_aspect_ratio() {
+        let (width, height, _) = view_pixels(20.0, (1600, 900));
+        assert!(((width as f32 / height as f32) - 16.0 / 9.0).abs() < 1.0e-2);
     }
 
     #[test]

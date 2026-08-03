@@ -233,6 +233,64 @@ pub fn blur(source: &[f32], width: usize, height: usize, radius: usize) -> Vec<f
     a
 }
 
+/// Area-average a plate down to a target size.
+///
+/// A box filter over each output pixel's exact footprint, fractional edges
+/// included, which is what a correct mip chain converges to. So this shows the
+/// **best case** for how the surface minifies — worth stating plainly, because
+/// baked pages currently have no mip chain at all, and a GPU point-sampling a
+/// page at a third of its size will alias considerably worse than this.
+///
+/// It matters to the snapshot suite for one reason beyond correctness: it is
+/// deterministic and independent of the machine. A snapshot taken through a GPU
+/// would differ between two computers by more than most optimisations do, and
+/// the comparison would be measuring the driver.
+pub fn resample(
+    source: &[Vec3],
+    width: usize,
+    height: usize,
+    target_w: usize,
+    target_h: usize,
+) -> Vec<Vec3> {
+    if width == 0 || height == 0 || target_w == 0 || target_h == 0 {
+        return vec![Vec3::ZERO; target_w * target_h];
+    }
+    let sx = width as f32 / target_w as f32;
+    let sy = height as f32 / target_h as f32;
+    let mut out = vec![Vec3::ZERO; target_w * target_h];
+
+    for y in 0..target_h {
+        let (top, bottom) = (y as f32 * sy, (y as f32 + 1.0) * sy);
+        for x in 0..target_w {
+            let (left, right) = (x as f32 * sx, (x as f32 + 1.0) * sx);
+            let mut total = Vec3::ZERO;
+            let mut weight = 0.0f32;
+            for py in top.floor() as usize..(bottom.ceil() as usize).min(height) {
+                // Vertical overlap of this source row with the output pixel.
+                let cover_y = (bottom.min(py as f32 + 1.0) - top.max(py as f32)).max(0.0);
+                if cover_y <= 0.0 {
+                    continue;
+                }
+                for px in left.floor() as usize..(right.ceil() as usize).min(width) {
+                    let cover_x = (right.min(px as f32 + 1.0) - left.max(px as f32)).max(0.0);
+                    if cover_x <= 0.0 {
+                        continue;
+                    }
+                    let w = cover_x * cover_y;
+                    total += source[py * width + px] * w;
+                    weight += w;
+                }
+            }
+            out[y * target_w + x] = if weight > 0.0 {
+                total / weight
+            } else {
+                Vec3::ZERO
+            };
+        }
+    }
+    out
+}
+
 /// Pack linear colours into sRGB bytes.
 pub fn to_rgb8(colours: &[Vec3]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(colours.len() * 3);
@@ -291,5 +349,34 @@ mod tests {
     fn a_zero_radius_blur_is_the_identity() {
         let source = vec![0.25, 0.5, 0.75, 1.0];
         assert_eq!(blur(&source, 2, 2, 0), source);
+    }
+
+    #[test]
+    fn resampling_preserves_the_mean() {
+        // The property the snapshot comparison depends on. A downsample that
+        // shifted the average would make every view look like a tone regression
+        // at the zoom levels it was worst at.
+        let source: Vec<Vec3> = (0..120 * 90)
+            .map(|i| Vec3::splat(((i * 41) % 97) as f32 / 96.0))
+            .collect();
+        let mean = |v: &[Vec3]| v.iter().fold(Vec3::ZERO, |a, b| a + *b) / v.len() as f32;
+        let shrunk = resample(&source, 120, 90, 40, 30);
+        assert_eq!(shrunk.len(), 40 * 30);
+        assert!((mean(&shrunk) - mean(&source)).length() < 0.01);
+    }
+
+    #[test]
+    fn resampling_to_the_same_size_changes_nothing() {
+        let source: Vec<Vec3> = (0..8 * 8).map(|i| Vec3::splat(i as f32 / 64.0)).collect();
+        let same = resample(&source, 8, 8, 8, 8);
+        for (a, b) in same.iter().zip(&source) {
+            assert!((*a - *b).length() < 1.0e-5);
+        }
+    }
+
+    #[test]
+    fn resampling_a_degenerate_plate_does_not_panic() {
+        assert_eq!(resample(&[], 0, 0, 4, 4).len(), 16);
+        assert!(resample(&[Vec3::ONE], 1, 1, 0, 0).is_empty());
     }
 }
