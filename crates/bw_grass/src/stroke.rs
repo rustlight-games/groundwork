@@ -151,6 +151,15 @@ pub struct Stroke {
     pub ridge: f32,
     /// What happens at the end of it.
     pub tip: TipProfile,
+    /// How old and how established this mark is, `0..1`.
+    ///
+    /// Not a shape parameter — every shape decision has already been made by the
+    /// time this is set. It rides along so the *material* can know: a mature
+    /// blade is broader, a little drier at the tip and a little less saturated
+    /// through the body, and a new shoot is the opposite. Carrying it on the
+    /// mark rather than re-deriving it at shading time is what lets the tiller
+    /// grade its own leaves by age.
+    pub maturity: f32,
     pub tone: Tone,
     /// Light index at the root.
     pub base_light: f32,
@@ -233,6 +242,7 @@ impl Default for Stroke {
             twist: 0.0,
             ridge: geometry::RIDGE,
             tip: TipProfile::Pointed,
+            maturity: 0.5,
             tone: Tone::Grass,
             base_light: 0.42,
             tip_light: 0.16,

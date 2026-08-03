@@ -170,6 +170,21 @@ impl BakeRegion {
         self.pages.0 * self.pages.1
     }
 
+    /// Bake the whole region, correctly, and hand back the finished plate.
+    ///
+    /// Goes through [`crate::bake::bake_padded`], so every neighbourhood-reading
+    /// shading term sees the ground that is actually there rather than whatever
+    /// part of it fell inside the rectangle. The pad is a perimeter cost against
+    /// an area of pages, which is the whole reason to bake a region rather than
+    /// a page: one 256-pixel page padded for correctness costs three and a half
+    /// times itself, a four-by-four region costs half again.
+    ///
+    /// Crop the result with [`BakeRegion::crop`] to get pages the runtime cache
+    /// can hold.
+    pub fn bake(&self, params: &crate::bake::BakeParams) -> Vec<Vec3> {
+        crate::bake::bake_padded(self.whole(), params)
+    }
+
     /// Cut one output page out of a finished region plate.
     pub fn crop(&self, plate: &[Vec3], x: usize, y: usize) -> Vec<Vec3> {
         let whole = self.whole();

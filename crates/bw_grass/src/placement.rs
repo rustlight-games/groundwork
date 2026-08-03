@@ -143,6 +143,35 @@ pub fn plant(marks: &mut Vec<Stroke>, bed: &Bed) {
             emit(marks, page, stroke);
         },
     );
+    // The fine layer: the closed canopy the statement tufts stand *in*.
+    //
+    // This is the layer the renderer did not have, and its absence is most of
+    // why the field read as strokes scattered on a floor rather than as grass.
+    // The mat above it is drawn to be buried and shaded through the thatch ramp,
+    // so it reads as floor however much of it there is; the tufts are sparse by
+    // construction, because a tuft is a plant and plants have gaps between them.
+    // Nothing was doing the job the reference art gives most of its area to —
+    // thousands of short, fine, strongly combed blades forming a surface.
+    //
+    // Combed much harder than anything else in the field, and that is the point.
+    // A tuft scatters widely around the flow because a plant does; this layer is
+    // the *grain* of the meadow, and grain that wanders is not grain. It is also
+    // what carries the flow field at a distance, where individual tufts have
+    // stopped being resolvable.
+    scatter(
+        marks,
+        bed,
+        &mut ground,
+        Stream::Fine,
+        bed.params.fine,
+        // Thickest where the tufts are thinnest, so a quiet passage is a
+        // *smoother* canopy rather than a balder one.
+        |ground| (1.15 - ground.resolution * 0.30) * (1.0 - ground.bare * 0.75),
+        |marks, page, draw, root, ground, params| {
+            let stroke = fine_stroke(draw, root, ground, params);
+            emit(marks, page, stroke);
+        },
+    );
     scatter(
         marks,
         bed,
@@ -373,6 +402,59 @@ fn mat_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &BakeParams)
     }
 }
 
+/// The fine canopy: short, narrow, strongly combed, and meant to be seen.
+///
+/// Distinguished from the mat by what it is *for*. The mat is thatch — dark,
+/// tangled, isotropic, shaded through a ramp that reads as floor, and drawn to
+/// be buried. This stands up, takes the grass ramp, and closes the surface.
+/// Between them they are the two things under a tuft that the old renderer
+/// collapsed into one.
+fn fine_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &BakeParams) -> Stroke {
+    // Half a radian of scatter around the flow rather than the tuft's full one
+    // and a half. Grain, not plants.
+    let azimuth = ground.flow + draw.normal() * 0.42;
+    let width = draw.range(0.30, 0.72);
+    Stroke {
+        root: root.extend(0.0),
+        azimuth,
+        // Short. This layer is a surface, and a surface made of long marks is
+        // a surface made of objects.
+        length: draw.range(0.055, 0.125) * (0.80 + ground.density * 0.40),
+        bend: draw.range(0.55, 1.25),
+        curl: draw.range(0.0, 0.5),
+        sway: draw.signed() * 0.35,
+        width,
+        tip_width: 0.22,
+        profile: Profile::Leaf,
+        // Enough twist to break the comb without loosening it. Fine blades are
+        // nearly round in section, so this is at the bottom of the range.
+        twist: draw.signed() * 0.5,
+        tip: TipProfile::Pointed,
+        maturity: draw.range(0.15, 0.55),
+        tone: Tone::Grass,
+        base_light: (params.base_light - 0.05
+            + draw.normal() * 0.07
+            + ground.crown * 0.05
+            + ground.bare * 0.10)
+            .clamp(0.05, 0.95),
+        tip_light: params.tip_light * draw.range(0.5, 0.9),
+        // A tenth of the rate the statement blades get. This layer is area, and
+        // a highlight that appears on a tenth of the area is a texture rather
+        // than an accent.
+        glint: if draw.chance(0.012 * ground.resolution) {
+            params.glint * draw.range(0.5, 0.9)
+        } else {
+            0.0
+        },
+        side_light: params.side_light,
+        // Halved. The under-stroke separates one blade from the next, and at
+        // this density full-strength separation turns the layer into a woven
+        // mesh — every blade outlined, which is exactly the fur reading.
+        under: params.under * 0.45 * (1.0 - ground.bare * 0.85),
+        ..default()
+    }
+}
+
 /// Straight down the screen, as a world azimuth.
 ///
 /// A world step of `(dx, dy)` moves `(dx - dy)` across the screen and `(dx + dy)`
@@ -407,13 +489,79 @@ pub const VIGOUR_CEILING: f32 = 1.45;
 /// reaches. See the skirt in [`grow_tuft`].
 pub const SKIRT_BEND: f32 = 0.75;
 
-/// One tuft: a handful of blades that agree with each other.
+/// The most a tiller's structural role can add to a mark's bend, radians.
 ///
-/// The agreement is the point. Blades in a tuft share a lean, a length scale and
-/// a brightness, and differ only within those; that is what makes a clump read
-/// as one plant rather than as a coincidence. It is also where the field's
-/// middle scale comes from — twenty pixels of structure that neither a single
-/// blade nor the mound field can produce.
+/// [`Role::Perimeter`] is the outlier: it exists to lay the skirt over, and the
+/// skirt is what the tuft sits on. Named for the same reason [`SKIRT_BEND`] is —
+/// three guard-band tests have to sweep to the limit the baker actually reaches,
+/// and a copy of the number in a test is a copy that goes stale silently.
+///
+/// The two stack. A perimeter blade that is *also* turned down-screen takes both,
+/// so the vocabulary's true bend ceiling is a family's own maximum plus
+/// `ROLE_LEAN + SKIRT_BEND`, and that is what
+/// [`crate::bake::tests::the_placement_rectangle_covers_every_direction_a_mark_reaches`]
+/// has to sweep to. Getting this wrong does not clip a blade — it puts a
+/// straight line down every page join.
+pub const ROLE_LEAN: f32 = 0.85;
+
+/// The largest bend any mark in the vocabulary can end up with, radians.
+///
+/// The `Tangle` family's own ceiling, plus the lodging a clearing adds, plus
+/// both structural adjustments. Well past a right angle, which is the point:
+/// those marks lie along the ground and double back, and how far they reach is
+/// not something arc length alone can answer.
+pub const BEND_CEILING: f32 = 2.0 + 0.22 + ROLE_LEAN + SKIRT_BEND;
+
+/// One tuft: a crown of shoot bundles that agree with each other.
+///
+/// ## Why there is a layer between the tuft and the blade
+///
+/// A tuft used to be a handful of blades scattered in a disc around a point.
+/// That is one level of organisation, and it is one fewer than grass has. Real
+/// grass grows in **tillers** — small shoot bundles, each a fan of three to six
+/// related leaves sharing a root, a direction and an age — and a tuft is a
+/// crowd of tillers rather than a crowd of leaves.
+///
+/// The difference is visible and it is not subtle. Blades scattered
+/// independently in a disc give a rosette: every blade equidistant from its
+/// neighbours, no internal grouping, an outline and nothing inside it. Blades
+/// grouped into fans give the reference's reading — dense knots of parallel
+/// leaves, gaps between the knots, and a silhouette made of overlapping small
+/// masses rather than one smooth arc.
+///
+/// ```text
+///   tuft            an irregular multi-lobed crown, 0.1–0.2 m across
+///     └── tiller    a shoot bundle sharing a root and a heading
+///           └── blade
+/// ```
+///
+/// ## Why the footprint is lobed rather than elliptical
+///
+/// An ellipse has one centre, so density falls off monotonically from it and the
+/// tuft reads as a hedgehog — thickest in the middle, thinning evenly outward,
+/// with a smooth outline. Real clumps are lumpy: they have two or three centres
+/// of vigour, the gaps between them show floor, and the outline has bays in it.
+/// Two to four overlapping lobes combined with a p-norm gives that for almost
+/// nothing, and the combination matters — summing the lobes averages them into
+/// one blob, while a smooth maximum keeps each one's own shoulder.
+///
+/// ## The four structural roles
+///
+/// Where a tiller sits in the crown decides what grows there, and the shares are
+/// what stop a tuft reading as hair on a disc:
+///
+/// | Role | Share | Behaviour |
+/// | --- | ---: | --- |
+/// | Core | 15% | Tall, near upright, narrow |
+/// | Body | 50% | Long, curved, most of the volume |
+/// | Perimeter | 25% | Shorter, strongly outward — the skirt |
+/// | Accent | 10% | Broad, twisted, forked, brighter |
+///
+/// The perimeter is the load-bearing one. Without a skirt a tuft is hair growing
+/// vertically out of a flat disc, and no amount of lighting makes it look
+/// planted; the low outward blades hide the root mass and give the crown
+/// something to sit on. A minority of them are turned down-screen as well,
+/// which in a fixed isometric view is the cheapest depth cue there is.
 fn grow_tuft(
     marks: &mut Vec<Stroke>,
     page: &Page,
@@ -423,38 +571,16 @@ fn grow_tuft(
     params: &BakeParams,
 ) {
     // Height follows the mound. A mound whose blades are the same length as the
-    // hollow beside it is not a mound, it is a stain.
-    // Grass on the edge of a bare patch is shorter as well as sparser. Count
-    // alone leaves full-height blades standing in a thinning fringe, which reads
-    // as grass that has been pulled out rather than grass that never grew.
-    // Weighted away from the crown and toward the clump fields, for the same
-    // reason the density is: blade length that tracks relief closely makes every
-    // raised place taller *and* thicker *and* brighter, and three fields saying
-    // one thing is how a surface starts reading as its own height map.
-    // Widened against the clump field and narrowed against the mound, at the
-    // same mean. How tall the grass is in one bunch against the next is the
-    // other half of what groups the field at a fifth of a metre — the first half
-    // being how bright it is — and unlike brightness it survives being squinted
-    // at, because a taller bunch occludes what is behind it.
-    // The bare-ground penalty is steeper than the coverage thinning, and the
-    // pair is what lets an opening carry twice the marks and still read as open.
-    // Shortening a shoot takes area out of the picture as the square; thinning
-    // the count takes it out linearly. So the marks in a clearing get more
-    // numerous and much smaller at the same time, which is speckle, and the ink
-    // on the soil goes *down* rather than up.
-    // And the last factor is how loudly this passage speaks at all — see
-    // [`Ground::resolution`]. Quiet ground grows *shorter* grass, not merely
-    // rounder-shaped grass, and that distinction is the difference between a
-    // hierarchy and a change of vocabulary. Two passages drawn with different
-    // mark families at the same length and the same contrast carry the same
-    // activity per square inch, and activity per square inch is what the eye
-    // measures. Length is the cheapest way to move it, because a shorter mark
-    // takes area out of the picture as the square.
+    // hollow beside it is not a mound, it is a stain. Weighted away from the
+    // crown and toward the clump fields, because blade length that tracks relief
+    // closely makes every raised place taller *and* thicker *and* brighter, and
+    // three fields saying one thing is how a surface starts reading as its own
+    // height map.
     //
     // Centred, so the mean length is unchanged and only its spread grows. A
-    // multiplier that ran from one downward would quietly shave the whole
-    // canopy and would show up in the comparison as an exposure fault rather
-    // than as the organisation it is.
+    // multiplier that ran from one downward would quietly shave the whole canopy
+    // and would show up in the comparison as an exposure fault rather than as
+    // the organisation it is.
     let vigour = ((0.16 + ground.crown * 0.30 + ground.density * 0.80)
         * (1.0 - ground.bare * 0.62)
         * (0.76 + ground.resolution * 0.44))
@@ -473,16 +599,10 @@ fn grow_tuft(
     //
     // Three separate terms conspire on dim, loosely described ground — fewer
     // marks glint, the glints that happen are weaker, and the glaze is at its
-    // strongest — so those regions come out as a soft dark mass with no
-    // incident in them at all. Each of the three is right on its own; together
-    // they overshoot, and the result reads as a stain on the texture rather than
-    // as a shaded part of a meadow. A broad dark area is only wrong while it is
-    // *featureless*: put a few lit tufts in it and the same darkness becomes
-    // depth, because now there is something at the front for it to be behind.
-    //
-    // So the rate leans deliberately the other way from everything else here —
-    // up where the ground is dim and loosely described, down where the ordinary
-    // glint population is already doing the job.
+    // strongest — so those regions come out as a soft dark mass with no incident
+    // in them at all. A broad dark area is only wrong while it is *featureless*:
+    // put a few lit tufts in it and the same darkness becomes depth, because now
+    // there is something at the front for it to be behind.
     let spark = draw
         .chance((0.04 + (1.0 - ground.resolution) * 0.045 - ground.tint * 0.03).clamp(0.0, 1.0));
     if spark {
@@ -496,110 +616,436 @@ fn grow_tuft(
     // Along the local flow, loosely. A uniform heading over the whole circle is
     // isotropic, and isotropic grass has no direction for the eye to travel
     // along — so the only structure left at the middle scale is the outline of
-    // each clump, which is precisely the round-blob reading. Two thirds of a
-    // radian of scatter on top of the tuft's own fan is enough to bias the field
-    // without combing it, and one tuft in six ignores the flow entirely.
+    // each clump, which is precisely the round-blob reading. One tuft in six
+    // ignores the flow entirely.
     let heading = if draw.chance(0.17) {
         draw.range(0.0, std::f32::consts::TAU)
     } else {
         ground.flow + draw.signed() * 0.7
     };
-    // How far the blades fan out from the shared lean. A tight tuft reads as a
-    // spike, a loose one as a rosette; the reference has both.
-    let fan = draw.range(0.25, 2.1);
-    // Half again as wide, in step with the tuft count coming down. A bunch is
-    // now a fifth of a metre across at the top of the range rather than a
-    // seventh, which at the size the ground is displayed is the difference
-    // between a mass with an outline and a dot with blades on it.
-    let radius = draw.range(0.045, TUFT_RADIUS);
+    let flow = Vec2::from_angle(heading);
     let shade = plant_light(draw, ground, params) - params.base_light;
-    let (fewest, most) = params.blades_per_tuft;
-    let blades = fewest + draw.index(most - fewest + 1);
-    let leaning = draw.chance(0.35);
+    let maturity = (ground.resolution * 0.6 + ground.density * 0.3 + draw.unit() * 0.35).min(1.0);
 
-    for _ in 0..blades {
-        // Square root of a uniform: fills the disc evenly instead of piling up
-        // at the centre.
-        let angle = draw.range(0.0, std::f32::consts::TAU);
-        let offset = Vec2::from_angle(angle) * radius * draw.unit().sqrt();
-        // Bare ground grows sideways, and mostly in dabs. Upright sprouts evenly
-        // spaced across a clearing are the giveaway that the clearing was cut
-        // out of the grass rather than found in it.
+    // Everything below draws from its own sequence rather than continuing the
+    // tuft's. The tuft's draws decide where the crown is and how vigorous it is,
+    // and those answers must not move every time the *internal* structure gains
+    // a parameter — otherwise every refinement to a tiller reshuffles the whole
+    // world. Seeded from the tuft, so it is still a pure function of position.
+    let mut inner = Draw::from_seed(draw.seed() ^ ((Stream::Tiller as u64) << 48));
+
+    let crown = Crown::grow(&mut inner, ground);
+
+    // The dark under-canopy goes down first, and it goes down *before* anything
+    // that will stand over it. Not for correctness — the depth test sorts it out
+    // either way — but because its job is to be buried, and a mark that loses its
+    // pixel still darkens the interior it lost it in.
+    //
+    // This is what makes a tuft read as dense rather than as painted a darker
+    // green. The interior is genuinely occluded because there is genuinely
+    // something in it.
+    let understorey = 5 + inner.index(7);
+    for _ in 0..understorey {
+        let local = crown.sample(&mut inner);
+        let outward = local.normalize_or(flow);
+        emit(
+            marks,
+            page,
+            Stroke {
+                root: (centre + local).extend(0.0),
+                azimuth: outward.to_angle() + inner.signed() * 0.9,
+                length: crown.height * vigour * inner.range(0.18, 0.42),
+                // Laid over hard, so it hugs the floor and roofs the root mass
+                // rather than standing among the blades above it.
+                bend: inner.range(1.15, 1.85),
+                curl: inner.range(0.0, 0.9),
+                width: inner.range(0.55, 1.05),
+                tip_width: 0.24,
+                profile: Profile::Tapered,
+                tone: Tone::Thatch,
+                base_light: (params.base_light - inner.range(0.10, 0.22)).max(0.05),
+                tip_light: 0.06,
+                glint: 0.0,
+                side_light: params.side_light * 0.5,
+                under: params.under * 0.4,
+                twist: inner.signed() * 0.4,
+                ..default()
+            },
+        );
+    }
+
+    // Tiller roots, placed by best candidate rather than by pure jitter. Even
+    // spacing is wrong and pure randomness is wrong: real shoots crowd where the
+    // clump is vigorous and leave gaps elsewhere, and a fifth of them come in
+    // pairs a few millimetres apart. Scoring density against separation gets all
+    // three from one loop.
+    let tillers = 6 + inner.index(9);
+    let mut roots = [Vec2::ZERO; MAX_TILLERS];
+    let mut placed = 0usize;
+    for _ in 0..tillers.min(MAX_TILLERS) {
+        let mut best = Vec2::ZERO;
+        let mut best_score = f32::NEG_INFINITY;
+        for _ in 0..TILLER_CANDIDATES {
+            let candidate = crown.sample(&mut inner);
+            let density = crown.envelope(candidate);
+            // Distance to the nearest root already accepted, in units of the
+            // spacing the clump wants.
+            let separation = roots[..placed]
+                .iter()
+                .map(|root| root.distance(candidate))
+                .fold(f32::INFINITY, f32::min)
+                / crown.spacing;
+            // Weighted so density leads and separation corrects. The other way
+            // round gives an evenly spaced ring, which is the failure this is
+            // here to avoid.
+            let score = density * 1.5 + separation.min(2.0) + inner.unit() * 0.35;
+            if score > best_score {
+                best_score = score;
+                best = candidate;
+            }
+        }
+        roots[placed] = best;
+        placed += 1;
+    }
+
+    for root in &roots[..placed] {
+        let radius = crown.radius_of(*root);
+        let role = Role::at(radius, &mut inner);
+        // Where this tiller points, blended from four things that each say
+        // something different. The centre of a clump follows the shared flow;
+        // its edge fans outward; the nearest lobe pulls a little; and a swirl
+        // stops the whole tuft combing.
         //
-        // Weighted toward `Fleck` rather than evenly with `Broad`, because the
-        // two do different jobs here. A broad stroke is a mass of colour and a
-        // few of them across an opening start roofing it; a fleck is a dab the
-        // width of a shoot, and a scatter of them speckles the earth without
-        // hiding any of it. Speckle is what an opening in real ground has —
-        // seedlings, root crowns, the odd blade coming through — and it is the
-        // difference between soil the grass has worn thin and a shape cut out of
-        // the canopy.
-        let mut stroke = if ground.bare > 0.3 && draw.chance(0.78) {
-            let flat = if draw.chance(0.72) {
-                Mark::Fleck
+        // Blended rather than chosen, because each on its own is a recognisable
+        // failure — pure flow is a comb, pure radial is a rosette, pure swirl is
+        // a whirlpool.
+        let outward = crown.outward(*root);
+        let swirl = Vec2::new(-outward.y, outward.x) * crown.swirl;
+        let direction = (flow * (0.65 - radius * 0.30)
+            + outward * (0.10 + radius * 0.30)
+            + swirl * 0.10
+            + Vec2::new(inner.signed(), inner.signed()) * 0.08)
+            .normalize_or(flow);
+        let tiller_heading = direction.to_angle();
+
+        // A fan of related leaves rather than one blade. The dominant leaf is
+        // full length and the rest are graded down, which is what makes a bundle
+        // read as one plant of a certain age instead of as several plants that
+        // happen to be touching.
+        let blades = 3 + inner.index(4);
+        let fan = inner.range(0.21, 0.70);
+        for blade in 0..blades {
+            let across = if blades > 1 {
+                blade as f32 / (blades - 1) as f32 * 2.0 - 1.0
             } else {
-                Mark::Broad
+                0.0
             };
-            flat.shape(draw, params, ground)
-        } else {
-            Mark::pick(draw, ground.resolution).shape(draw, params, ground)
-        };
-        stroke.root = (centre + offset).extend(0.0);
-        stroke.azimuth = heading + draw.signed() * fan;
-        stroke.length *= vigour * reach;
-        if leaning {
-            stroke.bend += draw.range(0.15, 0.4);
-        }
-        // A skirt on the near side, and it is the cheapest isometric cue there
-        // is.
-        //
-        // A fixed three-quarter camera has a front and a back, and a tuft whose
-        // blades radiate evenly has neither — it is a rosette seen from directly
-        // above, which is what makes a field of them read as a top-down carpet
-        // however much volume the lighting gives it. What says "in front of"
-        // rather than "beside" is one thing lying over another, so a minority of
-        // each bunch's blades are turned down-screen and laid well over, where
-        // they overhang the ground the eye reads as nearer.
-        //
-        // A minority, and *within* a tuft rather than across the field. Every
-        // bunch keeps its own heading and its own fan; this only decides which
-        // few of its blades fall toward the viewer. Applied globally the same
-        // idea is a comb, and a combed field is a worse failure than a flat one.
-        if draw.chance(0.17) {
-            stroke.azimuth = DOWN_SCREEN + draw.signed() * 0.6;
-            stroke.bend += draw.range(0.3, SKIRT_BEND);
-        }
-        // Blades within a tuft differ as much as tufts differ from each other.
-        // The reference has bright single blades standing in dim clumps and dim
-        // ones in bright clumps, and a tuft whose blades all agree exactly reads
-        // as a moulded plastic plant.
-        //
-        // Narrowed, though, and the tuft-to-tuft scatter left alone. Variation
-        // *within* a bunch is the frequency that competes with a unit standing
-        // on the grass; variation *between* bunches is the frequency that groups
-        // them into something the eye can read at a glance. They cost the same
-        // and they are not worth the same.
-        // And narrowed further where the ground is quiet. This is the other half
-        // of the intensity classes — the first being length — and it is the half
-        // that decides whether a passage reads as a *canopy* or as a collection
-        // of blades. Blades that differ from each other are individually
-        // legible; blades that agree merge into a mass of one colour, which is
-        // exactly what "still lush but smoother, lower in local contrast" asks
-        // for. Nothing is taken away to get it: the same marks are drawn, they
-        // simply stop arguing with their neighbours.
-        stroke.base_light =
-            (stroke.base_light + shade + draw.normal() * 0.085 * (0.62 + ground.resolution * 0.76))
+            // Graded lengths within the bundle. Not random: a bundle has one
+            // mature leaf, a couple of half-grown ones and a short new shoot,
+            // and stratifying by index rather than drawing independently is what
+            // keeps that reading from tuft to tuft.
+            let age = 1.0 - (blade as f32 / blades as f32) * inner.range(0.35, 0.62);
+
+            let mut stroke = pick_mark(&mut inner, ground, role).shape(&mut inner, params, ground);
+            // A tiny offset within the bundle, so the leaves share a root
+            // without being coincident.
+            let jitter = Vec2::new(inner.signed(), inner.signed()) * crown.spacing * 0.18;
+            stroke.root = (centre + *root + jitter).extend(0.0);
+            stroke.azimuth = tiller_heading + across * fan + inner.signed() * 0.09;
+            stroke.length *= vigour * reach * role.length(&mut inner) * age;
+            stroke.bend += role.lean(&mut inner);
+            stroke.width *= role.width(&mut inner) * (0.72 + age * 0.38);
+            stroke.twist *= role.twist();
+
+            if role == Role::Accent {
+                stroke.tip_light *= 1.25;
+            } else if role != Role::Core && inner.chance(0.13) {
+                // A minority of the skirt is turned toward the viewer and laid
+                // well over. A fixed three-quarter camera has a front and a
+                // back, and a tuft whose blades radiate evenly has neither — what
+                // says "in front of" rather than "beside" is one thing lying over
+                // another.
+                //
+                // A minority, and *within* a tuft rather than across the field.
+                // Applied globally the same idea is a comb, and a combed field is
+                // a worse failure than a flat one.
+                stroke.azimuth = DOWN_SCREEN + inner.signed() * 0.6;
+                stroke.bend += inner.range(0.3, SKIRT_BEND);
+            }
+
+            // Blades within a tuft differ as much as tufts differ from each
+            // other, but *less* where the ground is quiet — that is the half of
+            // the intensity classes that decides whether a passage reads as a
+            // canopy or as a collection of blades. Nothing is taken away to get
+            // it: the same marks are drawn, they simply stop arguing with their
+            // neighbours.
+            stroke.base_light = (stroke.base_light
+                + shade
+                + inner.normal() * 0.085 * (0.62 + ground.resolution * 0.76))
                 .clamp(0.05, 0.95);
-        if spark {
-            // Applied after the clamp's inputs are gathered rather than folded
-            // into `shade`, because a spark has to survive a dim neighbourhood
-            // rather than be averaged with it — and it has to catch the light
-            // whether or not this particular mark drew a glint.
-            stroke.base_light = (stroke.base_light + 0.10).min(0.95);
-            stroke.glint = stroke.glint.max(params.glint * draw.range(0.75, 1.15));
-            stroke.tip_light *= 1.3;
+            stroke.maturity = maturity * age;
+            if spark {
+                // Applied after the clamp's inputs are gathered rather than
+                // folded into `shade`, because a spark has to survive a dim
+                // neighbourhood rather than be averaged with it — and it has to
+                // catch the light whether or not this particular mark drew a
+                // glint.
+                stroke.base_light = (stroke.base_light + 0.10).min(0.95);
+                stroke.glint = stroke.glint.max(params.glint * inner.range(0.75, 1.15));
+                stroke.tip_light *= 1.3;
+            }
+            emit(marks, page, stroke);
         }
-        emit(marks, page, stroke);
+    }
+}
+
+/// The most tillers one tuft may hold.
+///
+/// A fixed array rather than a `Vec`, because this runs a few hundred times per
+/// page and the allocation showed up. Sized to the draw's own ceiling.
+const MAX_TILLERS: usize = 15;
+
+/// How many places a tiller root is offered before one is accepted.
+///
+/// Eight. Best-candidate sampling converges on blue noise as this rises and gets
+/// no better past about a dozen; the cost is linear in it and the clump is small
+/// enough that the difference between eight and twelve is invisible.
+const TILLER_CANDIDATES: usize = 8;
+
+/// The lumpy footprint a tuft's shoots are distributed inside.
+struct Crown {
+    /// Two to four overlapping lobes, in tuft-local metres.
+    lobes: [Lobe; MAX_LOBES],
+    count: usize,
+    /// The bounding ellipse, tuft-local metres.
+    radius: Vec2,
+    /// How tall the blades on it want to be, metres.
+    height: f32,
+    /// How far apart the shoots want to sit, metres.
+    spacing: f32,
+    /// How much the tillers turn about the crown's centre.
+    swirl: f32,
+}
+
+const MAX_LOBES: usize = 4;
+
+#[derive(Clone, Copy, Default)]
+struct Lobe {
+    centre: Vec2,
+    radius: Vec2,
+    density: f32,
+}
+
+impl Crown {
+    fn grow(draw: &mut Draw, ground: &Ground) -> Self {
+        // The footprint, well inside the guard band's `TUFT_RADIUS`. The lobes
+        // are offset within it and every one of them has to stay inside, or a
+        // tuft could root a blade further out than the band allows for — which
+        // is a mark present on one side of a page join and missing on the other.
+        let span = draw.range(0.55, 1.0);
+        let aspect = draw.range(0.60, 1.0);
+        let radius = Vec2::new(TUFT_RADIUS * span, TUFT_RADIUS * span * aspect);
+
+        let count = 2 + draw.index(MAX_LOBES - 1);
+        let mut lobes = [Lobe::default(); MAX_LOBES];
+        for (index, lobe) in lobes.iter_mut().enumerate().take(count) {
+            // The first lobe sits near the middle and carries the tuft; the rest
+            // are offset and weaker. A clump with several equal centres reads as
+            // several clumps.
+            let (offset, size, density) = if index == 0 {
+                (0.12, 0.80, 1.0)
+            } else {
+                (LOBE_OFFSET, LOBE_SIZE, draw.range(0.55, 0.95))
+            };
+            let angle = draw.range(0.0, std::f32::consts::TAU);
+            *lobe = Lobe {
+                centre: Vec2::from_angle(angle) * radius * offset * draw.unit().sqrt(),
+                radius: radius * size * draw.range(0.75, 1.0),
+                density,
+            };
+        }
+
+        let height = ground.density.mul_add(0.06, 0.16);
+        Self {
+            lobes,
+            count,
+            radius,
+            height,
+            // Denser in a vigorous clump. Around a centimetre and a half, which
+            // is what a shoot bundle actually occupies.
+            spacing: (0.024 - ground.density * 0.008).max(0.010),
+            swirl: draw.signed() * 0.22,
+        }
+    }
+
+    /// How much crown there is at a tuft-local point, `0..1`.
+    ///
+    /// A p-norm rather than a sum. Summing the lobes averages them into one
+    /// smooth blob and throws away the whole reason there is more than one;
+    /// a smooth maximum keeps each lobe's own shoulder, so the outline has bays
+    /// in it and the interior has two or three centres of vigour.
+    fn envelope(&self, local: Vec2) -> f32 {
+        let mut total = 0.0f32;
+        for lobe in &self.lobes[..self.count] {
+            let offset = (local - lobe.centre) / lobe.radius.max(Vec2::splat(1.0e-4));
+            let inside = (1.0 - offset.length_squared()).max(0.0);
+            let value = inside * inside.sqrt() * lobe.density;
+            total += value * value * value * value;
+        }
+        total.sqrt().sqrt().min(1.0)
+    }
+
+    /// A point drawn from the crown, biased toward where the crown is.
+    fn sample(&self, draw: &mut Draw) -> Vec2 {
+        // Rejection against the envelope, with a hard cap so a thin crown cannot
+        // spin. Four tries lands inside the lobes the overwhelming majority of
+        // the time, and the fallback — the last candidate, wherever it fell — is
+        // still inside the bounding ellipse and so still inside the guard band.
+        let mut candidate = Vec2::ZERO;
+        for _ in 0..4 {
+            let angle = draw.range(0.0, std::f32::consts::TAU);
+            // Square root of a uniform fills the disc evenly instead of piling
+            // up at the centre.
+            candidate = Vec2::from_angle(angle) * self.radius * draw.unit().sqrt();
+            if draw.unit() < self.envelope(candidate) {
+                return candidate;
+            }
+        }
+        candidate
+    }
+
+    /// How far out a local point sits, `0..1` across the bounding ellipse.
+    fn radius_of(&self, local: Vec2) -> f32 {
+        (local / self.radius.max(Vec2::splat(1.0e-4)))
+            .length()
+            .min(1.0)
+    }
+
+    /// Which way is outward from the nearest lobe's centre.
+    ///
+    /// From the *lobe* rather than from the tuft, so shoots on a satellite lobe
+    /// fan away from their own mass instead of all pointing away from a centre
+    /// they are nowhere near.
+    fn outward(&self, local: Vec2) -> Vec2 {
+        let mut best = Vec2::ZERO;
+        let mut nearest = f32::INFINITY;
+        for lobe in &self.lobes[..self.count] {
+            let distance = local.distance_squared(lobe.centre);
+            if distance < nearest {
+                nearest = distance;
+                best = lobe.centre;
+            }
+        }
+        (local - best).normalize_or(Vec2::X)
+    }
+}
+
+/// How far a satellite lobe's centre may sit from the tuft's, as a fraction of
+/// the bounding radius.
+const LOBE_OFFSET: f32 = 0.30;
+/// How large a satellite lobe may be, likewise.
+///
+/// `LOBE_OFFSET + LOBE_SIZE` must not exceed one, or a lobe reaches outside the
+/// bounding ellipse that [`TUFT_RADIUS`] — and therefore the page guard band —
+/// is sized against. `tests::a_crown_stays_inside_the_guard_band` measures it
+/// rather than trusting this sentence.
+const LOBE_SIZE: f32 = 0.70;
+
+/// What a shoot bundle is for, decided by where in the crown it sits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    /// Tall, near upright, narrow. The spine of the clump.
+    Core,
+    /// Long and curved. Most of the volume.
+    Body,
+    /// Short, strongly outward. The skirt that hides the roots.
+    Perimeter,
+    /// Broad, twisted, brighter. Punctuation.
+    Accent,
+}
+
+impl Role {
+    /// Chosen mostly by radius, with enough overlap that the roles do not print
+    /// as concentric rings.
+    fn at(radius: f32, draw: &mut Draw) -> Self {
+        // Drawn independently of radius, so accents appear anywhere in the crown
+        // — an accent that only ever occurred at one depth would read as a ring
+        // of hero blades.
+        if draw.chance(0.10) {
+            return Role::Accent;
+        }
+        // The blur is what keeps the boundaries from printing. A tiller at 0.5
+        // could be body or perimeter, and which one is a coin weighted by how
+        // far out it actually is.
+        let blurred = radius + draw.signed() * 0.18;
+        if blurred < 0.36 {
+            Role::Core
+        } else if blurred < 0.74 {
+            Role::Body
+        } else {
+            Role::Perimeter
+        }
+    }
+
+    /// Length multiplier.
+    fn length(self, draw: &mut Draw) -> f32 {
+        match self {
+            Role::Core => draw.range(0.90, 1.15),
+            Role::Body => draw.range(0.78, 1.10),
+            Role::Perimeter => draw.range(0.46, 0.80),
+            Role::Accent => draw.range(0.92, 1.22),
+        }
+    }
+
+    /// Extra lean from vertical, radians.
+    fn lean(self, draw: &mut Draw) -> f32 {
+        match self {
+            Role::Core => draw.range(-0.20, 0.10),
+            Role::Body => draw.range(0.05, 0.42),
+            Role::Perimeter => draw.range(0.35, ROLE_LEAN),
+            Role::Accent => draw.range(0.10, 0.50),
+        }
+    }
+
+    /// Width multiplier.
+    fn width(self, draw: &mut Draw) -> f32 {
+        match self {
+            Role::Core => draw.range(0.70, 0.95),
+            Role::Body => draw.range(0.85, 1.15),
+            Role::Perimeter => draw.range(0.70, 1.05),
+            Role::Accent => draw.range(1.25, 1.75),
+        }
+    }
+
+    /// Twist multiplier. Broad accents turn most; the narrow core barely does,
+    /// because a blade with no face has nothing to turn.
+    fn twist(self) -> f32 {
+        match self {
+            Role::Core => 0.55,
+            Role::Body => 1.0,
+            Role::Perimeter => 0.85,
+            Role::Accent => 1.5,
+        }
+    }
+}
+
+/// Choose a centreline family, weighted by the role as well as the ground.
+///
+/// The roles want different characters — a core blade is a spear, a skirt blade
+/// lies over, an accent curls — and mapping them onto the existing mark
+/// vocabulary is what keeps one shape language across the whole field instead of
+/// growing a second one for tufts.
+fn pick_mark(draw: &mut Draw, ground: &Ground, role: Role) -> Mark {
+    match role {
+        // Straight and upright: the spine of the clump has no business curling.
+        Role::Core if draw.chance(0.72) => Mark::Dash,
+        // The skirt is the layer that lies along the ground.
+        Role::Perimeter if draw.chance(0.34) => Mark::Tangle,
+        Role::Perimeter if draw.chance(0.30) => Mark::Broad,
+        // Accents are the marks that get to have character.
+        Role::Accent if draw.chance(0.40) => Mark::Sway,
+        Role::Accent if draw.chance(0.30) => Mark::Hook,
+        _ => Mark::pick(draw, ground.resolution),
     }
 }
 
@@ -1036,6 +1482,146 @@ fn leaf_cluster(
                 under: params.under * 0.8,
                 ..default()
             },
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_crown_stays_inside_the_guard_band() {
+        // The page guard band is sized against `TUFT_RADIUS`, so a crown that
+        // rooted a shoot outside its own bounding ellipse would put a blade
+        // beyond what the band allows for — and the symptom of that is not a
+        // clipped blade, it is a mark present on one side of a page join and
+        // missing on the other.
+        //
+        // Swept rather than reasoned about, because the bound is the sum of two
+        // constants (`LOBE_OFFSET` and `LOBE_SIZE`) that are easy to raise one
+        // at a time.
+        let ground = Ground {
+            height: 0.1,
+            crown: 0.5,
+            lit: 0.0,
+            flow: 0.0,
+            hue: 0.0,
+            density: 1.3,
+            tint: 0.0,
+            bare: 0.0,
+            colony: 0.5,
+            statement: 0.5,
+            resolution: 1.0,
+        };
+        const _: () = assert!(
+            LOBE_OFFSET + LOBE_SIZE <= 1.0,
+            "a satellite lobe reaches outside the bounding ellipse"
+        );
+
+        let mut worst = 0.0f32;
+        for seed in 0..400u64 {
+            let mut draw = Draw::from_seed(seed);
+            let crown = Crown::grow(&mut draw, &ground);
+            // The bounding ellipse itself must fit.
+            worst = worst.max(crown.radius.x).max(crown.radius.y);
+            // And every lobe inside it.
+            for lobe in &crown.lobes[..crown.count] {
+                worst = worst
+                    .max(lobe.centre.x.abs() + lobe.radius.x)
+                    .max(lobe.centre.y.abs() + lobe.radius.y);
+            }
+            // And every point the sampler can actually return.
+            for _ in 0..64 {
+                let local = crown.sample(&mut draw);
+                worst = worst.max(local.length());
+            }
+        }
+        assert!(
+            worst <= TUFT_RADIUS + 1.0e-4,
+            "a crown reaches {worst:.4} m from its centre, past the \
+             {TUFT_RADIUS} m the guard band is sized for"
+        );
+    }
+
+    #[test]
+    fn a_crown_is_lumpy_rather_than_elliptical() {
+        // The property that stops a tuft reading as a hedgehog. A single-centred
+        // envelope falls off monotonically from the middle; a multi-lobed one
+        // has interior minima, and those are the gaps the reference art shows
+        // floor through.
+        let ground = Ground {
+            height: 0.1,
+            crown: 0.5,
+            lit: 0.0,
+            flow: 0.0,
+            hue: 0.0,
+            density: 1.0,
+            tint: 0.0,
+            bare: 0.0,
+            colony: 0.5,
+            statement: 0.5,
+            resolution: 1.0,
+        };
+        // Walk a ring at a fixed radius and count how many times the envelope
+        // turns around. A pure ellipse turns twice; a lobed crown turns more.
+        let mut lumpy = 0;
+        for seed in 0..64u64 {
+            let mut draw = Draw::from_seed(seed ^ 0xc0ffee);
+            let crown = Crown::grow(&mut draw, &ground);
+            let ring: Vec<f32> = (0..48)
+                .map(|step| {
+                    let angle = step as f32 / 48.0 * std::f32::consts::TAU;
+                    crown.envelope(Vec2::from_angle(angle) * crown.radius * 0.45)
+                })
+                .collect();
+            let turns = (0..48)
+                .filter(|i| {
+                    let (a, b, c) = (ring[(i + 47) % 48], ring[*i], ring[(i + 1) % 48]);
+                    (b - a).signum() != (c - b).signum()
+                })
+                .count();
+            if turns > 2 {
+                lumpy += 1;
+            }
+        }
+        assert!(
+            lumpy > 32,
+            "only {lumpy} of 64 crowns had more than one centre of vigour"
+        );
+    }
+
+    #[test]
+    fn every_role_appears_and_the_skirt_is_a_quarter_of_the_crown() {
+        // The shares matter more than the roles. A crown with no perimeter is
+        // hair growing out of a flat disc, and no lighting makes it look planted.
+        let mut counts = [0usize; 4];
+        let mut draw = Draw::from_seed(0x5eed);
+        for step in 0..20_000 {
+            // Radius distributed as a disc, which is how the sampler produces
+            // them.
+            let radius = ((step % 100) as f32 / 100.0).sqrt();
+            let role = Role::at(radius, &mut draw);
+            counts[match role {
+                Role::Core => 0,
+                Role::Body => 1,
+                Role::Perimeter => 2,
+                Role::Accent => 3,
+            }] += 1;
+        }
+        let total: usize = counts.iter().sum();
+        let share = |index: usize| counts[index] as f32 / total as f32;
+        assert!(share(0) > 0.05, "no core: {:.3}", share(0));
+        assert!(share(1) > 0.25, "no body: {:.3}", share(1));
+        assert!(
+            (0.15..0.45).contains(&share(2)),
+            "the skirt is {:.3} of the crown",
+            share(2)
+        );
+        assert!(
+            (0.05..0.16).contains(&share(3)),
+            "accents are {:.3} of the crown",
+            share(3)
         );
     }
 }

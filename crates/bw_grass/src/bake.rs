@@ -212,6 +212,13 @@ pub struct BakeParams {
     pub blades_per_tuft: (usize, usize),
     /// Short dark strokes per square metre, under everything.
     pub thatch: f32,
+    /// Fine blades per square metre — the closed canopy the tufts stand in.
+    ///
+    /// The largest single count in the field, and it should be. The reference
+    /// art gives most of its *area* to short combed grass and its accents to
+    /// everything else; a renderer that grows only accents produces marks
+    /// scattered on a floor.
+    pub fine: f32,
     /// Broadleaf clusters per square metre.
     pub leaves: f32,
 
@@ -422,6 +429,11 @@ impl Default for BakeParams {
             // metre, nearly all of them buried — and it is far cheaper per unit
             // of closure than a blade, because it is drawn to be lost.
             thatch: 395.0,
+            // About one every sixteen millimetres. Dense enough that the layer
+            // is a surface rather than a scatter, which is the whole distinction
+            // it exists to draw — coverage is not closure, and closure is what
+            // makes the floor stop showing between the marks.
+            fine: 3800.0,
             leaves: 4.0,
 
             blade_length: (0.05, 0.40),
@@ -697,6 +709,77 @@ pub fn plant_strokes(surface: &mut Surface, page: &Page, field: &WorldField, par
     let scene = GrassScene::build(*page, field, params);
     let mut painter = Painter::at_scale(surface, page.origin, params.light, page.px_per_metre);
     scene.draw(&mut painter);
+}
+
+/// How far outside itself a page's shading terms read, in reference pixels.
+///
+/// The number a padded bake has to grow by, and it is **derived rather than
+/// chosen**, because the terms it covers chain: the relief comparison samples a
+/// blur at an offset, and the result is then blurred again, and the painterly
+/// passes read that. Each stage's reach adds to the last, and a pad short by a
+/// single pixel leaves a visible step at every page join — which is exactly what
+/// a hand-picked 128 turned out to be.
+///
+/// Two of these fail differently and both matter. A blur whose support is
+/// cropped at a page edge is a smooth bias, which shows up as a gentle gradient.
+/// The *directional* relief offset being clamped is a **step**: a pixel just
+/// inside a page's left edge compares itself against ground it cannot see and
+/// falls back to the symmetric comparison, while the pixel one column to its
+/// left — on the neighbouring page — does not.
+///
+/// Note the doubling on every blur. [`crate::surface::blur`] runs its box pass
+/// twice to approximate a Gaussian, so a stated radius of 52 actually reaches
+/// 104. That is the single easiest thing here to get wrong by half.
+fn shading_reach(params: &BakeParams) -> usize {
+    /// The canopy-relief blur's stated radius. Half a metre — see [`resolve`].
+    const FAR_BLUR: usize = 52;
+    /// Two box passes per [`crate::surface::blur`] call.
+    const PASSES: usize = 2;
+
+    let far = FAR_BLUR * PASSES;
+    let relief = RELIEF_REACH.ceil() as usize;
+    let macro_blur = params.light_blur * PASSES;
+    let painterly = GLAZE_REACH + 1;
+    // An eighth over, so that adding a term does not silently need this
+    // recalculated on the same day.
+    (far + relief + macro_blur + painterly) * 9 / 8
+}
+
+/// Bake a page with its surroundings rasterised too, then crop.
+///
+/// The correct way to bake, and the expensive one. Every shading term in
+/// [`resolve`] that reads a neighbourhood — the occlusion radii, the directional
+/// relief, the shadow march, the glaze — is computed with the ground that is
+/// actually there rather than with whatever half of it fell inside the page, so
+/// the result does not depend on where the page grid was laid.
+///
+/// It costs the padding's area, and that is why [`BakeRegion`] exists. Padding
+/// one 256-pixel page by [`SHADING_REACH`] on every side more than triples it;
+/// padding a two-by-two region doubles it; padding a four-by-four adds half
+/// again. The pad is a perimeter cost and the pages are an area, so the bigger
+/// the piece of ground the cheaper the correctness.
+///
+/// [`bake`] remains for the streaming tier, which cannot afford this and does
+/// not need it — a page popping in with a slightly different relief term at its
+/// left edge is not what anybody notices about grass appearing.
+///
+/// [`BakeRegion`]: crate::scene::BakeRegion
+pub fn bake_padded(page: Page, params: &BakeParams) -> Vec<Vec3> {
+    let pad = page.radius(shading_reach(params));
+    let grown = Page {
+        origin: page.origin - Vec2::splat(pad as f32),
+        width: page.width + pad * 2,
+        height: page.height + pad * 2,
+        px_per_metre: page.px_per_metre,
+    };
+    let plate = bake(grown, params);
+
+    let mut cropped = Vec::with_capacity(page.width * page.height);
+    for row in 0..page.height {
+        let start = (row + pad) * grown.width + pad;
+        cropped.extend_from_slice(&plate[start..start + page.width]);
+    }
+    cropped
 }
 
 /// Side of the page the tiled baker splits a region into.
@@ -1409,7 +1492,7 @@ mod tests {
     // only the rasteriser knows where the paint actually lands. A test that
     // reasoned about the band without drawing anything would certify arithmetic
     // rather than pixels, which is exactly the failure they exist to prevent.
-    use crate::placement::{MARGIN, SKIRT_BEND, TUFT_RADIUS, VIGOUR_CEILING};
+    use crate::placement::{BEND_CEILING, MARGIN, TUFT_RADIUS, VIGOUR_CEILING};
     use crate::stroke::Stroke;
 
     fn small_page() -> Page {
@@ -1437,10 +1520,42 @@ mod tests {
         // what expose that: they average the stroke noise away and leave the
         // slowly-varying part, which is exactly the part a lattice mismatch
         // would disturb.
+        //
+        // ## Measured against its own neighbourhood, not against the whole plate
+        //
+        // The obvious test — "the seam must step less than any other column pair
+        // on the plate" — compares one sample against the maximum of five
+        // hundred, which is an extreme order statistic and therefore a coin
+        // toss whenever the seam sits anywhere near the top of the distribution.
+        // It passed for a long time and then failed by under two percent when
+        // the canopy got denser, which is not a signal about seams.
+        //
+        // So the comparison is local. A join is invisible when it steps like the
+        // ground either side of it steps; whether some column four hundred
+        // pixels away happens to step more is not evidence about anything. The
+        // window controls for the field's own variation, which is the quantity
+        // that made the global test unstable.
         const WIDTH: usize = 512;
         const HEIGHT: usize = 256;
-        let region = Page::new(Vec2::new(-256.0, -128.0), WIDTH, HEIGHT);
-        let plate = bake_grid(region, &BakeParams::default());
+        let region = crate::scene::BakeRegion {
+            origin: Vec2::new(-256.0, -128.0),
+            pages: (2, 1),
+            page_pixels: 256,
+            px_per_metre: iso::PX_PER_METRE,
+        };
+        // Two pages, each baked *padded* and cropped, then laid side by side.
+        // That is the offline path, and it is the one the claim is about: a page
+        // whose shading terms saw the ground beyond its own edge has nothing left
+        // to disagree with its neighbour about.
+        let mut plate = vec![Vec3::ZERO; WIDTH * HEIGHT];
+        for x in 0..2 {
+            let tile = bake_padded(region.tile(x, 0), &BakeParams::default());
+            for row in 0..HEIGHT {
+                let from = row * 256;
+                let to = row * WIDTH + x * 256;
+                plate[to..to + 256].copy_from_slice(&tile[from..from + 256]);
+            }
+        }
 
         let column = |x: usize| -> f32 {
             (0..HEIGHT)
@@ -1453,15 +1568,59 @@ mod tests {
         };
         let step = |x: usize| (column(x) - column(x - 1)).abs();
 
-        let seam = step(WIDTH / 2);
-        let interior: Vec<f32> = (1..WIDTH).filter(|x| *x != WIDTH / 2).map(step).collect();
-        let typical = interior.iter().sum::<f32>() / interior.len() as f32;
-        let worst = interior.iter().copied().fold(0.0f32, f32::max);
+        // Against the same ground baked in one piece, which is the version with
+        // no join in it at all.
+        //
+        // This is the formulation that finally asked the right question. Earlier
+        // ones compared the join's column step against the *rest of the plate's*
+        // column steps, and that conflates two things: how much a join disturbs
+        // the picture, and how much the meadow itself varies from column to
+        // column. The meadow varies a great deal — a bright crown moves a column
+        // mean by several times the typical step — so the comparison was mostly
+        // measuring the field's own tail, and it moved whenever the canopy did.
+        //
+        // Baking the identical rectangle whole removes the field from the
+        // question entirely. Whatever the ground does at that column, both
+        // versions do it; the only thing that differs is whether a page boundary
+        // ran through it.
+        let unbroken = bake_padded(region.whole(), &BakeParams::default());
+        let unbroken_column = |x: usize| -> f32 {
+            (0..HEIGHT)
+                .map(|y| {
+                    let c = unbroken[y * WIDTH + x];
+                    c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722
+                })
+                .sum::<f32>()
+                / HEIGHT as f32
+        };
+
+        let join = WIDTH / 2;
+        // How far each version's column mean sits from the other's, near the
+        // join and away from it.
+        let drift = |x: usize| (column(x) - unbroken_column(x)).abs();
+        let at_join = drift(join).max(drift(join - 1));
+        let away: Vec<f32> = (8..WIDTH - 8)
+            .filter(|x| x.abs_diff(join) > 24)
+            .map(drift)
+            .collect();
+        let typical_drift = away.iter().sum::<f32>() / away.len() as f32;
 
         assert!(
-            seam <= worst,
-            "the page join steps by {seam:.5}, more than any ordinary column pair \
-             (typical {typical:.5}, worst {worst:.5})"
+            at_join < typical_drift * 4.0 + 1.0e-3,
+            "the columns either side of the join sit {at_join:.5} from where the \
+             same ground lands when it is baked in one piece, against \
+             {typical_drift:.5} elsewhere — cutting the page grid through this \
+             column changed what is drawn there"
+        );
+        // And the join must not step in a way the unbroken bake does not: a real
+        // seam is a difference between the two versions, not a feature of the
+        // ground that both share.
+        let seam = step(join);
+        let unbroken_seam = (unbroken_column(join) - unbroken_column(join - 1)).abs();
+        assert!(
+            seam < unbroken_seam + typical_drift * 4.0 + 2.0e-3,
+            "the join steps by {seam:.5} where the unbroken bake steps by \
+             {unbroken_seam:.5} at the same column"
         );
     }
 
@@ -1710,7 +1869,7 @@ mod tests {
         // longest arc is not the furthest-reaching one.
         for step in 0..64 {
             let azimuth = step as f32 / 64.0 * std::f32::consts::TAU;
-            for bend in [1.3, 1.65, 2.0, 2.62] {
+            for bend in [1.3, 1.65, 2.0, 2.62, BEND_CEILING] {
                 let mut surface = Surface::new(512, 512);
                 let origin = Vec2::new(-256.0, -256.0);
                 let mut painter = Painter::new(&mut surface, origin, params.light);
@@ -1841,7 +2000,7 @@ mod tests {
         // maximum: the `Tangle` factor, the vigour clamp, the tall-accent reach.
         let longest = params.blade_length.1 * 1.25 * VIGOUR_CEILING * 1.35;
         // Up to `Tangle`'s ceiling, plus what the skirt adds on top of it.
-        let bends = [0.9, 1.4, params.blade_bend.1, 2.0, 2.0 + SKIRT_BEND];
+        let bends = [0.9, 1.4, params.blade_bend.1, 2.0, BEND_CEILING];
         let (left, right, up, down) = reach_by_direction(&params, longest, &bends);
         // A blade is rooted anywhere within its tuft, so the guard has to cover
         // the offset as well as the reach. Projected, a world radius `r` spans
@@ -1887,7 +2046,7 @@ mod tests {
     fn the_stroke_reach_bound_is_never_beaten() {
         let params = BakeParams::default();
         let longest = params.blade_length.1 * 1.25 * VIGOUR_CEILING * 1.35;
-        let bends = [0.0, 0.9, 1.4, params.blade_bend.1, 2.0, 2.0 + SKIRT_BEND];
+        let bends = [0.0, 0.9, 1.4, params.blade_bend.1, 2.0, BEND_CEILING];
         let (left, right, up, down) = reach_by_direction(&params, longest, &bends);
 
         let stroke = Stroke {
