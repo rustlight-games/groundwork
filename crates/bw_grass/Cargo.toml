@@ -33,6 +33,12 @@ path = "examples/grass_snapshot.rs"
 name = "grass_sandbox"
 path = "examples/grass_sandbox.rs"
 
+# The laboratory plate: a small, known population, for judging one mark at a
+# time instead of judging a meadow.
+[[example]]
+name = "grass_lab"
+path = "examples/grass_lab.rs"
+
 # The performance suite. `harness = false` because criterion supplies its own.
 [[bench]]
 name = "bake"

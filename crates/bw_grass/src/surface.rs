@@ -19,15 +19,27 @@
 //! ## Supersampling
 //!
 //! The reference art is painted, not pixel art: its strokes have soft two- and
-//! three-pixel edges, and hard alpha would throw that away. Compositing at
-//! [`SUPERSAMPLE`]× and box-filtering down gives every stroke edge ten levels of
-//! coverage, which is enough to read as a brush mark rather than as a polygon.
+//! three-pixel edges, and hard alpha would throw that away. Compositing at a
+//! multiple of the final resolution and box-filtering down gives every stroke
+//! edge many levels of coverage, which is enough to read as a brush mark rather
+//! than as a polygon.
+//!
+//! The factor is a property of the surface rather than a constant, because it
+//! is now the main thing a [`crate::quality::GrassRenderQuality`] buys. It used
+//! to be three everywhere; three is still what the streaming tier uses, and the
+//! offline tiers spend four.
 
 use bevy::prelude::*;
 
 use crate::palette::{self, Tone};
 
-/// Linear scale factor the page is composited at before downsampling.
+/// The supersampling factor the look was tuned at, and what
+/// [`crate::quality::GrassRenderQuality::Preview`] still uses.
+///
+/// Kept as a named constant rather than an inline three because two things have
+/// to agree about it — the quality tier and every test that builds a bare
+/// [`Surface`] — and a test that quietly used a different factor from the
+/// renderer would be measuring a picture nobody bakes.
 pub const SUPERSAMPLE: usize = 3;
 
 /// Everything one supersampled pixel remembers, in one place.
@@ -68,17 +80,27 @@ pub struct Surface {
     pub width: usize,
     /// Supersampled height in pixels.
     pub height: usize,
+    /// Supersampled pixels per final pixel, on each axis.
+    supersample: usize,
     cells: Vec<Cell>,
 }
 
 impl Surface {
-    /// An empty page, filled with soil at the ground plane.
+    /// An empty page at the tuned supersampling factor, filled with soil at the
+    /// ground plane.
     pub fn new(final_width: usize, final_height: usize) -> Self {
-        let width = final_width * SUPERSAMPLE;
-        let height = final_height * SUPERSAMPLE;
+        Self::at_supersample(final_width, final_height, SUPERSAMPLE)
+    }
+
+    /// An empty page composited at a chosen supersampling factor.
+    pub fn at_supersample(final_width: usize, final_height: usize, supersample: usize) -> Self {
+        let supersample = supersample.max(1);
+        let width = final_width * supersample;
+        let height = final_height * supersample;
         Self {
             width,
             height,
+            supersample,
             cells: vec![
                 Cell {
                     depth: f32::NEG_INFINITY,
@@ -90,6 +112,12 @@ impl Surface {
                 width * height
             ],
         }
+    }
+
+    /// Supersampled pixels per final pixel.
+    #[inline]
+    pub fn supersample(&self) -> usize {
+        self.supersample
     }
 
     /// Offer a pixel to the surface, taking it only if it is in front.
@@ -159,13 +187,14 @@ impl Surface {
     /// Canopy height, box-filtered to final resolution.
     pub fn height_map(&self, final_width: usize, final_height: usize) -> Vec<f32> {
         let mut heights = vec![0.0f32; final_width * final_height];
-        let inverse = 1.0 / (SUPERSAMPLE * SUPERSAMPLE) as f32;
+        let step = self.supersample;
+        let inverse = 1.0 / (step * step) as f32;
         for y in 0..final_height {
             for x in 0..final_width {
                 let mut height = 0u32;
-                for sy in 0..SUPERSAMPLE {
-                    let row = (y * SUPERSAMPLE + sy) * self.width + x * SUPERSAMPLE;
-                    for cell in &self.cells[row..row + SUPERSAMPLE] {
+                for sy in 0..step {
+                    let row = (y * step + sy) * self.width + x * step;
+                    for cell in &self.cells[row..row + step] {
                         height += cell.top as u32;
                     }
                 }
@@ -180,13 +209,14 @@ impl Surface {
     #[cfg(test)]
     pub(crate) fn painted_map(&self, final_width: usize, final_height: usize) -> Vec<f32> {
         let mut painted = vec![0.0; final_width * final_height];
-        let inverse = 1.0 / (SUPERSAMPLE * SUPERSAMPLE) as f32;
+        let step = self.supersample;
+        let inverse = 1.0 / (step * step) as f32;
         for y in 0..final_height {
             for x in 0..final_width {
                 let mut count = 0usize;
-                for sy in 0..SUPERSAMPLE {
-                    let row = (y * SUPERSAMPLE + sy) * self.width + x * SUPERSAMPLE;
-                    count += self.cells[row..row + SUPERSAMPLE]
+                for sy in 0..step {
+                    let row = (y * step + sy) * self.width + x * step;
+                    count += self.cells[row..row + step]
                         .iter()
                         .filter(|cell| cell.depth.is_finite())
                         .count();
@@ -225,13 +255,14 @@ impl Surface {
     /// grass at 0.5 are not the same colour, and blending the indices would
     /// invent a third material that exists nowhere in the palette.
     pub fn resolve_pixel(&self, x: usize, y: usize, mut shade: impl FnMut(usize) -> Vec3) -> Vec3 {
+        let step = self.supersample;
         let mut total = Vec3::ZERO;
-        for sy in 0..SUPERSAMPLE {
-            for sx in 0..SUPERSAMPLE {
-                total += shade(self.index(x * SUPERSAMPLE + sx, y * SUPERSAMPLE + sy));
+        for sy in 0..step {
+            for sx in 0..step {
+                total += shade(self.index(x * step + sx, y * step + sy));
             }
         }
-        total / (SUPERSAMPLE * SUPERSAMPLE) as f32
+        total / (step * step) as f32
     }
 }
 

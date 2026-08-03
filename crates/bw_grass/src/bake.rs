@@ -31,7 +31,7 @@ use crate::iso;
 use crate::palette::{self, Tone};
 use crate::rng::{Draw, Stream};
 use crate::stroke::{Painter, Profile, Stroke};
-use crate::surface::{SUPERSAMPLE, Surface, blur};
+use crate::surface::{Surface, blur};
 
 /// Hermite ramp between two edges.
 #[inline]
@@ -822,9 +822,10 @@ pub fn lay_floor(surface: &mut Surface, page: &Page, field: &WorldField, lattice
                 + loose * 0.10
                 - rim * 0.14;
 
-            for sy in 0..SUPERSAMPLE {
-                let index = surface.index(x * SUPERSAMPLE, y * SUPERSAMPLE + sy);
-                surface.lay_run(index, SUPERSAMPLE, light, soil);
+            let step = surface.supersample();
+            for sy in 0..step {
+                let index = surface.index(x * step, y * step + sy);
+                surface.lay_run(index, step, light, soil);
             }
         }
     }
@@ -1053,7 +1054,7 @@ fn paint(painter: &mut Painter, page: &Page, stroke: Stroke) {
     // `MARGIN` still guards the *cell*, in [`scatter`], because a tuft's blades
     // are not drawn yet when that test runs.
     let reach = painter.reach(&stroke);
-    let at = painter.to_page(stroke.root) / SUPERSAMPLE as f32;
+    let at = painter.to_page(stroke.root) / painter.supersample();
     if at.x < -reach
         || at.y < -reach
         || at.x > page.width as f32 + reach
@@ -1073,7 +1074,7 @@ fn paint(painter: &mut Painter, page: &Page, stroke: Stroke) {
 #[inline]
 fn reaches_page(painter: &Painter, page: &Page, root: Vec2) -> bool {
     let margin = page.px(MARGIN);
-    let at = painter.to_page(root.extend(0.0)) / SUPERSAMPLE as f32;
+    let at = painter.to_page(root.extend(0.0)) / painter.supersample();
     at.x >= -margin
         && at.y >= -margin
         && at.x <= page.width as f32 + margin
@@ -2468,10 +2469,7 @@ mod tests {
                 let mut surface = Surface::new(512, 512);
                 let origin = Vec2::new(-256.0, -256.0);
                 let mut painter = Painter::new(&mut surface, origin, params.light);
-                let root = painter.to_ground(Vec2::new(
-                    256.0 * SUPERSAMPLE as f32,
-                    256.0 * SUPERSAMPLE as f32,
-                ));
+                let root = painter.to_ground(Vec2::splat(256.0 * painter.supersample()));
                 painter.draw(&Stroke {
                     root: root.extend(0.0),
                     azimuth,
@@ -2539,10 +2537,7 @@ mod tests {
                 let mut surface = Surface::new(512, 512);
                 let mut painter =
                     Painter::new(&mut surface, Vec2::new(-256.0, -256.0), params.light);
-                let root = painter.to_ground(Vec2::new(
-                    256.0 * SUPERSAMPLE as f32,
-                    256.0 * SUPERSAMPLE as f32,
-                ));
+                let root = painter.to_ground(Vec2::splat(256.0 * painter.supersample()));
                 painter.draw(&Stroke {
                     root: root.extend(0.0),
                     azimuth,

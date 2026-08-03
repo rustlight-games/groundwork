@@ -32,7 +32,7 @@ use bevy::prelude::*;
 use crate::fastmath;
 use crate::iso;
 use crate::palette::Tone;
-use crate::surface::{SUPERSAMPLE, Surface};
+use crate::surface::Surface;
 
 /// How width varies from root to tip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -237,6 +237,9 @@ pub struct Painter<'a> {
     /// a stroke is built means a mark is described once and drawn correctly at
     /// any scale.
     detail: f32,
+    /// The surface's supersampling factor, cached as a float because every
+    /// world-to-page conversion multiplies by it.
+    scale: f32,
     /// Page-local fast path around the atomic read in each global lazy table.
     step_tables: [Option<&'static [StepSample]>; 513],
 }
@@ -255,6 +258,7 @@ impl<'a> Painter<'a> {
         px_per_metre: f32,
     ) -> Self {
         let plane = Vec2::new(light.x, light.y);
+        let scale = surface.supersample() as f32;
         Self {
             surface,
             origin,
@@ -262,20 +266,27 @@ impl<'a> Painter<'a> {
             light_plane: plane.normalize_or_zero(),
             px_per_metre,
             detail: px_per_metre / iso::PX_PER_METRE,
+            scale,
             step_tables: [None; 513],
         }
+    }
+
+    /// Supersampled pixels per final pixel on this page.
+    #[inline]
+    pub fn supersample(&self) -> f32 {
+        self.scale
     }
 
     /// World point to supersampled page pixel.
     #[inline]
     pub fn to_page(&self, world: Vec3) -> Vec2 {
-        (iso::to_cache_at(world, self.px_per_metre) - self.origin) * SUPERSAMPLE as f32
+        (iso::to_cache_at(world, self.px_per_metre) - self.origin) * self.scale
     }
 
     /// Supersampled page pixel back to the ground plane.
     #[inline]
     pub fn to_ground(&self, page: Vec2) -> Vec2 {
-        iso::from_cache_ground_at(page / SUPERSAMPLE as f32 + self.origin, self.px_per_metre)
+        iso::from_cache_ground_at(page / self.scale + self.origin, self.px_per_metre)
     }
 
     pub fn surface(&self) -> &Surface {
@@ -330,7 +341,7 @@ impl<'a> Painter<'a> {
 
     /// Draw one stroke.
     pub fn draw(&mut self, stroke: &Stroke) {
-        let scale = SUPERSAMPLE as f32;
+        let scale = self.scale;
         // Sample the centreline finely enough that consecutive ribs overlap:
         // half a supersampled pixel apart leaves no gaps at any angle, and the
         // cost is linear in a quantity that is already small.
