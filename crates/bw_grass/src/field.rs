@@ -43,9 +43,11 @@ fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
 /// angle is not.
 ///
 /// World point into the rotated frame every field is evaluated in.
+pub const SKEW: f32 = 0.42;
+
 #[inline]
 fn skewed(p: Vec2) -> Vec2 {
-    // cos and sin of 0.42 radians.
+    // cos and sin of `SKEW`.
     const COS: f32 = 0.913_089_3;
     const SIN: f32 = 0.407_760_3;
     Vec2::new(p.x * COS - p.y * SIN, p.x * SIN + p.y * COS)
@@ -485,7 +487,18 @@ impl WorldField {
             slope,
             density,
             tint,
-            flow: self.flow_at(p),
+            // Turned back into a *world* azimuth, which is the frame everything
+            // that reads it works in — a stroke's `azimuth` steps its position
+            // through world x and y.
+            //
+            // Every field in this module is evaluated on `skewed` coordinates,
+            // so an angle that comes out of one is an angle in skewed space, and
+            // handing it straight to the baker rotates the grass away from the
+            // ridges by the skew. The quarter turn on top is because `flow_at`
+            // names the ridge's *short* axis: a ridge runs across the direction
+            // its ellipse is narrowest in, and grass on a ridge runs along the
+            // ridge.
+            flow: self.flow_at(p) + std::f32::consts::FRAC_PI_2 - SKEW,
             // Its own stream and its own scale, and neither shared with `tint`.
             // Hue that tracked brightness would only be a longer way of saying
             // the same thing: the pale regions warm, the dim ones cool, and the

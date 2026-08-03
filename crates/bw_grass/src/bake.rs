@@ -448,6 +448,17 @@ fn footprint(page: &Page) -> (Vec2, Vec2) {
     // upright grass would allow for. Too small a band here does not look like a
     // clipped blade; it looks like a straight line down the page where one side
     // grew something the other did not.
+    // Each of these must independently exceed the reach of the longest mark in
+    // that direction, because this rectangle decides which cells are *visited*
+    // at all and [`reaches_page`] only narrows it afterwards.
+    //
+    // Measured the way [`MARGIN`] is, the longest mark reaches about 100 pixels
+    // sideways, 125 upward, and barely 30 down — a mark climbs as it grows, so
+    // only its curled tip ever descends, and `ABOVE` is guarding against very
+    // little. Each of these sits a fifth to a half above its requirement, which
+    // is worth keeping an eye on in the other direction too: widening this
+    // rectangle costs bake time on every page in proportion to its area, and an
+    // extra thirty pixels all round is fourteen percent of a page.
     const SIDE: f32 = 122.0;
     const BELOW: f32 = 156.0;
     const ABOVE: f32 = 46.0;
@@ -613,18 +624,35 @@ fn paint(painter: &mut Painter, page: &Page, stroke: Stroke) {
 /// that turn out to be invisible.
 #[inline]
 fn reaches_page(painter: &Painter, page: &Page, root: Vec2) -> bool {
-    // The longest mark in the field is a `Tangle` at the top of the length
-    // range, grown by a vigorous mound and a tall-accent draw: 0.40 m of arc
-    // times 1.25 times 1.35 times 1.35, a little over ninety cache pixels, and
-    // it can be rooted a tuft radius further out again. Anything less than that
-    // here is a straight line down a page join.
-    const MARGIN: f32 = 128.0;
     let at = painter.to_page(root.extend(0.0)) / SUPERSAMPLE as f32;
     at.x >= -MARGIN
         && at.y >= -MARGIN
         && at.x <= page.width as f32 + MARGIN
         && at.y <= page.height as f32 + MARGIN
 }
+
+/// How far outside a page a tuft may sit and still mark it, in cache pixels.
+///
+/// The longest mark in the field is a `Tangle` at the top of the length range,
+/// grown by a vigorous mound and a tall-accent draw: 0.40 m of arc times 1.25
+/// times 1.35 times 1.35. Arc length is not reach, though — the mark bends as it
+/// grows and its tip curls back — so the honest bound is the furthest a
+/// *rasterised* stroke gets from its own root, which
+/// [`tests::the_guard_band_covers_the_longest_mark_the_field_can_grow`] measures
+/// rather than assumes. Add the tuft radius the mark may be rooted at, and the
+/// half-width plus under-stroke of the rib itself.
+///
+/// Measured, that comes to about 125 pixels. This is 140, and the extra eighth
+/// is not slack — it is the room for the next person to lengthen a blade. Too
+/// small a value here does not look like a clipped mark; it looks like a
+/// straight line down the join between two pages, appears only once two pages
+/// are on screen at once, and is invisible in every still that does not happen
+/// to contain a join.
+///
+/// Costs nothing to raise, unlike the rectangle in [`footprint`]: this test only
+/// decides how many already-enumerated cells are discarded, so a generous value
+/// discards a few less rather than walking any more.
+const MARGIN: f32 = 140.0;
 
 /// Per-plant brightness, gathering the terms that vary plant to plant rather
 /// than pixel to pixel.
@@ -1429,6 +1457,86 @@ mod tests {
         );
         // And it is the upper left, in image space where +Y points down.
         assert!(plane.x < 0.0 && plane.y < 0.0, "the sun moved: {plane:?}");
+    }
+
+    /// The guard band has to be wider than the longest mark can reach, and the
+    /// arithmetic for that is easy to get wrong in the safe-looking direction.
+    ///
+    /// Arc length is not reach: every mark here bends as it grows, so a stroke
+    /// of 0.91 metres gets nowhere near 0.91 metres from its root. Bounding the
+    /// band by arc length alone would be conservative and fine; the failure mode
+    /// is the opposite one, where someone lengthens a blade or widens the vigour
+    /// clamp and the band silently stops covering it. So this rasterises the
+    /// worst mark the parameters allow and measures where the paint actually
+    /// lands, which is the only version of the question that stays true when the
+    /// parameters move.
+    #[test]
+    fn the_guard_band_covers_the_longest_mark_the_field_can_grow() {
+        let params = BakeParams::default();
+        // Every multiplier on the path from `blade_length` to a rasterised
+        // stroke, at its maximum: the `Tangle` family's own factor, the vigour
+        // clamp in `grow_tuft`, and the tall-accent reach draw.
+        let longest = params.blade_length.1 * 1.25 * 1.35 * 1.35;
+        // The tuft's blades are rooted up to this far from the centre that
+        // `scatter` tests, so the centre has to cover the offset as well.
+        let tuft_radius = 0.17;
+
+        let mut worst: f32 = 0.0;
+        // Sweep the azimuth, because the projection is anisotropic: a mark laid
+        // along the world diagonal that maps to the screen's horizontal covers
+        // 1.41 times the cache pixels one laid along the other diagonal does.
+        // And sweep the bend, because a *straighter* mark reaches further — the
+        // longest arc is not the furthest-reaching one.
+        for step in 0..64 {
+            let azimuth = step as f32 / 64.0 * std::f32::consts::TAU;
+            for bend in [1.3, 1.65, 2.0, 2.62] {
+                let mut surface = Surface::new(512, 512);
+                let origin = Vec2::new(-256.0, -256.0);
+                let mut painter = Painter::new(&mut surface, origin, params.light);
+                let root = painter.to_ground(Vec2::new(
+                    256.0 * SUPERSAMPLE as f32,
+                    256.0 * SUPERSAMPLE as f32,
+                ));
+                painter.draw(&Stroke {
+                    root: root.extend(0.0),
+                    azimuth,
+                    length: longest,
+                    bend,
+                    curl: 1.4,
+                    sway: 2.4,
+                    width: params.blade_width.1,
+                    under: params.under,
+                    ..default()
+                });
+                let (heights, _) = surface.height_maps(512, 512);
+                for y in 0..512 {
+                    for x in 0..512 {
+                        if heights[y * 512 + x] > 0.0 {
+                            let dx = x as f32 - 256.0;
+                            let dy = y as f32 - 256.0;
+                            worst = worst.max((dx * dx + dy * dy).sqrt());
+                        }
+                    }
+                }
+            }
+        }
+
+        let needed = worst + tuft_radius * std::f32::consts::SQRT_2 * iso::PX_PER_METRE;
+        assert!(
+            MARGIN > needed,
+            "a mark can reach {worst:.1} px from its root and be rooted \
+             {:.1} px from the tuft centre the guard tests, so the band needs \
+             {needed:.1} px and it is {MARGIN}",
+            tuft_radius * std::f32::consts::SQRT_2 * iso::PX_PER_METRE,
+        );
+        // And the band must not be so far past the requirement that it is
+        // costing bake time for nothing: every extra pixel widens the world
+        // rectangle every scatter pass walks.
+        assert!(
+            MARGIN < needed * 1.6,
+            "the guard band is {MARGIN} px for a {needed:.1} px reach, which is \
+             paid for on every page"
+        );
     }
 
     #[test]
