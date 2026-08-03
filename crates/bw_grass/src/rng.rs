@@ -46,6 +46,10 @@ pub enum Stream {
     Phase = 0x0c,
     /// How finely a patch of ground is described.
     Detail = 0x0d,
+    /// Which way the field runs: ridge orientation and blade heading.
+    Flow = 0x0e,
+    /// Regional hue drift, independent of how bright the region is.
+    Hue = 0x0f,
 }
 
 /// Mix a 64-bit value until its bits are independent.

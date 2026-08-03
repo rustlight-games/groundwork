@@ -138,6 +138,27 @@ detailed: bright crowns, dark backs and dark interiors are organised by a mound
 field, and grass that is uniformly busy everywhere reads as carpet however good
 the individual marks are.
 
+**Relief is a rhythm, and a rhythm is not round.** Two failures sit either side
+of this. Shade the mound field hard and every swell becomes a cushion — crowned,
+ringed, and roughly the size of its neighbours — and the surface reads as
+upholstery whatever the marks on it are. Shade it softly and take nothing else
+in exchange and the plate goes flat at every radius, not just the one that was
+shouting. So the mounds are drawn as elongated ridges oriented along a shared
+local flow rather than as discs, the directional term on them is restrained, and
+the structure they used to carry is supplied instead by fields that have nothing
+to do with height: regional colour, three scales of clump density, and how far a
+bunch of grass stands above the ground beside it. The last of those is measured
+against a blur a third of a metre wide and applied *signed* — a term that only
+ever darkens the shortfall draws a ring at the foot of every bright mass, which
+is the cushion reading arriving by a different route.
+
+**Isotropy is a look, and it is the wrong one.** Grass with a uniformly random
+heading looks the same in every direction, so nothing at the middle scale
+survives except the outline of each clump. One low-frequency flow field orients
+the ridges, the tuft headings, the mat and the worn openings, loosely and with a
+minority ignoring it — enough to give the eye somewhere to travel, not enough to
+comb.
+
 **Shade the shapes you know, do not differentiate the shape you built.** The
 mounds are domes, and a dome's normal is known in closed form, so each one shades
 itself analytically and the results are averaged where they overlap. The obvious

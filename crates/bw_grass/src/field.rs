@@ -84,6 +84,29 @@ pub struct Ground {
     /// ground, positive on a slope turned toward the light, negative on one
     /// turned away, and smooth everywhere including where two mounds meet.
     pub lit: f32,
+    /// Which way the field runs here: a world-space azimuth, radians.
+    ///
+    /// The same field that orients the ridges orients the grass growing on
+    /// them, and that agreement is most of what separates a meadow from a
+    /// carpet. Grass drawn with a uniformly random heading is isotropic — it
+    /// looks the same in every direction, which nothing wind has ever touched
+    /// does — and isotropy at the blade scale is what leaves the middle scale
+    /// with nothing but round clumps to say.
+    ///
+    /// A bias, never a rule: everything that reads this scatters widely around
+    /// it, and a minority ignores it entirely. Combed grass is a worse failure
+    /// than isotropic grass.
+    pub flow: f32,
+    /// Regional hue drift, `-1..1`: cool blue-green below, warm olive above.
+    ///
+    /// Deliberately its own field rather than a second reading of [`tint`].
+    /// When a generator varies only in value, every region of the field is the
+    /// same green under a brighter or dimmer lamp — which is exactly how a
+    /// single sampled palette gives itself away. Real ground varies in *what
+    /// green it is*: older and drier one place, shaded and damp another.
+    ///
+    /// [`tint`]: Ground::tint
+    pub hue: f32,
     /// Blade-count multiplier, `0..1.3`.
     pub density: f32,
     /// Broad colour drift, `-1..1`. Independent of everything else here.
@@ -180,6 +203,22 @@ impl WorldField {
     /// estimate, evaluated per dome, with no derivatives anywhere and nothing to
     /// crease. Where domes overlap they are averaged by the same weights the
     /// height uses, so the shading follows the shape that is actually winning.
+    ///
+    /// ## Ridges, not cushions
+    ///
+    /// Most of these are drawn strongly elongated and oriented along
+    /// [`WorldField::flow_at`], because a field of *round* masses is the single
+    /// loudest thing a placed point process can say. Every mound then has a
+    /// bright crown, a dark surround and roughly the silhouette of its
+    /// neighbours, and the surface reads as hundreds of small cushions however
+    /// carefully the sizes are varied. Stretched along a shared local direction
+    /// they read instead as the soft bands and shallow dips ground actually has,
+    /// and — because neighbouring ridges share an orientation — they run into
+    /// one another rather than each closing its own outline.
+    ///
+    /// The stretch is area-preserving. Elongating without it would quietly make
+    /// every ridge a *larger* mound as well as a longer one, and the mound
+    /// spacing would stop meaning anything.
     fn mounds(&self, world: Vec2) -> (f32, f32) {
         let p = skewed(world);
         let cell = (p / MOUND_SPACING).floor();
@@ -196,24 +235,29 @@ impl WorldField {
         // changes, and it is invisible in every still until you happen to look
         // at the right one.
         //
-        // A p-norm has no baseline. Every cell contributes `h^6`, a cell with no
+        // A p-norm has no baseline. Every cell contributes `h^4`, a cell with no
         // mound contributes nothing at all, one mound alone returns its own
-        // height exactly, and two overlapping ones blend by about a eighth.
+        // height exactly, and two overlapping ones blend by about a fifth.
         let mut accumulated = 0.0f32;
         let mut shading = 0.0f32;
 
         for dy in -2..=2 {
             for dx in -2..=2 {
                 let mut draw = Draw::at(self.seed, Stream::Mound, cx + dx, cy + dy);
-                // A fifth of the cells grow nothing. This is the single most
+                // A quarter of the cells grow nothing. This is the single most
                 // effective thing in the function: one mound per cell, however
                 // hard it is jittered, tessellates — the field becomes bright
                 // islands separated by a connected network of dark troughs that
                 // traces the grid, and once seen it cannot be unseen. Leaving
-                // gaps breaks the network.
-                if !draw.chance(0.80) {
+                // gaps breaks the network, and the gaps are also where the broad
+                // calm ground comes from.
+                if !draw.chance(0.74) {
                     continue;
                 }
+                // Every draw for this cell happens here, before anything that
+                // depends on where we are standing. A cell's mound has to be the
+                // same mound from every point that can see it, so no early-out
+                // may sit in the middle of the sequence.
                 let centre = Vec2::new(cx as f32 + dx as f32, cy as f32 + dy as f32)
                     * MOUND_SPACING
                     + Vec2::new(draw.unit(), draw.unit()) * MOUND_SPACING;
@@ -222,41 +266,94 @@ impl WorldField {
                 // similar size and strength read as a pattern even when their
                 // placement is random, because the eye finds the repeated unit
                 // rather than the arrangement.
-                let radius = draw.range(0.42, 1.45);
-                let aspect = draw.range(0.52, 1.85);
-                let angle = draw.range(0.0, std::f32::consts::TAU);
+                let extent = draw.range(0.46, 1.55);
+                // Three ridges to every cushion. See the note above the function.
+                //
+                // The long axis is capped where it is because the window above is
+                // five cells wide: a mound reaching more than two cell widths —
+                // 3.2 metres — could be missed by a sample that should have seen
+                // it, and a *missed* mound is a step in the field, which is the
+                // one artefact this whole design is built to avoid.
+                let aspect = if draw.chance(0.26) {
+                    draw.range(0.85, 1.25)
+                } else {
+                    draw.range(1.7, 3.5)
+                };
+                let wander = draw.signed();
+                let adrift = draw.chance(0.20);
+                let spin = draw.range(0.0, std::f32::consts::TAU);
                 // Squared, so most mounds are faint and a few are pronounced.
                 // A uniform draw makes every mound roughly as assertive as its
                 // neighbours, which is most of what "bubble terrain" is.
                 let strength = draw.unit();
+                // Unchanged even though the *lighting* on these was halved, and
+                // the split is the point. Amplitude does not decide how mounded
+                // the plate looks — `lit` is normalised, so it is scale-free —
+                // it decides how much thicker and longer the grass on a swell
+                // grows than the grass beside it. That thickness is where the
+                // structure at a fifth of a metre and up comes from, and taking
+                // it out along with the directional shading flattens the plate
+                // at every radius rather than only at the one that was shouting.
                 let amplitude = 0.035 + strength * strength * 0.30;
                 // Falloff exponent: low is a dome, high is a plateau with a
                 // sharp shoulder. Mixing both is what stops every mound reading
                 // as the same shape at a glance.
                 let sharpness = draw.range(1.1, 2.4);
 
+                // Area-preserving: the long axis grows by exactly as much as the
+                // short one shrinks, so stretching a mound never also enlarges it.
+                let root = aspect.sqrt();
+                let (minor, major) = (extent / root, extent * root);
                 let offset = p - centre;
+                // Reject on the semi-major axis before orienting anything. This
+                // is what keeps a per-mound flow lookup affordable: nothing
+                // outside the bounding circle can be inside the ellipse, and
+                // twenty of the twenty-five cells leave here.
+                if offset.length_squared() > major * major {
+                    continue;
+                }
+                // Ridges run along the local flow; a fifth strike out on their
+                // own. Without that minority the field acquires a *grain*, and a
+                // grain is only a subtler kind of pattern.
+                let angle = if adrift {
+                    spin
+                } else {
+                    self.flow_at(centre) + wander * 0.5
+                };
+
                 let (sin, cos) = angle.sin_cos();
-                let local = Vec2::new(
-                    (offset.x * cos + offset.y * sin) / radius,
-                    (offset.y * cos - offset.x * sin) / (radius * aspect),
+                let along = Vec2::new(
+                    offset.x * cos + offset.y * sin,
+                    offset.y * cos - offset.x * sin,
                 );
+                let local = Vec2::new(along.x / minor, along.y / major);
                 let falloff = 1.0 - local.length_squared();
                 if falloff <= 0.0 {
                     continue;
                 }
                 let height = amplitude * falloff.powf(sharpness);
                 let squared = height * height;
-                let weight = squared * squared * squared;
+                let weight = squared * squared;
                 accumulated += weight;
 
-                // Which way this point on the dome faces, projected. The world
-                // offset is taken before the ellipse transform so the direction
-                // is the real outward one rather than the one the normalisation
-                // implies, and it is projected the way everything else is —
-                // a world step of `(dx, dy)` moves `(dx - dy)` across the screen
-                // and `(dx + dy)` halved down it.
-                let outward = offset.normalize_or_zero();
+                // Which way this point on the ridge faces, projected.
+                //
+                // Not the radial direction. On a circle the two agree, and on a
+                // ridge they do not agree at all: the radial direction runs off
+                // the *end* of a long mound, so a ridge shaded radially would be
+                // bright at one tip and dark at the other rather than along one
+                // flank. The outward direction is the gradient of the ellipse,
+                // which in the ridge's own frame is the local offset divided by
+                // the square of each semi-axis — then rotated back into the
+                // world, and projected the way everything else is: a world step
+                // of `(dx, dy)` moves `(dx - dy)` across the screen and
+                // `(dx + dy)` halved down it.
+                let gradient = Vec2::new(local.x / minor, local.y / major);
+                let outward = Vec2::new(
+                    gradient.x * cos - gradient.y * sin,
+                    gradient.x * sin + gradient.y * cos,
+                )
+                .normalize_or_zero();
                 let screen = Vec2::new(outward.x - outward.y, (outward.x + outward.y) * 0.5)
                     .normalize_or_zero();
                 // `u` is how far out we are; a dome leans hardest at its rim and
@@ -267,16 +364,33 @@ impl WorldField {
             }
         }
 
-        // Sixth power rather than fourth. The exponent is how hard the maximum
+        // Fourth power rather than sixth. The exponent is how hard the maximum
         // is: low melts overlapping mounds into one mass, high keeps each one
-        // its own shape and lets the join between two of them stay a join.
-        let height = accumulated.powf(1.0 / 6.0);
+        // its own shape and lets the join between two of them stay a join. Softer
+        // than it was, so a ridge runs into its neighbour and the pair reads as
+        // one long swell instead of two forms with a seam.
+        let height = accumulated.powf(0.25);
         let lit = if accumulated > 1.0e-12 {
             shading / accumulated
         } else {
             0.0
         };
         (height, lit)
+    }
+
+    /// Which way the ground runs at a point: a world azimuth, radians.
+    ///
+    /// One octave, not four, and at a very low frequency: about five and a half
+    /// metres per cycle, which is roughly a third of the width of a 1080p view.
+    /// That scale is chosen against the eye rather than against anything
+    /// physical — a flow that turns faster than the eye can follow is just
+    /// another kind of noise, and one that turns slower is a comb.
+    ///
+    /// Cheap on purpose. It is read once per contributing mound rather than once
+    /// per sample, so it sits inside the hottest loop in the crate.
+    #[inline]
+    fn flow_at(&self, p: Vec2) -> f32 {
+        value_noise(self.seed, Stream::Flow, p.x * 0.18, p.y * 0.18) * std::f32::consts::TAU
     }
 
     /// Everything at once, which is how the baker wants it.
@@ -312,10 +426,23 @@ impl WorldField {
         // distinct bunches with thinner channels running between them, and a
         // smoothstep is what turns "slightly more grass here" into "a clump,
         // then a gap".
-        // Two clump scales rather than one, and a gentler curve than the first
+        // Three clump scales rather than one, and a gentler curve than the first
         // attempt used. A single scale with a hard curve carves connected dark
         // rivers between the clumps; the reference's thin ground is patchy
         // pockets, not channels.
+        //
+        // The broadest of the three is the field that answers "where are the
+        // large calm regions". Density varying only at the clump scale gives a
+        // plate that is uniformly busy once you step back from it — every square
+        // foot has had its fair share of thick and thin — and the eye reads that
+        // uniformity as machinery long before it can name what is wrong. Four
+        // metres per cycle is roughly a quarter of a 1080p view, which is the
+        // scale a painter would change their mind at.
+        let sweep = smoothstep(
+            0.32,
+            0.76,
+            fbm(self.seed, Stream::Family, p.x * 0.24 + 77.0, p.y * 0.24, 4),
+        );
         let coarse = smoothstep(
             0.30,
             0.80,
@@ -326,12 +453,29 @@ impl WorldField {
             0.74,
             fbm(self.seed, Stream::Family, p.x * 1.9 + 40.0, p.y * 1.9, 3),
         );
-        let bunched = coarse * 0.62 + fine * 0.38;
-        let density = (0.22 + bunched * 1.12 + crown * 0.34 + height * 2.0).clamp(0.05, 1.45);
+        let bunched = sweep * 0.26 + coarse * 0.38 + fine * 0.36;
+        // Weighted toward the clump fields and away from the mounds. Density
+        // that follows relief closely makes thickness a second statement of
+        // height, and then every raised place is also a busy place and every
+        // bright place is raised — three fields collapsed into one, which is
+        // most of what makes a generated surface read as a diagram of its own
+        // height map. The mound terms are left in because grass genuinely is
+        // more vigorous on a swell; they are simply no longer the loudest voice.
+        // Averaging three fields narrows the spread — variance adds in squares —
+        // so the multiplier climbs with the count and the constant falls to keep
+        // the mean where it was. Getting that wrong is easy and quiet: the field
+        // simply stops having thin ground anywhere.
+        let density = (0.05 + bunched * 1.50 + crown * 0.22 + height * 1.1).clamp(0.05, 1.45);
 
-        // Several metres per cycle, deliberately larger than a mound. This is
-        // the only field with structure above the mound scale, and without it
-        // the plate loses a third of its large-radius variance.
+        // Several metres per cycle, deliberately larger than a mound, and
+        // deliberately a single scale.
+        //
+        // This is the only field with structure above the mound scale, and
+        // without it the plate loses a third of its large-radius variance.
+        // Splitting it across two scales was tried and is worse: averaging two
+        // noises narrows the spread of both, so the broad end — the one nothing
+        // else in the plate can supply — pays for a mid scale that the clump
+        // fields already cover.
         let tint = fbm(self.seed, Stream::Tint, p.x * 0.30, p.y * 0.30, 4) * 2.0 - 1.0;
 
         Ground {
@@ -341,6 +485,12 @@ impl WorldField {
             slope,
             density,
             tint,
+            flow: self.flow_at(p),
+            // Its own stream and its own scale, and neither shared with `tint`.
+            // Hue that tracked brightness would only be a longer way of saying
+            // the same thing: the pale regions warm, the dim ones cool, and the
+            // field still reads as one colour under a moving lamp.
+            hue: fbm(self.seed, Stream::Hue, p.x * 0.21 + 29.0, p.y * 0.21, 3) * 2.0 - 1.0,
             bare: self.bare(world, height, density),
             colony: smoothstep(
                 0.42,
@@ -361,10 +511,20 @@ impl WorldField {
             // Deliberately independent of everything else. Tie descriptive
             // resolution to density or to the mounds and it stops being a
             // painter's choice and becomes another way of saying the same thing.
+            //
+            // Two scales, weighted toward the broad one. A single field at the
+            // mound frequency gives calm and busy passages that are themselves
+            // mound-sized, so the variation lands *inside* the texture instead
+            // of organising it, and the plate ends up uniformly busy at every
+            // radius the eye checks. The broad term runs at about six metres per
+            // cycle — a third of a 1080p view — and it is the one that produces
+            // the quiet ground a detailed passage needs in order to read as
+            // detailed at all.
             resolution: smoothstep(
-                0.28,
-                0.72,
-                fbm(self.seed, Stream::Detail, p.x * 0.62, p.y * 0.62, 3),
+                0.34,
+                0.66,
+                fbm(self.seed, Stream::Detail, p.x * 0.17 + 71.0, p.y * 0.17, 3) * 0.60
+                    + fbm(self.seed, Stream::Detail, p.x * 0.62, p.y * 0.62, 3) * 0.40,
             ),
         }
     }
@@ -390,9 +550,24 @@ impl WorldField {
         // most of a metre across, and many small nicks between clumps. One
         // spacing produces patches that are all the same size, and a field of
         // same-size patches reads as a pattern however irregular each one is.
-        let broad = self.blobs(q, 3.1, 0.66, (0.24, 0.62), 0x00);
-        let fine = self.blobs(q, 1.15, 0.5, (0.09, 0.28), 0x40);
+        let broad = self.blobs(q, 3.1, 0.72, (0.30, 0.82), 0x00);
+        let fine = self.blobs(q, 1.15, 0.5, (0.12, 0.34), 0x40);
         let flecks = self.blobs(q, 0.52, 0.20, (0.025, 0.075), 0x77);
+        // Where the field is worn at all: a broad, soft region about a metre
+        // across, inside which openings gather and outside which they mostly do
+        // not. Everything below is multiplied by it.
+        //
+        // Without it the three scales scatter independently and the result is
+        // isolated specks — a small round brown dot in the middle of thick grass
+        // reads as a blemish on the texture, not as ground, because ground that
+        // shows through has a reason and reasons are local. Gathering them into
+        // worn zones is what turns the same quantity of soil into openings with
+        // debris around their edges.
+        let worn = smoothstep(
+            0.38,
+            0.70,
+            fbm(self.seed, Stream::Dirt, p.x * 0.9 + 55.0, p.y * 0.9, 3),
+        );
         // Grass bridges. A patch of earth with an unbroken rounded outline reads
         // as a bald hole however irregular that outline is; the reference's
         // openings are crossed by tongues of grass and shed detached flecks at
@@ -409,7 +584,9 @@ impl WorldField {
             ),
         );
         let best = broad.max(fine * 0.9) * (0.30 + 0.70 * bridges);
-        let best = best.max(flecks * 0.75);
+        // Flecks are debris around an opening, never openings of their own.
+        let best = best.max(flecks * 0.85 * worn);
+        let best = best * (0.42 + 0.58 * worn);
 
         // Valley bias, so a patch that strays onto a mound flank fades out
         // rather than clipping off. Gentle: bias it hard and the patches vanish
@@ -419,7 +596,7 @@ impl WorldField {
         // independently, so a patch never opens in the middle of a thick clump —
         // which is what makes one read as a hole rather than as ground.
         let sparse = (1.45 - density).clamp(0.12, 1.0);
-        (best * 3.6 * valley * sparse).clamp(0.0, 1.0)
+        (best * 6.6 * valley * sparse).clamp(0.0, 1.0)
     }
 
     /// An irregular blob field: jittered centres, wobbly boundaries.
@@ -452,8 +629,13 @@ impl WorldField {
                 // shrinks. Dividing one axis alone would make every elongated
                 // patch a smaller patch too, and the total bare ground would
                 // quietly follow the aspect ratio around.
-                let stretch = draw.range(0.62, 1.0).sqrt();
-                let (sin, cos) = draw.range(0.0, std::f32::consts::TAU).sin_cos();
+                let stretch = draw.range(0.42, 1.0).sqrt();
+                // Lying along the same flow the ridges and the blades follow,
+                // loosely. A worn opening runs *with* the ground rather than
+                // across it, and openings that share a direction with the grass
+                // around them read as places the field wore through; openings
+                // scattered at every angle read as damage.
+                let (sin, cos) = (self.flow_at(centre) + draw.signed() * 0.8).sin_cos();
                 let world_offset = q - centre;
                 let offset = Vec2::new(
                     (world_offset.x * cos + world_offset.y * sin) * stretch,

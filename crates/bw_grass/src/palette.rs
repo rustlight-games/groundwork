@@ -27,9 +27,11 @@
 //! - **Blue stays almost absent.** 0.034 at the bottom, 0.13 at the top. Grass
 //!   shadow in this art is not "green plus black"; it is a deeper, slightly
 //!   cooler green whose blue channel never wakes up.
-//! - **Nothing is dark.** The reference's first percentile is 0.215 luminance.
-//!   There are no shadows in this painting, only less light — which is why the
-//!   ramp's bottom stop is a mid green and why [`THATCH`] does not go below it.
+//! - **Almost nothing is dark.** The reference's first percentile is 0.215
+//!   luminance: there are no shadows in this painting, only less light, which is
+//!   why the ramp's bottom stop is a mid green. The "almost" is worth half a
+//!   percent of the image, and [`THATCH`] reaches below the ramp to supply it —
+//!   see the note there for why that half percent is not optional.
 
 use bevy::prelude::*;
 
@@ -121,17 +123,25 @@ pub const GRASS: [[f32; 3]; 33] = [
 ///
 /// Not simply "grass, darker". Thatch that only differs in value disappears into
 /// shadow; shifting it a few degrees toward blue-green is what keeps a cavity
-/// reading as depth rather than as a smudge. And it stops where it does because
-/// the reference has no true darks at all — its first percentile is 0.215
-/// luminance, and a canopy floor painted below that reads as holes.
+/// reading as depth rather than as a smudge.
+///
+/// The bottom of this ramp is the only place in the palette that goes below the
+/// reference's first percentile, and it has to. The reference *does* have darks
+/// — half a percent of it sits under 0.20 luminance — and they are all the same
+/// thing: the gap between one bunch of grass and the next, seen edge-on with
+/// nothing lighting it. A floor that stops at the reference's p01 cannot produce
+/// them at all, so the deepest gaps come out the same value as ordinary shaded
+/// grass, the bunches lose their separation, and the field reads as one
+/// continuous sward. Only the lowest two stops are down here, and almost nothing
+/// reaches them.
 pub const THATCH: [[f32; 3]; 8] = [
-    [0.1220, 0.2450, 0.0352],
-    [0.1434, 0.2786, 0.0344],
-    [0.1553, 0.2956, 0.0349],
-    [0.1730, 0.3194, 0.0360],
-    [0.1873, 0.3380, 0.0368],
-    [0.2001, 0.3542, 0.0376],
-    [0.2121, 0.3695, 0.0386],
+    [0.0910, 0.1930, 0.0262],
+    [0.1120, 0.2290, 0.0292],
+    [0.1340, 0.2620, 0.0338],
+    [0.1560, 0.2930, 0.0350],
+    [0.1790, 0.3230, 0.0360],
+    [0.1990, 0.3490, 0.0370],
+    [0.2130, 0.3700, 0.0384],
     [0.2239, 0.3842, 0.0397],
 ];
 

@@ -204,6 +204,22 @@ the reference at all, and it catches the failure that every other number in the
 file is blind to: a generator whose ten seeds produce the same field. It scores
 near zero when the seed has stopped mattering, and perfectly everywhere else.
 
+It is also in direct tension with `grass.match.distance`, and knowing that stops
+a whole class of false progress. The reference is one plate from one place. Any
+field that varies regionally will therefore have plates brighter and duller than
+it, and every one of those pays `luma_mean` — the heaviest term in the distance —
+for varying at all. So distance can always be improved by making the ten worlds
+more alike, and a change that moves distance and variety in opposite directions
+by similar fractions has bought nothing. Narrowing the regional drift is the
+usual way this happens by accident; raising its *frequency* is the same trick in
+disguise, because a plate that spans more cycles of a field averages more of it
+away. Check both numbers before believing either.
+
+The corollary is that `structure.r64` on a single plate is partly a measurement
+of how much the regional field varies *within* one plate — so it can be satisfied
+by turning the regional drift up, at variety's expense. When both move together,
+the structure was real.
+
 ### Aesthetic metrics are bands, not maxima
 
 | Metric | Healthy band | What leaving it means |

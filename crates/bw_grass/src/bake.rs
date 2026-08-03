@@ -49,11 +49,11 @@ fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
 /// arrive with enough index to reach the end of the ramp.
 #[inline]
 fn shoulder(q: f32) -> f32 {
-    const KNEE: f32 = 0.745;
+    const KNEE: f32 = 0.740;
     if q <= KNEE {
         q
     } else {
-        KNEE + (q - KNEE) * 0.68
+        KNEE + (q - KNEE) * 0.60
     }
 }
 
@@ -128,8 +128,15 @@ pub struct BakeParams {
     /// because one side of it faces the light and the other falls away; brighten
     /// it by *height* instead and every mound is a uniformly pale blob with no
     /// inside, which reads as a stain on the field rather than as a shape on it.
-    /// That is why this is roughly six times [`BakeParams::elevation_light`]
-    /// rather than the other way round.
+    /// That is why this is many times [`BakeParams::elevation_light`] rather
+    /// than the other way round.
+    ///
+    /// Restrained all the same. Ground relief is a *rhythm* in this art, not
+    /// its subject, and a directional term strong enough to fully describe
+    /// every swell turns the field into a bed of cushions — each one crowned,
+    /// each one ringed, none of them part of anything larger. Below about a
+    /// third the relief stops being announced and starts being felt, which is
+    /// where it belongs.
     pub mound_light: f32,
     /// Weight of raw canopy height: taller ground catches a little more light.
     ///
@@ -140,8 +147,20 @@ pub struct BakeParams {
     pub crown_light: f32,
     /// Small-radius occlusion between overlapping blades.
     pub micro_occlusion: f32,
-    /// Large-radius occlusion inside dense mound interiors.
-    pub cavity_occlusion: f32,
+    /// How much a bunch standing above its neighbours catches, and a gap loses.
+    ///
+    /// Signed, and that is the whole of the design. The obvious form of this
+    /// term measures only the *shortfall* — how far below the surrounding canopy
+    /// a pixel sits — and subtracts it as occlusion. Every hollow then darkens
+    /// and no crest ever brightens, which draws a dark ring at the foot of each
+    /// bright mass and leaves the mass itself flat. A field of bright centres in
+    /// dark rings reads as cushions whatever shape the underlying forms are.
+    ///
+    /// Measured against a blur a seventh of a metre wide, which is the scale a
+    /// bunch of grass is. So it says the one true thing about a bunch: the tips
+    /// on top of it are in the light and the ground between it and the next one
+    /// is not. Zero mean, so it costs no exposure — it only redistributes.
+    pub canopy_relief: f32,
     /// The fixed directional self-shadow.
     pub shadow: f32,
     /// Light that has passed *through* the canopy rather than reflected off it.
@@ -180,6 +199,21 @@ pub struct BakeParams {
     /// cooler as well as darker and its lights warmer as well as brighter, and a
     /// field that varies only in value reads as one plastic colour under a lamp.
     pub cool: f32,
+    /// How far a region's own hue may wander: olive one way, blue-green the other.
+    ///
+    /// The regional counterpart of [`BakeParams::cool`], and the difference
+    /// between them is what each is keyed to. `cool` keys on depth in the canopy,
+    /// so it says "shadow is a different green from light". This keys on nothing
+    /// but position, so it says "the grass over there is a different green from
+    /// the grass here" — older, drier, damper, whatever the reason. One palette
+    /// stretched over an entire field is the most reliable way to make generated
+    /// ground look printed, and no amount of value variation substitutes for it,
+    /// because value variation is exactly what a single palette already has.
+    ///
+    /// Both directions matter. Drifting only toward olive drains the field;
+    /// drifting only toward blue chills it. Drifting both ways from the measured
+    /// ramp leaves the mean where the reference put it.
+    pub drift: f32,
     /// How much of a one-pixel tent blur to mix into the finished page.
     ///
     /// The reference is painted, not rendered: even at full resolution its
@@ -204,37 +238,52 @@ impl Default for BakeParams {
             // wrong long before anyone can say why.
             light: Vec3::new(-0.42, -0.40, 0.81).normalize(),
 
-            tufts: 210.0,
-            blades_per_tuft: (4, 12),
-            thatch: 300.0,
+            // Half as many tufts as there were, of roughly twice the reach.
+            //
+            // The pair moves together: ink laid per square metre goes as count
+            // times length, so halving one while doubling the other keeps the
+            // canopy as closed as it was. What changes is the *scale* the field
+            // is organised at. Short marks at high density are a mat — every
+            // square inch gets its share, nothing is a plant, and the only
+            // structure above a centimetre is whatever the lighting invents.
+            // Longer marks in fewer bunches leave gaps between the bunches, and
+            // those gaps are where a fifth of a metre of structure comes from:
+            // the scale the reference has most of its variance at, and the one
+            // this field was flattest at.
+            tufts: 65.0,
+            blades_per_tuft: (6, 20),
+            thatch: 340.0,
             leaves: 4.0,
 
-            blade_length: (0.032, 0.20),
+            blade_length: (0.05, 0.40),
             blade_width: (0.42, 1.95),
             // Well off vertical even at the low end. Grass drawn standing up is
             // grass drawn as objects; this art draws it as strokes lying along
             // the ground, and the difference survives being shrunk to gameplay
-            // size when almost nothing else does.
-            blade_bend: (0.40, 1.55),
+            // size when almost nothing else does. Pulled back a little from
+            // where it was, because a mark twice as long at the same bend lies
+            // over twice as far and the bunch stops having a top.
+            blade_bend: (0.35, 1.40),
 
-            base_light: 0.527,
+            base_light: 0.577,
             tip_light: 0.42,
             glint: 0.775,
             side_light: 0.075,
             under: 0.55,
 
-            mound_light: 0.48,
-            elevation_light: 0.055,
-            crown_light: 0.07,
-            micro_occlusion: 0.125,
-            cavity_occlusion: 0.085,
+            mound_light: 0.33,
+            elevation_light: 0.035,
+            crown_light: 0.038,
+            micro_occlusion: 0.105,
+            canopy_relief: 0.20,
             shadow: 0.10,
             transmission: 0.17,
             light_blur: 4,
-            region: 0.385,
+            region: 0.44,
             scatter: 0.505,
             glaze: 0.11,
-            cool: 0.22,
+            cool: 0.15,
+            drift: 0.52,
             soften: 0.10,
         }
     }
@@ -255,6 +304,7 @@ struct Macro {
     lit: Vec<f32>,
     crown: Vec<f32>,
     tint: Vec<f32>,
+    hue: Vec<f32>,
     bare: Vec<f32>,
     resolution: Vec<f32>,
     statement: Vec<f32>,
@@ -271,6 +321,7 @@ impl Macro {
         let mut lit = vec![0.0; width * height];
         let mut crown = vec![0.0; width * height];
         let mut tint = vec![0.0; width * height];
+        let mut hue = vec![0.0; width * height];
         let mut bare = vec![0.0; width * height];
         let mut resolution = vec![0.0; width * height];
         let mut statement = vec![0.0; width * height];
@@ -285,6 +336,7 @@ impl Macro {
                 lit[i] = ground.lit;
                 crown[i] = ground.crown;
                 tint[i] = ground.tint;
+                hue[i] = ground.hue;
                 bare[i] = ground.bare;
                 resolution[i] = ground.resolution;
                 statement[i] = ground.statement;
@@ -299,6 +351,7 @@ impl Macro {
             lit,
             crown,
             tint,
+            hue,
             bare,
             resolution,
             statement,
@@ -359,7 +412,7 @@ fn lay_floor(surface: &mut Surface, page: &Page, field: &WorldField, lattice: &M
             // flat: bare ground painted one colour reads as a hole in the
             // texture rather than as ground.
             let grain = field.jitter(Stream::Soil, ground * 3.1, 9.0);
-            let soil = smoothstep(0.10, 0.95, bare);
+            let soil = smoothstep(0.07, 0.82, bare);
             // Kept dark, and kept grainy. Bare ground that is much paler than
             // the canopy turns every blade lying across it into a dark comma on
             // a light field, which is the single loudest way to make a clearing
@@ -370,7 +423,7 @@ fn lay_floor(surface: &mut Surface, page: &Page, field: &WorldField, lattice: &M
             // turns every clump into a shaded volume sitting in a shadowed pit —
             // which is a perfectly good way to draw a plant and the wrong way to
             // draw this field.
-            let light = 0.30 + mottle * 0.28 + grain * 0.34 * soil + bare * 0.05 + loose * 0.10;
+            let light = 0.35 + mottle * 0.28 + grain * 0.34 * soil + bare * 0.05 + loose * 0.10;
 
             for sy in 0..SUPERSAMPLE {
                 for sx in 0..SUPERSAMPLE {
@@ -395,9 +448,9 @@ fn footprint(page: &Page) -> (Vec2, Vec2) {
     // upright grass would allow for. Too small a band here does not look like a
     // clipped blade; it looks like a straight line down the page where one side
     // grew something the other did not.
-    const SIDE: f32 = 80.0;
-    const BELOW: f32 = 104.0;
-    const ABOVE: f32 = 28.0;
+    const SIDE: f32 = 122.0;
+    const BELOW: f32 = 156.0;
+    const ABOVE: f32 = 46.0;
     let corners = [
         Vec2::new(-SIDE, -ABOVE),
         Vec2::new(page.width as f32 + SIDE, -ABOVE),
@@ -429,7 +482,12 @@ fn plant(painter: &mut Painter, bed: &Bed) {
         bed,
         Stream::Thatch,
         bed.params.thatch,
-        |ground| 1.20 - ground.resolution * 0.20,
+        // Thinned hard over bare ground, on top of the coverage every pass
+        // gets. The mat is the layer that actually closes a clearing: it is
+        // short, there are three hundred of them to a square metre, and the
+        // tuft pass thinning itself does nothing about them. An opening with a
+        // full mat over it is an opening you cannot see.
+        |ground| (1.20 - ground.resolution * 0.20) * (1.0 - ground.bare * 0.55),
         |painter, page, draw, root, ground, params| {
             let stroke = mat_stroke(draw, root, ground, params);
             paint(painter, page, stroke);
@@ -440,11 +498,12 @@ fn plant(painter: &mut Painter, bed: &Bed) {
         bed,
         Stream::Blade,
         bed.params.tufts,
-        // Mild. Measured against the reference, the spatial variation in local
-        // detail is already at its level; thinning these further overshoots it
-        // and starts reading as parts of the image being out of focus rather
-        // than as passages the painter chose to leave quiet.
-        |ground| 0.82 + ground.resolution * 0.18,
+        // Wider than it was, now that this field runs mostly at the broad scale
+        // rather than the mound scale. Thinning the tufts inside a single mound
+        // does read as that patch being out of focus; thinning them across a
+        // quarter of the view reads as a quieter passage of the same meadow,
+        // and quiet passages are what the detailed ones are measured against.
+        |ground| 0.72 + ground.resolution * 0.34,
         grow_tuft,
     );
     scatter(
@@ -523,7 +582,7 @@ fn scatter(
             // ground with no green on it at all; even its barest scuffs carry
             // shoots and root marks, and that is most of what keeps them
             // reading as ground rather than as bald spots.
-            let coverage = 1.0 - smoothstep(0.04, 0.92, ground.bare) * 0.72;
+            let coverage = 1.0 - smoothstep(0.04, 0.88, ground.bare) * 0.90;
             if !draw.chance((ground.density * coverage * weight(&ground)).min(1.0)) {
                 continue;
             }
@@ -554,7 +613,12 @@ fn paint(painter: &mut Painter, page: &Page, stroke: Stroke) {
 /// that turn out to be invisible.
 #[inline]
 fn reaches_page(painter: &Painter, page: &Page, root: Vec2) -> bool {
-    const MARGIN: f32 = 88.0;
+    // The longest mark in the field is a `Tangle` at the top of the length
+    // range, grown by a vigorous mound and a tall-accent draw: 0.40 m of arc
+    // times 1.25 times 1.35 times 1.35, a little over ninety cache pixels, and
+    // it can be rooted a tuft radius further out again. Anything less than that
+    // here is a straight line down a page join.
+    const MARGIN: f32 = 128.0;
     let at = painter.to_page(root.extend(0.0)) / SUPERSAMPLE as f32;
     at.x >= -MARGIN
         && at.y >= -MARGIN
@@ -580,8 +644,13 @@ fn plant_light(draw: &mut Draw, ground: &Ground, params: &BakeParams) -> f32 {
 fn mat_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &BakeParams) -> Stroke {
     Stroke {
         root: root.extend(0.0),
-        azimuth: draw.range(0.0, std::f32::consts::TAU),
-        length: draw.range(0.07, 0.17),
+        // Loosely along the flow, and much more loosely than a blade: the mat is
+        // tangle, and tangle that all points one way is thatch on a roof. But it
+        // is also the layer that shows through everywhere, so leaving it fully
+        // isotropic under a directional canopy puts a fine random weave behind
+        // every sweep and takes half the direction back out.
+        azimuth: ground.flow + draw.signed() * 1.5,
+        length: draw.range(0.09, 0.22),
         // Laid over hard. The mat is meant to read as tangle, not as short
         // grass standing to attention.
         bend: draw.range(0.9, 1.9),
@@ -599,7 +668,7 @@ fn mat_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &BakeParams)
         } else {
             Tone::Thatch
         },
-        base_light: (0.42
+        base_light: (0.47
             + draw.normal() * 0.10
             + ground.crown * 0.06
             + (1.0 - ground.resolution) * 0.06
@@ -632,7 +701,11 @@ fn grow_tuft(
     // Grass on the edge of a bare patch is shorter as well as sparser. Count
     // alone leaves full-height blades standing in a thinning fringe, which reads
     // as grass that has been pulled out rather than grass that never grew.
-    let vigour = ((0.55 + ground.crown * 0.55 + ground.density * 0.28) * (1.0 - ground.bare * 0.5))
+    // Weighted away from the crown and toward the clump fields, for the same
+    // reason the density is: blade length that tracks relief closely makes every
+    // raised place taller *and* thicker *and* brighter, and three fields saying
+    // one thing is how a surface starts reading as its own height map.
+    let vigour = ((0.48 + ground.crown * 0.32 + ground.density * 0.52) * (1.0 - ground.bare * 0.5))
         .clamp(0.32, 1.35);
     // One tuft in eight stands well clear of its neighbours. Sparse tall accents
     // are what stop the canopy reading as a mown line.
@@ -642,11 +715,21 @@ fn grow_tuft(
         1.0
     };
 
-    let heading = draw.range(0.0, std::f32::consts::TAU);
+    // Along the local flow, loosely. A uniform heading over the whole circle is
+    // isotropic, and isotropic grass has no direction for the eye to travel
+    // along — so the only structure left at the middle scale is the outline of
+    // each clump, which is precisely the round-blob reading. Two thirds of a
+    // radian of scatter on top of the tuft's own fan is enough to bias the field
+    // without combing it, and one tuft in six ignores the flow entirely.
+    let heading = if draw.chance(0.17) {
+        draw.range(0.0, std::f32::consts::TAU)
+    } else {
+        ground.flow + draw.signed() * 0.7
+    };
     // How far the blades fan out from the shared lean. A tight tuft reads as a
     // spike, a loose one as a rosette; the reference has both.
-    let fan = draw.range(0.35, 2.6);
-    let radius = draw.range(0.02, 0.085);
+    let fan = draw.range(0.25, 2.1);
+    let radius = draw.range(0.035, 0.15);
     let shade = plant_light(draw, ground, params) - params.base_light;
     let (fewest, most) = params.blades_per_tuft;
     let blades = fewest + draw.index(most - fewest + 1);
@@ -804,7 +887,11 @@ impl Mark {
             } else {
                 Profile::Tapered
             },
-            tone: if draw.chance(0.006) {
+            // Straw belongs where the ground is already drifting olive, not
+            // sprinkled at a fixed rate across the whole field. A uniform
+            // scatter of pale stems says "some blades are dry"; a scatter that
+            // thickens through the drier regions says the region is.
+            tone: if draw.chance(0.004 + ground.hue.max(0.0) * 0.055) {
                 Tone::Dry
             } else {
                 Tone::Grass
@@ -858,7 +945,7 @@ impl Mark {
                 ..base
             },
             Mark::Broad => Stroke {
-                length: base.length * draw.range(0.6, 1.0),
+                length: base.length * draw.range(0.42, 0.78),
                 bend: draw.range(0.7, 1.6) + lodged,
                 curl: draw.range(0.0, 0.7),
                 sway: draw.signed() * 0.5,
@@ -877,7 +964,10 @@ impl Mark {
                 ..base
             },
             Mark::Fleck => Stroke {
-                length: base.length * draw.range(0.35, 0.6),
+                // Scaled against the blade range rather than fixed, so it stays
+                // a fleck when the blades grow. A "small dab" that is a fifth of
+                // a metre long is a leaf.
+                length: base.length * draw.range(0.18, 0.34),
                 bend: draw.range(0.7, 1.7),
                 width: base.width * draw.range(1.0, 1.4),
                 tip_width: 0.45,
@@ -886,7 +976,10 @@ impl Mark {
                 ..base
             },
             Mark::Tangle => Stroke {
-                length: base.length * draw.range(1.0, 1.5),
+                // The longest mark in the field, and the one the page guard band
+                // is sized against — see [`reaches_page`]. Raising this without
+                // raising that puts a straight line down every page join.
+                length: base.length * draw.range(0.9, 1.25),
                 // Past a right angle the tip descends, so the stroke lies along
                 // the ground and doubles back.
                 bend: draw.range(1.3, 2.0),
@@ -979,12 +1072,16 @@ fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams)
     // them becomes visible. Constants tile; page statistics do not.
     const CANOPY_CEILING: f32 = 48.0;
 
-    // Two radii of the same measurement. The small one separates overlapping
-    // blades; the large one hollows out the interior of a clump. One radius
-    // cannot do both — it either loses the blade edges or fails to find the
-    // cavities.
+    // Two radii of the same measurement, and they are a third of a metre apart
+    // because they answer different questions. Three pixels separates one blade
+    // from the one behind it. Thirty-four — about a third of a metre — is the
+    // distance from the middle of a bunch of grass to the open ground beside it,
+    // and that is the scale this field was measurably flattest at: the reference
+    // keeps half again as much variance through a thirty-two-pixel blur as an
+    // earlier version of this baker did, and none of the stroke work closes that
+    // gap, because a stroke is four pixels wide.
     let near = blur(&heights, width, height, 3);
-    let far = blur(&heights, width, height, 13);
+    let far = blur(&heights, width, height, 34);
 
     let shadow = directional_shadow(&heights, width, height, params.light);
     // Five pixels, not two. Sunlight through a canopy has no sharp edge to it;
@@ -1027,7 +1124,7 @@ fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams)
             // is the cheapest honest model of that, and it leaves flat ground
             // exactly neutral, which a wrap of the usual `(x+k)/(1+k)` form does
             // not.
-            const SHADED_SIDE: f32 = 0.55;
+            const SHADED_SIDE: f32 = 0.42;
             let wrapped = if facing >= 0.0 {
                 facing
             } else {
@@ -1061,7 +1158,8 @@ fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams)
             // ground read as a hole punched through the field.
             let open = 1.0 - lattice.at(&lattice.bare, fx, fy) * 0.85;
             let micro = ((near[index] - canopy) * 0.09).clamp(0.0, 1.0) * open;
-            let cavity = ((far[index] - canopy) * 0.045).clamp(0.0, 1.0) * open;
+            // Signed at the bunch scale — see [`BakeParams::canopy_relief`].
+            let relief = ((canopy - far[index]) * 0.035).clamp(-1.0, 1.0) * open;
 
             // How strongly this area states its mound at all. Without it the
             // macro lighting describes every form equally and reads as a map of
@@ -1072,7 +1170,7 @@ fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams)
                 + params.elevation_light * (rise - 0.45)
                 + params.crown_light * (crown - 0.4)
                 - params.micro_occlusion * micro
-                - params.cavity_occlusion * cavity
+                + params.canopy_relief * relief
                 - params.shadow * shadow[index]
                 + params.region * tint;
         }
@@ -1110,9 +1208,25 @@ fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams)
             let cooled = Vec3::new(
                 resolved.x * 0.86,
                 resolved.y,
-                resolved.z + resolved.y * 0.055,
+                resolved.z + resolved.y * 0.035,
             );
-            colours[index] = resolved.lerp(cooled, cool.clamp(0.0, 1.0));
+            let resolved = resolved.lerp(cooled, cool.clamp(0.0, 1.0));
+
+            // Then the region's own hue, which is keyed to nowhere near the same
+            // thing — see [`BakeParams::drift`]. Both ends are gentle multiples
+            // of the colour already resolved rather than blends toward a named
+            // paint, so the ramp's measured relationship between its channels
+            // survives the drift and only its balance moves.
+            let drift = lattice.at(&lattice.hue, fx, fy).clamp(-1.0, 1.0) * params.drift;
+            let shifted = if drift >= 0.0 {
+                // Olive: drier, older grass. Red gains on green and the blue
+                // that was barely there gives up more of it.
+                Vec3::new(resolved.x * 1.11, resolved.y * 0.955, resolved.z * 0.82)
+            } else {
+                // Blue-green: shaded, damp, or simply a different species.
+                Vec3::new(resolved.x * 0.86, resolved.y * 1.01, resolved.z * 1.06)
+            };
+            colours[index] = resolved.lerp(shifted, drift.abs());
 
             // Glaze the low canopy back into its neighbourhood, and leave the
             // marks that stand proud of it crisp. Height is the right selector:
