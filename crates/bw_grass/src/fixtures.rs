@@ -22,6 +22,20 @@ use bevy::prelude::*;
 /// number decided here can be typed straight into the camera.
 pub const BATTLE_VIEW: f32 = 26.0;
 
+/// World metres visible vertically when the game actually opens.
+///
+/// `bw_render::BattleCamera::default().view_height`, copied because the
+/// dependency does not point that way. It is **not** [`BATTLE_VIEW`], and the
+/// two having drifted apart is worth naming rather than quietly picking one:
+/// [`BATTLE_VIEW`] is the middle rung of the snapshot ladder, and moving it
+/// moves [`ZOOMS`] and invalidates every accepted snapshot, so the reconciliation
+/// is its own change.
+///
+/// The difference is not small. At 26 metres the ground is presented at about
+/// 43 percent; at 55 it is 20, which is a quarter of the pixels and the scale
+/// every streaming and level-of-detail decision should be made against.
+pub const SHIPPING_VIEW: f32 = 55.0;
+
 /// The camera heights every snapshot is taken at, in world metres.
 ///
 /// Four rather than one, because the cache is baked at a single scale and seen
@@ -75,10 +89,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_shipping_camera_height_is_on_the_ladder() {
-        // If it were not, the one zoom level that matters most would be the one
-        // never photographed.
+    fn the_snapshot_ladder_holds_its_own_middle_rung() {
+        // Named for what it actually checks. [`BATTLE_VIEW`] is the ladder's
+        // middle rung, and a ladder that did not contain it would leave the row
+        // its documentation tells you to read first unphotographed.
         assert!(ZOOMS.contains(&BATTLE_VIEW));
+    }
+
+    /// The ladder does not reach the height the game opens at, and that is a
+    /// known gap rather than an oversight.
+    ///
+    /// `SHIPPING_VIEW` is 55 metres and the ladder stops at 48, so the scale
+    /// every level-of-detail decision is made against — about a fifth — is
+    /// photographed by nothing. Closing it means moving `BATTLE_VIEW`, which
+    /// moves `ZOOMS`, which invalidates every accepted snapshot; that is its own
+    /// change and wants its own review of the resulting pictures.
+    ///
+    /// This asserts the gap rather than the fix, so that whoever closes it is
+    /// told to delete a test rather than left wondering whether the mismatch was
+    /// deliberate.
+    #[test]
+    fn the_ladder_does_not_yet_reach_the_shipping_height() {
+        assert!(
+            !ZOOMS.contains(&SHIPPING_VIEW),
+            "the ladder now reaches {SHIPPING_VIEW} m — delete this test and \
+             fold SHIPPING_VIEW into BATTLE_VIEW"
+        );
+        assert!(
+            SHIPPING_VIEW > ZOOMS[ZOOMS.len() - 1],
+            "the shipping height moved inside the ladder's range without \
+             joining it, which is worse than being outside it"
+        );
     }
 
     #[test]

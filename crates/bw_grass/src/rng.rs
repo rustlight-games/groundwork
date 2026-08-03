@@ -58,6 +58,12 @@ pub enum Stream {
 /// produce uncorrelated outputs — which is the entire requirement here, since
 /// every input is a grid coordinate one step from its neighbour.
 #[inline]
+pub const fn scramble(z: u64) -> u64 {
+    mix(z)
+}
+
+/// See [`scramble`], which is this under a name callers are allowed to use.
+#[inline]
 const fn mix(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);

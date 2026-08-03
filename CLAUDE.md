@@ -287,9 +287,16 @@ Real, currently true, and worth knowing before you trip over them:
 - Each grass page is its own texture and its own draw call, so a 1080p view is a
   couple of hundred draws rather than the handful an atlas-packed cache would
   need. It runs at 60 fps today; it will not scale. `grass.view_pages` in the
-  snapshot report is the count, per camera height.
-- Baked pages have no mip chain, so the surface only samples cleanly near the
-  scale it was baked at (96 cache pixels per world metre).
+  snapshot report is the count, per camera height. `Page::for_view` cuts this by
+  the square of the camera's display scale — about twenty-four times at the
+  shipping height — but **`bw_grass::plugin` does not call it yet**: it still
+  streams every page at the authoring scale. Wiring it up is the single largest
+  remaining win in this crate and it is a renderer change, not a baker one.
+- A page's bake scale is now a parameter (`Page::at_detail`), and the art
+  constants scale with it — see `Page::detail` for what does and does not. Pages
+  still have no mip chain, so a page is only sampled cleanly near the scale it
+  was baked at; the difference is that the scale is now chosen rather than fixed
+  at 96 cache pixels per world metre.
 - A page is baked in isolation but its macro lattice is laid out from its own
   origin at a six-pixel stride, and 256 is not a multiple of six. So neighbouring
   pages read the composition fields from points up to four pixels apart, and a

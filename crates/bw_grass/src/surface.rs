@@ -29,26 +29,36 @@ use crate::palette::{self, Tone};
 /// Linear scale factor the page is composited at before downsampling.
 pub const SUPERSAMPLE: usize = 3;
 
-/// The composited state of one page, at supersampled resolution.
-pub struct Surface {
-    /// Supersampled width in pixels.
-    pub width: usize,
-    /// Supersampled height in pixels.
-    pub height: usize,
-    /// Isometric depth of whatever currently owns each pixel.
-    depth: Vec<f32>,
+/// Everything one supersampled pixel remembers, in one place.
+///
+/// Six parallel arrays would be the natural shape for this and it was the shape
+/// it had. The rasteriser is what argues against it: a stroke plots along a rib
+/// perpendicular to itself, so it walks one short run of pixels and then jumps a
+/// row, and with six arrays that is six cache lines fetched for every run
+/// instead of one. Interleaving them made the stroke pass measurably faster for
+/// no change to a single pixel of output.
+///
+/// Twelve bytes, and the byte fields are bytes on purpose — `top` is a height in
+/// final pixels and nothing in this field stands 255 of them tall, `buried`
+/// saturates long before it overflows, and `soil` is a blend the eye reads to
+/// perhaps six bits.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct Cell {
+    /// Isometric depth of whatever currently owns this pixel.
+    depth: f32,
     /// The owning stroke's own light index, before any world-scale shading.
-    light: Vec<f32>,
-    /// Which ramp the owning stroke shades through.
-    tone: Vec<u8>,
+    light: f32,
     /// Height of the owning stroke above the soil, in final pixels.
-    top: Vec<u8>,
+    top: u8,
+    /// Which ramp the owning stroke shades through.
+    tone: u8,
     /// How many strokes have been buried at this pixel, saturating.
     ///
     /// The cheapest possible measure of "how much grass is there", and the only
     /// one available for free: a pixel that twenty strokes fought over is deep
     /// inside a clump, and a pixel nothing contested is a gap.
-    buried: Vec<u8>,
+    buried: u8,
     /// How far the floor at this pixel has turned to bare earth, `0..255`.
     ///
     /// A blend rather than a choice, and that is the whole point of it being a
@@ -56,7 +66,16 @@ pub struct Surface {
     /// threshold puts a hard edge around every bare patch — the two ramps differ
     /// in hue, so no light index makes them meet — and a hard-edged patch reads
     /// as a stone lying on the grass rather than as ground showing through it.
-    soil: Vec<u8>,
+    soil: u8,
+}
+
+/// The composited state of one page, at supersampled resolution.
+pub struct Surface {
+    /// Supersampled width in pixels.
+    pub width: usize,
+    /// Supersampled height in pixels.
+    pub height: usize,
+    cells: Vec<Cell>,
 }
 
 impl Surface {
@@ -64,16 +83,20 @@ impl Surface {
     pub fn new(final_width: usize, final_height: usize) -> Self {
         let width = final_width * SUPERSAMPLE;
         let height = final_height * SUPERSAMPLE;
-        let count = width * height;
         Self {
             width,
             height,
-            depth: vec![f32::NEG_INFINITY; count],
-            light: vec![0.0; count],
-            tone: vec![Tone::Soil as u8; count],
-            top: vec![0; count],
-            buried: vec![0; count],
-            soil: vec![0; count],
+            cells: vec![
+                Cell {
+                    depth: f32::NEG_INFINITY,
+                    light: 0.0,
+                    top: 0,
+                    tone: Tone::Soil as u8,
+                    buried: 0,
+                    soil: 0,
+                };
+                width * height
+            ],
         }
     }
 
@@ -81,17 +104,22 @@ impl Surface {
     ///
     /// `top` is in final pixels rather than supersampled ones so it fits a byte
     /// with room to spare; nothing in this field stands 255 pixels tall.
+    ///
+    /// The index is not bounds-checked against a slice a second time — the
+    /// caller has already clamped it — but it is still a safe indexing
+    /// operation, so a mistake panics rather than corrupting the page.
     #[inline]
     pub fn write(&mut self, index: usize, depth: f32, light: f32, tone: Tone, top: f32) {
-        if depth >= self.depth[index] {
-            self.depth[index] = depth;
-            self.light[index] = light;
-            self.tone[index] = tone as u8;
-            self.top[index] = (top.clamp(0.0, 255.0)) as u8;
+        let cell = &mut self.cells[index];
+        if depth >= cell.depth {
+            cell.depth = depth;
+            cell.light = light;
+            cell.tone = tone as u8;
+            cell.top = (top.clamp(0.0, 255.0)) as u8;
             // A blade covering bare earth is a blade, not earth.
-            self.soil[index] = 0;
+            cell.soil = 0;
         }
-        self.buried[index] = self.buried[index].saturating_add(1);
+        cell.buried = cell.buried.saturating_add(1);
     }
 
     /// Fill every pixel unconditionally — the floor pass, and nothing else.
@@ -100,17 +128,44 @@ impl Surface {
     /// the dark mat under a thick canopy, one is exposed ground.
     #[inline]
     pub fn lay(&mut self, index: usize, light: f32, soil: f32) {
-        self.depth[index] = f32::NEG_INFINITY;
-        self.light[index] = light;
-        self.tone[index] = Tone::Thatch as u8;
-        self.top[index] = 0;
-        self.soil[index] = (soil.clamp(0.0, 1.0) * 255.0) as u8;
+        let cell = &mut self.cells[index];
+        cell.depth = f32::NEG_INFINITY;
+        cell.light = light;
+        cell.tone = Tone::Thatch as u8;
+        cell.top = 0;
+        cell.soil = (soil.clamp(0.0, 1.0) * 255.0) as u8;
+    }
+
+    /// Lay a whole run of floor pixels that share a colour.
+    ///
+    /// The floor pass fills a supersampled block per final pixel, so its inner
+    /// loop is [`SUPERSAMPLE`] identical writes to consecutive addresses. Handing
+    /// the run over whole lets it be one bounds check and one straight-line
+    /// store instead of nine of each.
+    #[inline]
+    pub fn lay_run(&mut self, index: usize, count: usize, light: f32, soil: f32) {
+        let cell = Cell {
+            depth: f32::NEG_INFINITY,
+            light,
+            top: 0,
+            tone: Tone::Thatch as u8,
+            buried: 0,
+            soil: (soil.clamp(0.0, 1.0) * 255.0) as u8,
+        };
+        for target in &mut self.cells[index..index + count] {
+            // `buried` is the one channel the floor does not own: it counts what
+            // the stroke pass has already thrown at this pixel, and the floor
+            // going down afterwards must not forget it.
+            let buried = target.buried;
+            *target = cell;
+            target.buried = buried;
+        }
     }
 
     /// How far toward bare earth this pixel's floor has gone, `0..1`.
     #[inline]
     pub fn soil_at(&self, index: usize) -> f32 {
-        self.soil[index] as f32 / 255.0
+        self.cells[index].soil as f32 / 255.0
     }
 
     #[inline]
@@ -129,16 +184,16 @@ impl Surface {
         let inverse = 1.0 / (SUPERSAMPLE * SUPERSAMPLE) as f32;
         for y in 0..final_height {
             for x in 0..final_width {
-                let (mut height, mut buried) = (0.0f32, 0.0f32);
+                let (mut height, mut buried) = (0u32, 0u32);
                 for sy in 0..SUPERSAMPLE {
-                    for sx in 0..SUPERSAMPLE {
-                        let i = self.index(x * SUPERSAMPLE + sx, y * SUPERSAMPLE + sy);
-                        height += self.top[i] as f32;
-                        buried += self.buried[i] as f32;
+                    let row = (y * SUPERSAMPLE + sy) * self.width + x * SUPERSAMPLE;
+                    for cell in &self.cells[row..row + SUPERSAMPLE] {
+                        height += cell.top as u32;
+                        buried += cell.buried as u32;
                     }
                 }
-                heights[y * final_width + x] = height * inverse;
-                density[y * final_width + x] = buried * inverse;
+                heights[y * final_width + x] = height as f32 * inverse;
+                density[y * final_width + x] = buried as f32 * inverse;
             }
         }
         (heights, density)
@@ -147,20 +202,21 @@ impl Surface {
     /// The stroke light index and tone at a supersampled pixel.
     #[inline]
     pub fn pixel(&self, index: usize) -> (f32, Tone) {
-        let tone = match self.tone[index] {
+        let cell = &self.cells[index];
+        let tone = match cell.tone {
             0 => Tone::Soil,
             1 => Tone::Thatch,
             2 => Tone::Grass,
             3 => Tone::Leaf,
             _ => Tone::Dry,
         };
-        (self.light[index], tone)
+        (cell.light, tone)
     }
 
     /// Height above the soil at a supersampled pixel, in final pixels.
     #[inline]
     pub fn top_at(&self, index: usize) -> f32 {
-        self.top[index] as f32
+        self.cells[index].top as f32
     }
 
     /// Average colour of the supersampled block behind one final pixel.

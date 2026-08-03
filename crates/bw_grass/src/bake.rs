@@ -26,7 +26,7 @@
 use bevy::prelude::*;
 use rayon::prelude::*;
 
-use crate::field::{Ground, WorldField};
+use crate::field::{Ground, GroundCache, WorldField};
 use crate::iso;
 use crate::palette::{self, Tone};
 use crate::rng::{Draw, Stream};
@@ -65,15 +65,111 @@ pub struct Page {
     pub origin: Vec2,
     pub width: usize,
     pub height: usize,
+    /// How many of this page's pixels one world metre spans.
+    ///
+    /// [`iso::PX_PER_METRE`] for a page baked at the authoring scale, and less
+    /// for one baked for a camera that will not show that much. See
+    /// [`Page::detail`].
+    pub px_per_metre: f32,
 }
 
 impl Page {
+    /// A page at the scale the art is authored at.
     pub const fn new(origin: Vec2, width: usize, height: usize) -> Self {
         Self {
             origin,
             width,
             height,
+            px_per_metre: iso::PX_PER_METRE,
         }
+    }
+
+    /// A page baked at a fraction of the authoring scale.
+    ///
+    /// `detail` is that fraction: one is the full authoring scale, a quarter
+    /// bakes a page that covers sixteen times the ground for the same number of
+    /// pixels. **The origin is in this page's own cache pixels**, not in
+    /// reference ones, so a page and its neighbour at the same detail tile the
+    /// same way they always did.
+    pub fn at_detail(origin: Vec2, width: usize, height: usize, detail: f32) -> Self {
+        Self {
+            origin,
+            width,
+            height,
+            px_per_metre: iso::PX_PER_METRE * detail.max(1.0e-3),
+        }
+    }
+
+    /// This page's scale as a fraction of the authoring scale.
+    ///
+    /// The number every length in the art has to be multiplied by. The art is
+    /// authored in cache pixels — a blade is 1.6 of them wide, a mound's relief
+    /// reaches 17 of them, the guard band is 140 — and every one of those is a
+    /// statement about how large a thing is *relative to a metre of ground*. Bake
+    /// at a quarter scale without carrying this through and the field shrinks
+    /// while its brush marks do not, which is the difference between distant
+    /// grass and a page of bristles.
+    ///
+    /// Two families of number are deliberately **not** scaled by it. Lengths
+    /// already expressed in metres — blade length, tuft radius, mound spacing —
+    /// scale themselves, because the projection does it for them. And canopy
+    /// *height* is kept in reference pixels throughout, so that every shading
+    /// term keyed on how tall the grass stands means the same thing at every
+    /// detail level; only the distances those terms reach *across* the page are
+    /// scaled.
+    #[inline]
+    pub fn detail(&self) -> f32 {
+        self.px_per_metre / iso::PX_PER_METRE
+    }
+
+    /// A length authored in reference cache pixels, at this page's scale.
+    #[inline]
+    pub fn px(&self, reference: f32) -> f32 {
+        reference * self.detail()
+    }
+
+    /// A blur or search radius authored in reference cache pixels, at this
+    /// page's scale — never below one, since a radius of nought is the identity
+    /// and would silently delete the shading term rather than coarsen it.
+    #[inline]
+    pub fn radius(&self, reference: usize) -> usize {
+        ((reference as f32 * self.detail()).round() as usize).max(1)
+    }
+
+    /// This page's ground, as a world point.
+    #[inline]
+    pub fn ground_at(&self, pixel: Vec2) -> Vec2 {
+        iso::from_cache_ground_at(self.origin + pixel, self.px_per_metre)
+    }
+
+    /// A page baked at exactly the scale a camera will show it at.
+    ///
+    /// The whole point of [`Page::at_detail`], expressed as the call a renderer
+    /// actually wants to make. `view_height` is world metres visible
+    /// vertically — `bw_render::BattleCamera::view_height` — and `screen` is the
+    /// window; [`iso::view_pixels`] turns the pair into the scale the ground is
+    /// presented at, and this bakes there instead of baking at the authoring
+    /// scale and throwing the difference away.
+    ///
+    /// `origin` is in this page's own pixels, so a streaming grid steps by whole
+    /// page widths exactly as it does at full detail. What changes is how much
+    /// world one page covers: at the fifty-five-metre camera this game ships at,
+    /// a page holds about twenty-four times the ground it used to, which is
+    /// twenty-four times fewer pages and twenty-four times fewer draw calls for
+    /// the same screen.
+    ///
+    /// Clamped at one: a camera close enough to magnify the ground past the
+    /// authoring scale should bake at the authoring scale and be filtered up,
+    /// never invent detail the art does not contain.
+    pub fn for_view(
+        origin: Vec2,
+        width: usize,
+        height: usize,
+        view_height: f32,
+        screen: (usize, usize),
+    ) -> Self {
+        let (_, _, scale) = iso::view_pixels(view_height, screen);
+        Self::at_detail(origin, width, height, scale.min(1.0))
     }
 }
 
@@ -449,8 +545,15 @@ const MACRO_STRIDE: usize = 6;
 
 impl Macro {
     pub fn build(page: &Page, field: &WorldField) -> Self {
-        let width = page.width.div_ceil(MACRO_STRIDE) + 2;
-        let height = page.height.div_ceil(MACRO_STRIDE) + 2;
+        // The stride is a statement about the world, not about the page: six
+        // reference pixels is a sixteenth of a metre, comfortably finer than
+        // anything the composition fields hold. Keeping the *pixel* stride while
+        // the page scale drops would let it slide to a quarter of a metre and
+        // start aliasing the mound field, so it scales down with the page and
+        // the lattice keeps sampling the same ground just as finely.
+        let stride = page.radius(MACRO_STRIDE);
+        let width = page.width.div_ceil(stride) + 2;
+        let height = page.height.div_ceil(stride) + 2;
         let mut height_field = vec![0.0; width * height];
         let mut lit = vec![0.0; width * height];
         let mut crown = vec![0.0; width * height];
@@ -462,9 +565,9 @@ impl Macro {
 
         for y in 0..height {
             for x in 0..width {
-                let cache =
-                    page.origin + Vec2::new(x as f32 - 0.5, y as f32 - 0.5) * MACRO_STRIDE as f32;
-                let ground = field.sample(iso::from_cache_ground(cache));
+                let ground = field.sample(
+                    page.ground_at(Vec2::new(x as f32 - 0.5, y as f32 - 0.5) * stride as f32),
+                );
                 let i = y * width + x;
                 height_field[i] = ground.height;
                 lit[i] = ground.lit;
@@ -478,7 +581,7 @@ impl Macro {
         }
 
         Self {
-            stride: MACRO_STRIDE,
+            stride,
             width,
             height,
             height_field,
@@ -530,7 +633,7 @@ pub fn bake(page: Page, params: &BakeParams) -> Vec<Vec3> {
 /// anything reads it back, which is the only reason this is a function rather
 /// than three lines inside [`bake`].
 pub fn plant_strokes(surface: &mut Surface, page: &Page, field: &WorldField, params: &BakeParams) {
-    let mut painter = Painter::new(surface, page.origin, params.light);
+    let mut painter = Painter::at_scale(surface, page.origin, params.light, page.px_per_metre);
     plant(
         &mut painter,
         &Bed {
@@ -559,10 +662,28 @@ pub const TILE_PIXELS: usize = 256;
 /// decision is a pure function of world coordinates, so the tiles agree along
 /// their edges or the design is broken — and this is what asks.
 /// A screenful at the widest camera is thirty-seven megapixels, so the tiles are
-/// written straight into the finished plate a band at a time rather than
-/// collected and stitched afterwards. Collecting them first holds the whole
-/// region twice — nearly a gigabyte for that view — for no gain, since the
-/// stitch is a memcpy either way.
+/// written straight into the finished plate rather than collected and stitched
+/// afterwards. Collecting them first holds the whole region twice — nearly a
+/// gigabyte for that view — for no gain, since the stitch is a memcpy either way.
+///
+/// ## Every page is its own task, and that is not how it started
+///
+/// The obvious parallel split is one task per **band** of rows, because rows are
+/// contiguous and `par_chunks_mut` hands out disjoint row ranges for free. It is
+/// also badly wrong at the size that matters. A band is one page tall, so a
+/// 1080-pixel view is five tasks — on a machine with sixteen cores, three
+/// quarters of which then sit idle while five threads each bake eight pages in
+/// sequence. The narrower the view, the worse it gets, and a page baked for a
+/// distant camera makes views narrower.
+///
+/// So the rows are handed out band by band as before, and then each band is
+/// **split again into per-page column strips** before anything is baked. The
+/// strips of one band are disjoint slices of the same rows, which is exactly what
+/// lets every page in the region be its own task without the region ever existing
+/// twice in memory. Tasks now number pages rather than bands, and the tail is set
+/// by the slowest single page rather than by the slowest row of them — which
+/// matters more than it sounds, because page cost varies by a factor of two and a
+/// half from one patch of world to another.
 pub fn bake_grid(region: Page, params: &BakeParams) -> Vec<Vec3> {
     if region.width == 0 || region.height == 0 {
         return Vec::new();
@@ -577,17 +698,47 @@ pub fn bake_grid(region: Page, params: &BakeParams) -> Vec<Vec3> {
             // The last band is short whenever the region is not a whole number
             // of pages tall, which is the usual case.
             let height = rows.len() / region.width;
-            for tx in 0..across {
-                let width = TILE_PIXELS.min(region.width - tx * TILE_PIXELS);
-                let origin = region.origin
-                    + Vec2::new((tx * TILE_PIXELS) as f32, (band * TILE_PIXELS) as f32);
-                let tile = bake(Page::new(origin, width, height), params);
-                for y in 0..height {
-                    let source = y * width;
-                    let target = y * region.width + tx * TILE_PIXELS;
-                    rows[target..target + width].copy_from_slice(&tile[source..source + width]);
+
+            // Regroup the band's rows into one strip per page. Each row is cut
+            // at the page boundaries and the pieces are dealt out by column, so
+            // strip `tx` ends up owning that page's rows and nothing else.
+            let mut strips: Vec<Vec<&mut [Vec3]>> =
+                (0..across).map(|_| Vec::with_capacity(height)).collect();
+            for row in rows.chunks_mut(region.width) {
+                let mut rest = row;
+                for strip in strips.iter_mut() {
+                    let (head, tail) = rest.split_at_mut(TILE_PIXELS.min(rest.len()));
+                    strip.push(head);
+                    rest = tail;
                 }
             }
+
+            strips
+                .into_par_iter()
+                .enumerate()
+                .for_each(|(tx, mut strip)| {
+                    let width = TILE_PIXELS.min(region.width - tx * TILE_PIXELS);
+                    let origin = region.origin
+                        + Vec2::new((tx * TILE_PIXELS) as f32, (band * TILE_PIXELS) as f32);
+                    // The tiles inherit the region's scale. A region baked for a
+                    // distant camera is tiled into pages baked for the same one,
+                    // and the page size stays in pixels rather than metres
+                    // because it is a streaming unit and a draw call, not a piece
+                    // of world.
+                    let tile = bake(
+                        Page {
+                            origin,
+                            width,
+                            height,
+                            px_per_metre: region.px_per_metre,
+                        },
+                        params,
+                    );
+                    for (y, row) in strip.iter_mut().enumerate() {
+                        let source = y * width;
+                        row.copy_from_slice(&tile[source..source + width]);
+                    }
+                });
         });
     plate
 }
@@ -603,8 +754,7 @@ pub fn bake_grid(region: Page, params: &BakeParams) -> Vec<Vec3> {
 pub fn lay_floor(surface: &mut Surface, page: &Page, field: &WorldField, lattice: &Macro) {
     for y in 0..page.height {
         for x in 0..page.width {
-            let cache = page.origin + Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
-            let ground = iso::from_cache_ground(cache);
+            let ground = page.ground_at(Vec2::new(x as f32 + 0.5, y as f32 + 0.5));
             let bare = lattice.at(&lattice.bare, x as f32, y as f32);
             let mottle = field.soil_mottle(ground);
 
@@ -673,10 +823,8 @@ pub fn lay_floor(surface: &mut Surface, page: &Page, field: &WorldField, lattice
                 - rim * 0.14;
 
             for sy in 0..SUPERSAMPLE {
-                for sx in 0..SUPERSAMPLE {
-                    let index = surface.index(x * SUPERSAMPLE + sx, y * SUPERSAMPLE + sy);
-                    surface.lay(index, light, soil);
-                }
+                let index = surface.index(x * SUPERSAMPLE, y * SUPERSAMPLE + sy);
+                surface.lay_run(index, SUPERSAMPLE, light, soil);
             }
         }
     }
@@ -724,19 +872,25 @@ fn footprint(page: &Page) -> (Vec2, Vec2) {
     // skirt's full extra bend the furthest any mark descends from its own root
     // is about seven pixels. Almost all of what `ABOVE` guards is the tuft
     // radius, not the mark.
+    //
+    // In *reference* pixels, and scaled to the page: these bound how far a mark
+    // reaches, marks are measured in metres, and a page baked at a quarter scale
+    // holds a mark in a quarter of the pixels. A band that did not scale would
+    // guard four times the ground it needed to and walk four times the cells.
     const SIDE: f32 = 122.0;
     const BELOW: f32 = 156.0;
     const ABOVE: f32 = 46.0;
+    let (side, below, above) = (page.px(SIDE), page.px(BELOW), page.px(ABOVE));
     let corners = [
-        Vec2::new(-SIDE, -ABOVE),
-        Vec2::new(page.width as f32 + SIDE, -ABOVE),
-        Vec2::new(-SIDE, page.height as f32 + BELOW),
-        Vec2::new(page.width as f32 + SIDE, page.height as f32 + BELOW),
+        Vec2::new(-side, -above),
+        Vec2::new(page.width as f32 + side, -above),
+        Vec2::new(-side, page.height as f32 + below),
+        Vec2::new(page.width as f32 + side, page.height as f32 + below),
     ];
     let mut low = Vec2::splat(f32::INFINITY);
     let mut high = Vec2::splat(f32::NEG_INFINITY);
     for corner in corners {
-        let ground = iso::from_cache_ground(page.origin + corner);
+        let ground = page.ground_at(corner);
         low = low.min(ground);
         high = high.max(ground);
     }
@@ -749,6 +903,10 @@ fn footprint(page: &Page) -> (Vec2, Vec2) {
 /// out either way — but because the mat's job is to be *buried*, and a buried
 /// stroke contributes occlusion where one that wins its pixel does not.
 fn plant(painter: &mut Painter, bed: &Bed) {
+    // One cache for all three passes, so the mat's reads warm it for the tufts
+    // standing in the same ground. See [`GroundCache`] for why a lattice is the
+    // right resolution to make placement decisions at.
+    let mut ground = GroundCache::new(bed.field, bed.page.px_per_metre);
     // The mat thickens exactly where the tufts thin out. Loosely described
     // ground is not *empty* ground — it is ground described as a mass instead of
     // as blades — and taking the tufts away without putting the mass in leaves
@@ -756,6 +914,7 @@ fn plant(painter: &mut Painter, bed: &Bed) {
     scatter(
         painter,
         bed,
+        &mut ground,
         Stream::Thatch,
         bed.params.thatch,
         // Thinned hard over bare ground, on top of the coverage every pass
@@ -772,6 +931,7 @@ fn plant(painter: &mut Painter, bed: &Bed) {
     scatter(
         painter,
         bed,
+        &mut ground,
         Stream::Blade,
         bed.params.tufts,
         // Wider than it was, now that this field runs mostly at the broad scale
@@ -785,6 +945,7 @@ fn plant(painter: &mut Painter, bed: &Bed) {
     scatter(
         painter,
         bed,
+        &mut ground,
         Stream::Leaf,
         bed.params.leaves,
         |ground| (0.35 + ground.resolution * 0.35) * ground.colony,
@@ -813,16 +974,13 @@ struct Bed<'a> {
 fn scatter(
     painter: &mut Painter,
     bed: &Bed,
+    cache: &mut GroundCache,
     stream: Stream,
     per_square_metre: f32,
     weight: impl Fn(&Ground) -> f32,
     mut place: impl FnMut(&mut Painter, &Page, &mut Draw, Vec2, &Ground, &BakeParams),
 ) {
-    let Bed {
-        page,
-        field,
-        params,
-    } = *bed;
+    let Bed { page, params, .. } = *bed;
     let spacing = (1.0 / per_square_metre.max(0.01)).sqrt();
     let (low, high) = footprint(page);
     let (x0, y0) = (
@@ -848,7 +1006,7 @@ fn scatter(
             if !reaches_page(painter, page, root) {
                 continue;
             }
-            let ground = field.sample(root);
+            let ground = cache.sample(root);
             // Bare ground grows a fringe, not nothing. The fringe is what makes
             // a patch read as a depression rather than as a hole — and it has to
             // be a broad fringe. A patch that goes from full grass to none over
@@ -884,7 +1042,23 @@ fn scatter(
 /// bake and wasting none of it.
 #[inline]
 fn paint(painter: &mut Painter, page: &Page, stroke: Stroke) {
-    if !reaches_page(painter, page, stroke.root.truncate()) {
+    // Against this mark's own reach, not against [`MARGIN`]. The two differ by a
+    // great deal and the difference is most of a page: `MARGIN` is sized for the
+    // longest mark the vocabulary can produce, rooted at the far edge of the
+    // widest tuft, and the ordinary mark is a fifth of that. Testing every
+    // stroke against the worst case admits about three marks for every one that
+    // can touch the page, and each of the other two walks its whole centreline
+    // and every rib before the rasteriser discovers there was nothing to write.
+    //
+    // `MARGIN` still guards the *cell*, in [`scatter`], because a tuft's blades
+    // are not drawn yet when that test runs.
+    let reach = painter.reach(&stroke);
+    let at = painter.to_page(stroke.root) / SUPERSAMPLE as f32;
+    if at.x < -reach
+        || at.y < -reach
+        || at.x > page.width as f32 + reach
+        || at.y > page.height as f32 + reach
+    {
         return;
     }
     painter.draw(&stroke);
@@ -898,11 +1072,12 @@ fn paint(painter: &mut Painter, page: &Page, stroke: Stroke) {
 /// that turn out to be invisible.
 #[inline]
 fn reaches_page(painter: &Painter, page: &Page, root: Vec2) -> bool {
+    let margin = page.px(MARGIN);
     let at = painter.to_page(root.extend(0.0)) / SUPERSAMPLE as f32;
-    at.x >= -MARGIN
-        && at.y >= -MARGIN
-        && at.x <= page.width as f32 + MARGIN
-        && at.y <= page.height as f32 + MARGIN
+    at.x >= -margin
+        && at.y >= -margin
+        && at.x <= page.width as f32 + margin
+        && at.y <= page.height as f32 + margin
 }
 
 /// How far outside a page a tuft may sit and still mark it, in cache pixels.
@@ -1001,6 +1176,16 @@ const DOWN_SCREEN: f32 = std::f32::consts::FRAC_PI_4;
 /// narrower tuft than the one the baker actually grows.
 const TUFT_RADIUS: f32 = 0.185;
 
+/// The most a vigorous mound can lengthen the grass standing on it.
+///
+/// Named because three guard-band tests have to reach the same number, and a
+/// copy of it in a test is a copy that goes stale silently. One of them had:
+/// the clamp read 1.45 and the test read 1.35, so the band was certified against
+/// a mark seven percent shorter than the field can actually grow, and the
+/// symptom of that being wrong is a stroke present on one side of a page join
+/// and missing on the other.
+const VIGOUR_CEILING: f32 = 1.45;
+
 /// Extra bend a skirt blade is laid over by, at most, radians.
 ///
 /// Only here so the guard-band test can sweep to the same limit the baker
@@ -1058,7 +1243,7 @@ fn grow_tuft(
     let vigour = ((0.16 + ground.crown * 0.30 + ground.density * 0.80)
         * (1.0 - ground.bare * 0.62)
         * (0.76 + ground.resolution * 0.44))
-        .clamp(0.24, 1.45);
+        .clamp(0.24, VIGOUR_CEILING);
     // One tuft in eight stands well clear of its neighbours. Sparse tall accents
     // are what stop the canopy reading as a mown line.
     let mut reach = if draw.chance(0.12) {
@@ -1706,19 +1891,23 @@ pub fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakePar
     // lighting term whose scale is a free parameter rather than a consequence of
     // the geometry, and moving it from a third of a metre to a half moved the
     // energy with it.
-    let near = blur(&heights, width, height, 3);
-    let far = blur(&heights, width, height, 52);
+    // Both radii are authored in reference pixels and scaled to this page, so
+    // they keep asking about the same distance of *ground* however coarsely the
+    // page is baked. A radius that did not scale would ask about half a metre on
+    // one page and two metres on its neighbour.
+    let near = blur(&heights, width, height, page.radius(3));
+    let far = blur(&heights, width, height, page.radius(52));
     // Which way to look for the canopy a bunch is standing against — see
     // [`BakeParams::canopy_relief`]. Toward the key, so that a pixel on the
     // sunward flank of a bunch is compared with the open ground in front of it
     // and a pixel at its shaded foot is compared with the bunch itself.
     let toward = Vec2::new(params.light.x, params.light.y).normalize_or(Vec2::NEG_Y);
 
-    let shadow = directional_shadow(&heights, width, height, params.light);
+    let shadow = directional_shadow(&heights, width, height, params.light, page.detail());
     // Five pixels, not two. Sunlight through a canopy has no sharp edge to it;
     // the shadow this term describes is cast by grass onto grass a few
     // centimetres away, and the penumbra of that is wider than the shadow.
-    let shadow = blur(&shadow, width, height, 5);
+    let shadow = blur(&shadow, width, height, page.radius(5));
 
     let mut colours = vec![Vec3::ZERO; width * height];
     // How much of each pixel gets glazed back into its neighbourhood, filled in
@@ -1799,7 +1988,7 @@ pub fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakePar
             // collapses back to the symmetric comparison, which is a gradual
             // softening of one term across ten pixels of a page that has already
             // been blurred by `light_blur`, and not a discontinuity.
-            let sample = Vec2::new(fx, fy) + toward * RELIEF_REACH;
+            let sample = Vec2::new(fx, fy) + toward * page.px(RELIEF_REACH);
             let sx = sample.x.clamp(0.0, (width - 1) as f32) as usize;
             let sy = sample.y.clamp(0.0, (height - 1) as f32) as usize;
             let relief = ((canopy - far[sy * width + sx]) * 0.040).clamp(-1.0, 1.0) * open;
@@ -1819,7 +2008,7 @@ pub fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakePar
         }
     }
 
-    let macro_light = blur(&macro_light, width, height, params.light_blur);
+    let macro_light = blur(&macro_light, width, height, page.radius(params.light_blur));
 
     for y in 0..height {
         for x in 0..width {
@@ -1851,7 +2040,7 @@ pub fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakePar
             // thing a value-only shader cannot fake — no amount of contrast
             // between two samples of the same hue says which direction the sun
             // is in.
-            let ground_at = iso::from_cache_ground(page.origin + Vec2::new(fx, fy));
+            let ground_at = page.ground_at(Vec2::new(fx, fy));
             let dampness = field.jitter(Stream::Tint, ground_at, 0.55);
             let shade_depth = (1.0 - (canopy / CANOPY_CEILING)).clamp(0.0, 1.0);
             let cool = params.cool * shade_depth * (0.4 + dampness * 0.8);
@@ -1973,18 +2162,26 @@ pub fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakePar
         }
     }
 
-    glaze(&mut colours, width, height, &glaze_mask);
+    glaze(
+        &mut colours,
+        width,
+        height,
+        &glaze_mask,
+        page.radius(GLAZE_REACH),
+    );
     soften(&mut colours, width, height, params.soften);
     colours
 }
 
 /// Blend each pixel toward the average colour of its neighbourhood.
 ///
+/// How far the glaze reaches, in reference cache pixels.
+const GLAZE_REACH: usize = 2;
+
 /// A five-tap cross at two pixels, rather than a proper blur: the aim is to melt
 /// adjacent strokes into one another, not to smear the page. Anything wider
 /// starts eating the marks that were meant to survive.
-fn glaze(colours: &mut [Vec3], width: usize, height: usize, mask: &[f32]) {
-    const REACH: usize = 2;
+fn glaze(colours: &mut [Vec3], width: usize, height: usize, mask: &[f32], reach: usize) {
     let source = colours.to_vec();
     for y in 0..height {
         for x in 0..width {
@@ -1993,10 +2190,10 @@ fn glaze(colours: &mut [Vec3], width: usize, height: usize, mask: &[f32]) {
             if amount <= 0.01 {
                 continue;
             }
-            let left = x.saturating_sub(REACH);
-            let right = (x + REACH).min(width - 1);
-            let up = y.saturating_sub(REACH);
-            let down = (y + REACH).min(height - 1);
+            let left = x.saturating_sub(reach);
+            let right = (x + reach).min(width - 1);
+            let up = y.saturating_sub(reach);
+            let down = (y + reach).min(height - 1);
             let local = (source[index]
                 + source[y * width + left]
                 + source[y * width + right]
@@ -2039,7 +2236,13 @@ fn soften(colours: &mut [Vec3], width: usize, height: usize, amount: f32) {
 /// that gives each mound a lit face and a dark back. Kept deliberately short —
 /// eight pixels of soft separation rather than a long cast shadow — because the
 /// reference has no hard shadows anywhere in it.
-fn directional_shadow(heights: &[f32], width: usize, height: usize, light: Vec3) -> Vec<f32> {
+fn directional_shadow(
+    heights: &[f32],
+    width: usize,
+    height: usize,
+    light: Vec3,
+    detail: f32,
+) -> Vec<f32> {
     let plane = Vec2::new(light.x, light.y);
     let toward = plane.normalize_or(Vec2::NEG_Y);
     // Height a blocker must gain per pixel travelled to shade this point.
@@ -2047,14 +2250,32 @@ fn directional_shadow(heights: &[f32], width: usize, height: usize, light: Vec3)
 
     const STEPS: usize = 9;
     const STEP: f32 = 1.4;
+    // Never below a page pixel, and the count cut to match so the ray still
+    // covers the same ground. A coarse page reaches the same distance in fewer,
+    // longer strides, which is the most a page of that resolution can say.
+    let step_page = (STEP * detail).max(1.0);
+    let steps = (((STEPS as f32 * STEP * detail) / step_page).round() as usize).max(1);
     let mut shadow = vec![0.0f32; width * height];
     for y in 0..height {
         for x in 0..width {
             let base = heights[y * width + x];
             let mut most = 0.0f32;
-            for step in 1..=STEPS {
-                let distance = step as f32 * STEP;
-                let sample = Vec2::new(x as f32, y as f32) + toward * distance;
+            for step in 1..=steps {
+                // Two distances for one march, and the page's is the one that
+                // has to be honest. The height field is sampled by whole page
+                // pixels — there is nothing between them — so the step taken is
+                // rounded up to one, and the *reference* distance the rise term
+                // compares against is then derived from the step actually taken
+                // rather than from the one that was asked for. Getting that
+                // backwards is what a first attempt did: at an eighth scale it
+                // asked for a step of 0.175 page pixels, truncation turned every
+                // one of them into a whole pixel — eight reference pixels of
+                // ground — and the rise threshold went on being computed for
+                // 1.4. The shadows came out several times too strong, and which
+                // way they leaned depended on the sign of the light.
+                let along = step as f32 * step_page;
+                let distance = along / detail.max(1.0e-3);
+                let sample = Vec2::new(x as f32, y as f32) + toward * along;
                 if sample.x < 0.0 || sample.y < 0.0 {
                     break;
                 }
@@ -2227,7 +2448,7 @@ mod tests {
         // Every multiplier on the path from `blade_length` to a rasterised
         // stroke, at its maximum: the `Tangle` family's own factor, the vigour
         // clamp in `grow_tuft`, and the tall-accent reach draw.
-        let longest = params.blade_length.1 * 1.25 * 1.35 * 1.35;
+        let longest = params.blade_length.1 * 1.25 * VIGOUR_CEILING * 1.35;
         // The tuft's blades are rooted up to this far from the centre that
         // `scatter` tests, so the centre has to cover the offset as well. Must
         // track the radius drawn in [`grow_tuft`]; a stale value here is a test
@@ -2262,10 +2483,17 @@ mod tests {
                     under: params.under,
                     ..default()
                 });
-                let (heights, _) = surface.height_maps(512, 512);
+                // Density, not height. `top` is a canopy height in whole
+                // pixels, so every rib at ground level — a root, an
+                // under-stroke, anything a laid-over mark drags below its own
+                // origin — paints the page and reports zero. Measuring reach by
+                // height therefore measures the reach of the *tall* part of a
+                // mark and calls it the reach of the mark. The density channel
+                // counts writes, so it sees all of it.
+                let (_, painted) = surface.height_maps(512, 512);
                 for y in 0..512 {
                     for x in 0..512 {
-                        if heights[y * 512 + x] > 0.0 {
+                        if painted[y * 512 + x] > 0.0 {
                             let dx = x as f32 - 256.0;
                             let dy = y as f32 - 256.0;
                             worst = worst.max((dx * dx + dy * dy).sqrt());
@@ -2326,10 +2554,17 @@ mod tests {
                     under: params.under,
                     ..default()
                 });
-                let (heights, _) = surface.height_maps(512, 512);
+                // Density, not height. `top` is a canopy height in whole
+                // pixels, so every rib at ground level — a root, an
+                // under-stroke, anything a laid-over mark drags below its own
+                // origin — paints the page and reports zero. Measuring reach by
+                // height therefore measures the reach of the *tall* part of a
+                // mark and calls it the reach of the mark. The density channel
+                // counts writes, so it sees all of it.
+                let (_, painted) = surface.height_maps(512, 512);
                 for y in 0..512 {
                     for x in 0..512 {
-                        if heights[y * 512 + x] > 0.0 {
+                        if painted[y * 512 + x] > 0.0 {
                             let (dx, dy) = (x as f32 - 256.0, y as f32 - 256.0);
                             left = left.max(-dx);
                             right = right.max(dx);
@@ -2364,7 +2599,7 @@ mod tests {
         let params = BakeParams::default();
         // Every multiplier from `blade_length` to a rasterised stroke, at its
         // maximum: the `Tangle` factor, the vigour clamp, the tall-accent reach.
-        let longest = params.blade_length.1 * 1.25 * 1.45 * 1.35;
+        let longest = params.blade_length.1 * 1.25 * VIGOUR_CEILING * 1.35;
         // Up to `Tangle`'s ceiling, plus what the skirt adds on top of it.
         let bends = [0.9, 1.4, params.blade_bend.1, 2.0, 2.0 + SKIRT_BEND];
         let (left, right, up, down) = reach_by_direction(&params, longest, &bends);
@@ -2392,6 +2627,211 @@ mod tests {
                  of it widens the rectangle each scatter pass walks"
             );
         }
+    }
+
+    /// The per-stroke cull is only sound while its bound is a real bound.
+    ///
+    /// [`Painter::reach`] is what lets [`paint`] throw away two marks in three
+    /// before rasterising them, and it is derived rather than measured — from
+    /// the fact that an arc cannot displace its tip further than its own length,
+    /// and from the largest that displacement can project to. A derivation can
+    /// be wrong, and the symptom of a bound that is too tight is the worst one
+    /// this design has: a mark drawn on one side of a page join and missing on
+    /// the other, invisible in any still that does not contain a join.
+    ///
+    /// So it is checked against the rasteriser itself, across the vocabulary's
+    /// full range of length, bend and azimuth. `reach_by_direction` returns how
+    /// far a drawn mark actually got from its root in each of the four
+    /// directions; every one of them has to fit inside the bound.
+    #[test]
+    fn the_stroke_reach_bound_is_never_beaten() {
+        let params = BakeParams::default();
+        let longest = params.blade_length.1 * 1.25 * VIGOUR_CEILING * 1.35;
+        let bends = [0.0, 0.9, 1.4, params.blade_bend.1, 2.0, 2.0 + SKIRT_BEND];
+        let (left, right, up, down) = reach_by_direction(&params, longest, &bends);
+
+        let stroke = Stroke {
+            length: longest,
+            width: params.blade_width.1,
+            under: params.under,
+            ..default()
+        };
+        let mut surface = Surface::new(8, 8);
+        let bound = Painter::new(&mut surface, Vec2::ZERO, params.light).reach(&stroke);
+        let worst = left.max(right).max(up).max(down);
+        assert!(
+            bound > worst,
+            "a mark reached {worst:.1} px from its root and the cull bound is \
+             {bound:.1} px, so the cull can drop a mark that would have drawn"
+        );
+        // The other half of the property: a bound that is merely enormous is
+        // sound and useless. This one should be close to the truth, because
+        // every pixel of slack is strokes rasterised for nothing.
+        assert!(
+            bound < worst * 2.0,
+            "the cull bound is {bound:.1} px for a {worst:.1} px reach, which \
+             buys back much less of the stroke pass than it could"
+        );
+    }
+
+    /// The cull bound has to hold at every scale a page can be baked at.
+    ///
+    /// The sweep above checks it against the rasteriser at the authoring scale
+    /// only, and the bound is not scale-free: it multiplies a world length by
+    /// the page's own pixels-per-metre and adds three widths that are authored
+    /// in reference pixels and scaled separately. Two quantities that scale by
+    /// different factors is exactly the shape of arithmetic that comes out right
+    /// at one scale and wrong at another — and wrong here means a mark culled on
+    /// a coarse page that a fine page would have drawn.
+    #[test]
+    fn the_reach_bound_holds_at_every_page_scale() {
+        let params = BakeParams::default();
+        let stroke = Stroke {
+            length: params.blade_length.1 * 1.25 * VIGOUR_CEILING * 1.35,
+            width: params.blade_width.1,
+            under: params.under,
+            ..default()
+        };
+        let mut surface = Surface::new(8, 8);
+        let full = Painter::new(&mut surface, Vec2::ZERO, params.light).reach(&stroke);
+
+        for detail in [1.0f32, 0.5, 0.25, 0.125] {
+            let mut surface = Surface::new(8, 8);
+            let bound = Painter::at_scale(
+                &mut surface,
+                Vec2::ZERO,
+                params.light,
+                iso::PX_PER_METRE * detail,
+            )
+            .reach(&stroke);
+            // Every term but the one-pixel rasterisation guard is a length on
+            // the page, so all of them scale with it and none of them may be
+            // left behind.
+            let expected = (full - 1.0) * detail + 1.0;
+            assert!(
+                (bound - expected).abs() < 1.0e-3,
+                "at detail {detail} the bound is {bound:.3} px where the same \
+                 mark's reach scales to {expected:.3} px"
+            );
+        }
+    }
+
+    use crate::fixtures::PLACES;
+
+    /// A page baked coarsely has to be the page baked finely and then shrunk.
+    ///
+    /// This is the whole justification for [`Page::at_detail`]. The camera shows
+    /// the ground at about a fifth, so the cache the player actually sees is
+    /// twenty-four times smaller than the one being baked, and the difference is
+    /// thrown away by the sampler. Baking at the scale the page is *shown* at is
+    /// only allowed if it lands somewhere the minification filter would have
+    /// landed anyway — otherwise it is not a level of detail, it is different
+    /// grass.
+    ///
+    /// So: the same ground, twice. Once at the authoring scale and area-averaged
+    /// down, once baked coarse to begin with.
+    #[test]
+    fn a_coarse_page_agrees_with_a_minified_fine_one() {
+        const FINE: usize = 256;
+        let params = BakeParams::default();
+        let fine = bake(Page::new(PLACES[0], FINE, FINE), &params);
+
+        // Every level the ladder offers, including the one the shipping camera
+        // lands on. A single level is a spot check, and the way this fails is by
+        // drifting further at each step down.
+        for detail in [0.5f32, 0.25, 0.2, 0.125] {
+            let side = (FINE as f32 * detail) as usize;
+            let shrunk = crate::surface::resample(&fine, FINE, FINE, side, side);
+            let coarse = bake(
+                Page::at_detail(PLACES[0] * detail, side, side, detail),
+                &params,
+            );
+            let similarity = crate::compare::compare(&coarse, &shrunk, side, side);
+
+            assert!(
+                similarity.luma_drift.abs() < 0.03,
+                "at detail {detail} the coarse page is {:.4} off in tone: {similarity:?}",
+                similarity.luma_drift
+            );
+            // Not a luminance test, and that is the point. `luma_drift` and
+            // `detail_ratio` are both blind to a page that is the right
+            // brightness and the right busy-ness in the wrong *places*, and
+            // blind to hue entirely — which is exactly how a world lookup left
+            // at the authoring scale hid here for a while. It moved the
+            // cool-shadow field across the page without touching a single
+            // luminance statistic. SSIM sees the arrangement; RMSE is over all
+            // three channels.
+            assert!(
+                similarity.ssim > 0.55,
+                "at detail {detail} the coarse page is arranged differently \
+                 (ssim {:.4}): {similarity:?}",
+                similarity.ssim
+            );
+            assert!(
+                similarity.rmse < 0.075,
+                "at detail {detail} the coarse page differs by {:.4} rmse over \
+                 all three channels: {similarity:?}",
+                similarity.rmse
+            );
+            // And a cheap page that is cheap because it is blurrier passes every
+            // test of tone and of arrangement. This is the one that catches it.
+            assert!(
+                similarity.detail_ratio > 0.72 && similarity.detail_ratio < 1.4,
+                "at detail {detail} the coarse page holds {:.2} of the fine \
+                 one's local contrast: {similarity:?}",
+                similarity.detail_ratio
+            );
+        }
+    }
+
+    /// Page independence has to survive the detail levels too.
+    ///
+    /// Every placement decision is a pure function of a world coordinate, and
+    /// [`crate::field::GroundCache`] quantises that coordinate onto a lattice
+    /// whose spacing comes from the page's *scale*. If it ever came from the
+    /// page's origin instead, two neighbouring pages would quantise the same
+    /// point differently and the join between them would open up.
+    #[test]
+    fn coarse_pages_meet_without_a_seam() {
+        const DETAIL: f32 = 0.25;
+        const SIDE: usize = 64;
+        let params = BakeParams::default();
+        let origin = PLACES[0] * DETAIL;
+
+        let left = bake(Page::at_detail(origin, SIDE, SIDE, DETAIL), &params);
+        let right = bake(
+            Page::at_detail(origin + Vec2::new(SIDE as f32, 0.0), SIDE, SIDE, DETAIL),
+            &params,
+        );
+
+        // Column means, the way `pages_meet_without_a_seam` reads it, and for
+        // the same reason: a whole-plate average is blind to a one-column step,
+        // which is precisely what a broken quantisation would produce. Averaging
+        // down a column removes the stroke noise and leaves the slowly-varying
+        // part — the part a lattice mismatch disturbs.
+        let column = |plate: &[Vec3], x: usize| -> f32 {
+            (0..SIDE)
+                .map(|y| {
+                    let c = plate[y * SIDE + x];
+                    c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722
+                })
+                .sum::<f32>()
+                / SIDE as f32
+        };
+        // The join itself: the last column of the left page against the first of
+        // the right one.
+        let seam = (column(&right, 0) - column(&left, SIDE - 1)).abs();
+        let interior: Vec<f32> = (1..SIDE)
+            .map(|x| (column(&left, x) - column(&left, x - 1)).abs())
+            .collect();
+        let worst = interior.iter().copied().fold(0.0f32, f32::max);
+        let typical = interior.iter().sum::<f32>() / interior.len() as f32;
+
+        assert!(
+            seam <= worst,
+            "the coarse page join steps by {seam:.5}, more than any ordinary \
+             column pair inside a page (typical {typical:.5}, worst {worst:.5})"
+        );
     }
 
     #[test]

@@ -183,9 +183,13 @@ The verdict bands are the output that matters:
 
 ### Zoom levels are the point, not a detail
 
-A page is baked at one fixed scale — 96 cache pixels to the world metre — and
-displayed at many. At the shipping camera height the ground shows at about **43
-percent**; at the widest, under a quarter. So an optimisation that throws away
+A page is *authored* at 96 cache pixels to the world metre and displayed at many
+scales. At the snapshot ladder's middle rung the ground shows at about **43
+percent**; at the widest, under a quarter; at the height the game actually opens
+at, a fifth. A page can now also be **baked** at a chosen scale
+(`Page::at_detail`), but the snapshot suite deliberately photographs the
+authoring scale, because it is the fidelity reference the cheaper levels are
+compared against. So an optimisation that throws away
 fine texture is nearly invisible at 48 metres and obvious at 13, and one that
 coarsens the mound field is exactly the other way round.
 

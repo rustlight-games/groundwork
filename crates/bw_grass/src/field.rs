@@ -59,6 +59,29 @@ fn skewed(p: Vec2) -> Vec2 {
 /// 150–270 pixel band the reference's macro structure occupies.
 pub const MOUND_SPACING: f32 = 1.6;
 
+/// The range a mound's nominal size is drawn from, metres.
+const MOUND_EXTENT: (f32, f32) = (0.46, 1.55);
+
+/// The range a *stretched* mound's aspect ratio is drawn from.
+///
+/// The round minority is drawn from a narrower range inside this one, so the
+/// upper end here bounds both.
+const MOUND_ASPECT: (f32, f32) = (1.7, 3.5);
+
+/// The furthest any mound's ellipse can reach from its own centre, metres.
+///
+/// The stretch is area-preserving, so a mound's semi-major axis is its extent
+/// times the square root of its aspect, and both are bounded above:
+/// `1.55 × √3.5 = 2.8998`. Rounded up once.
+///
+/// Two things depend on it and neither may exceed it. The five-by-five window in
+/// [`WorldField::mounds`] has to be wide enough that no mound reaching this far
+/// is missed — two cells is 3.2 metres, so it is — and the early rejection
+/// inside that window has to admit every mound that could contribute.
+/// `mound_reach_bounds_every_ellipse` checks the bound against the draws rather
+/// than against this paragraph.
+const MOUND_REACH: f32 = 2.9;
+
 /// How far past its nominal size a bare patch can still be felt, as a multiple.
 ///
 /// [`WorldField::blobs`] wobbles its boundary by up to five harmonics — a
@@ -73,6 +96,131 @@ const REJECT: f32 = 2.2;
 /// Its reciprocal is how far the *long* axis reaches, which is what decides how
 /// many cells of window the field has to scan.
 const MIN_STRETCH: f32 = 0.648_074_1;
+
+/// [`WorldField::sample`], read on a lattice and remembered.
+///
+/// ## Why the placement passes cannot afford the field
+///
+/// The composition fields are the expensive part of this crate after the
+/// rasteriser: sixteen fractal lookups and a five-by-five window of mound cells,
+/// something over a microsecond, and the baker reads one for **every blade of
+/// grass it considers planting**. At the mat's three hundred and ninety-five
+/// marks to the square metre that is twelve thousand reads a page, and they do
+/// not get cheaper when the page does — which is why a page baked at an eighth
+/// scale was still spending three quarters of its time here.
+///
+/// ## Why a lattice is allowed
+///
+/// The thing being decided is where a mark goes and how vigorous it is, and the
+/// field answering it has nothing in it above the mound frequency — its finest
+/// feature is a bare patch a good many centimetres across. Reading it every
+/// two *page pixels* rather than every mark is therefore not an approximation of
+/// the composition, it is sampling it at the resolution the page can hold. At
+/// the authoring scale that lattice is a fiftieth of a metre, finer than the
+/// spacing of the marks reading it, so almost nothing is shared and almost
+/// nothing changes. At an eighth scale it is a sixth of a metre and a dozen
+/// marks share one read, which is the entire point.
+///
+/// ## Why it stays page-independent
+///
+/// The lattice is anchored in the **world**, and its spacing comes from the
+/// page's scale rather than from its position, so two pages baked at the same
+/// detail quantise every point identically and agree along their join exactly as
+/// they did before. The memo below is only a memo: hit or miss, the value
+/// returned is [`WorldField::sample`] at the cell's centre, so a collision costs
+/// a recomputation and never a different answer.
+pub struct GroundCache<'a> {
+    field: &'a WorldField,
+    /// Metres between lattice points.
+    step: f32,
+    inverse_step: f32,
+    /// Packed cell coordinate per slot, or [`i64::MIN`] for an empty one.
+    keys: Vec<i64>,
+    values: Vec<Ground>,
+}
+
+/// Slots in a [`GroundCache`]. A power of two, so the index is a mask.
+///
+/// Sized against the working set rather than against the whole page: a coarse
+/// page's footprint holds a couple of thousand lattice cells, and a fine one
+/// holds far more than would ever fit — but a fine page shares almost nothing
+/// anyway, so its miss rate is the cost it was always paying.
+const GROUND_SLOTS: usize = 8192;
+
+/// How wide a lattice cell is, in the page's own pixels.
+const LATTICE_PIXELS: f32 = 2.0;
+
+/// The page scale at which reading the field on a lattice starts paying.
+///
+/// A lattice is worth having exactly when one of its cells is coarser than the
+/// marks reading it — otherwise every read is a miss, and the cache is a hash
+/// and a probe added to a call that was going to happen anyway. The mat is the
+/// densest pass at three hundred and ninety-five marks to the square metre,
+/// which puts its marks about a twentieth of a metre apart, and
+/// [`LATTICE_PIXELS`] of a page at this scale is exactly that.
+///
+/// So above it there is no lattice at all: a page baked near the authoring scale
+/// reads the field per mark, exactly as it always did, and its pixels are
+/// unchanged. Below it a dozen marks share a read. Measured, a one-pixel lattice
+/// applied at every scale made a full-detail page *slower* — all probe, no hit —
+/// which is what this threshold exists to avoid.
+const LATTICE_ABOVE_PX_PER_METRE: f32 = 48.0;
+
+impl<'a> GroundCache<'a> {
+    /// A cache over `field`, on a lattice sized to this page's pixels.
+    ///
+    /// Above [`LATTICE_ABOVE_PX_PER_METRE`] there is no lattice and this is a
+    /// pass-through to [`WorldField::sample`].
+    pub fn new(field: &'a WorldField, px_per_metre: f32) -> Self {
+        let step = if px_per_metre < LATTICE_ABOVE_PX_PER_METRE {
+            LATTICE_PIXELS / px_per_metre.max(1.0e-3)
+        } else {
+            0.0
+        };
+        let slots = if step > 0.0 { GROUND_SLOTS } else { 0 };
+        Self {
+            field,
+            step,
+            inverse_step: if step > 0.0 { 1.0 / step } else { 0.0 },
+            keys: vec![i64::MIN; slots],
+            values: vec![Ground::EMPTY; slots],
+        }
+    }
+
+    /// The ground at `world`, to the nearest lattice cell.
+    pub fn sample(&mut self, world: Vec2) -> Ground {
+        if self.step <= 0.0 {
+            return self.field.sample(world);
+        }
+        let cx = (world.x * self.inverse_step).floor() as i32;
+        let cy = (world.y * self.inverse_step).floor() as i32;
+        let packed = ((cx as i64) << 32) | (cy as i64 as u32 as i64);
+        // One packed coordinate collides with the empty sentinel, and a slot that
+        // reads as empty when it holds data would hand back a blank `Ground`.
+        // Fold that cell onto its neighbour rather than widening the key: it is
+        // the cell two billion lattice steps out on both axes, further from the
+        // origin than any world this game will hold, and folding it costs that
+        // cell a shared sample where the alternative costs every lookup a branch
+        // or a second array.
+        let key = if packed == i64::MIN {
+            i64::MIN + 1
+        } else {
+            packed
+        };
+        let slot = (crate::rng::scramble(key as u64) as usize) & (GROUND_SLOTS - 1);
+        if self.keys[slot] == key {
+            return self.values[slot];
+        }
+        // The cell's centre, not the point asked about: the value has to depend
+        // on the cell alone or the memo would be returning one point's answer
+        // for another's.
+        let centre = Vec2::new(cx as f32 + 0.5, cy as f32 + 0.5) * self.step;
+        let ground = self.field.sample(centre);
+        self.keys[slot] = key;
+        self.values[slot] = ground;
+        ground
+    }
+}
 
 /// Everything the composition layer knows about one point of ground.
 #[derive(Clone, Copy, Debug)]
@@ -92,8 +240,6 @@ pub struct Ground {
     /// crown. Absolute height would leave whole regions with no bright tips at
     /// all, which reads as a lighting bug rather than as terrain.
     pub crown: f32,
-    /// Ground-plane gradient of [`Ground::height`], for anything that needs it.
-    pub slope: Vec2,
     /// How much this point faces the key light, about `-1..1`.
     ///
     /// Analytic, from the geometry of the domes themselves rather than from a
@@ -182,6 +328,26 @@ pub struct Ground {
     pub resolution: f32,
 }
 
+impl Ground {
+    /// A blank one, for filling a cache that has not been read yet.
+    ///
+    /// Never returned: [`GroundCache`] only hands back a slot whose key matches,
+    /// and no key matches until the slot has been written.
+    const EMPTY: Self = Self {
+        height: 0.0,
+        crown: 0.0,
+        lit: 0.0,
+        flow: 0.0,
+        hue: 0.0,
+        density: 0.0,
+        tint: 0.0,
+        bare: 0.0,
+        colony: 0.0,
+        statement: 0.0,
+        resolution: 0.0,
+    };
+}
+
 /// Where the key light is, projected onto the screen plane and normalised.
 ///
 /// Up and to the left, in image space where +Y is down. Kept here as well as in
@@ -213,21 +379,27 @@ impl WorldField {
         }
     }
 
-    /// Smooth-maximum mound height at a point, in metres.
+    /// Height and shading together, because the second is analytic in the first.
     ///
     /// Reads the twenty-five mound cells around `p`, and the count is not
     /// arbitrary. A mound is displaced up to a full cell from its own corner and
-    /// its ellipse reaches up to `radius * aspect` — 2.3 metres against a
+    /// its ellipse reaches up to `extent * √aspect` — 2.9 metres against a
     /// 1.6-metre grid — so a mound two cells away can still cover this point. A
     /// three-by-three window silently clips those, and a clipped kernel is a
     /// step discontinuity in the height field: an invisible straight line where
     /// the lighting changes, which is exactly the chunk-seam artefact this whole
     /// design exists to avoid.
-    fn mound_height(&self, world: Vec2) -> f32 {
-        self.mounds(world).0
-    }
-
-    /// Height and shading together, because the second is analytic in the first.
+    ///
+    /// **This is the most expensive thing in the crate that is not a pixel**, and
+    /// [`WorldField::sample`] used to call it five times. Four of those were
+    /// central differences taken to fill a `slope` field that nothing in the
+    /// workspace ever read — a gradient computed, stored and discarded at every
+    /// point the baker considered planting something, which at the mat's density
+    /// is some twelve thousand times a page. If a gradient is wanted, take it
+    /// here by finite-differencing this function, and read the section below
+    /// first: the reason `lit` is analytic rather than differenced is that a
+    /// differenced composite creases, and a gradient taken the same way would
+    /// crease in the same places.
     ///
     /// ## Shading a dome instead of differencing a field
     ///
@@ -303,12 +475,29 @@ impl WorldField {
                 let centre = Vec2::new(cx as f32 + dx as f32, cy as f32 + dy as f32)
                     * MOUND_SPACING
                     + Vec2::new(draw.unit(), draw.unit()) * MOUND_SPACING;
+                // Reject on the widest mound the vocabulary can grow, before
+                // drawing the eight values that say how wide *this* one is.
+                //
+                // The rejection further down is the exact one and it stays; this
+                // is the cheap conservative one, and the order is the whole
+                // point. Twenty-five cells are read for every sample of this
+                // field and about seven of them can reach the point being
+                // sampled, so putting a bound here means eighteen cells cost
+                // three draws instead of eleven. `field.sample` is read once per
+                // blade of grass, so that is a large fraction of a page.
+                //
+                // Sound because [`MOUND_REACH`] is an upper bound on `major`
+                // below, which `mound_reach_bounds_every_ellipse` checks against
+                // the draws themselves rather than against this comment.
+                if (p - centre).length_squared() > MOUND_REACH * MOUND_REACH {
+                    continue;
+                }
                 // Smaller than the grid they sit on, so neighbours touch rather
                 // than merge, and *widely* varied in every dimension. Mounds of
                 // similar size and strength read as a pattern even when their
                 // placement is random, because the eye finds the repeated unit
                 // rather than the arrangement.
-                let extent = draw.range(0.46, 1.55);
+                let extent = draw.range(MOUND_EXTENT.0, MOUND_EXTENT.1);
                 // Three ridges to every cushion. See the note above the function.
                 //
                 // The long axis is capped where it is because the window above is
@@ -319,7 +508,7 @@ impl WorldField {
                 let aspect = if draw.chance(0.26) {
                     draw.range(0.85, 1.25)
                 } else {
-                    draw.range(1.7, 3.5)
+                    draw.range(MOUND_ASPECT.0, MOUND_ASPECT.1)
                 };
                 let wander = draw.signed();
                 let adrift = draw.chance(0.20);
@@ -363,7 +552,7 @@ impl WorldField {
                     self.flow_at(centre) + wander * 0.5
                 };
 
-                let (sin, cos) = angle.sin_cos();
+                let (sin, cos) = crate::fastmath::sin_cos(angle);
                 let along = Vec2::new(
                     offset.x * cos + offset.y * sin,
                     offset.y * cos - offset.x * sin,
@@ -373,7 +562,7 @@ impl WorldField {
                 if falloff <= 0.0 {
                     continue;
                 }
-                let height = amplitude * falloff.powf(sharpness);
+                let height = amplitude * crate::fastmath::pow(falloff, sharpness);
                 let squared = height * height;
                 let weight = squared * squared;
                 accumulated += weight;
@@ -411,7 +600,10 @@ impl WorldField {
         // its own shape and lets the join between two of them stay a join. Softer
         // than it was, so a ridge runs into its neighbour and the pair reads as
         // one long swell instead of two forms with a seam.
-        let height = accumulated.powf(0.25);
+        // A fourth root is two square roots, and a square root is a hardware
+        // instruction where `powf` is a call with a logarithm inside it. Same
+        // number, a great deal less of it.
+        let height = accumulated.sqrt().sqrt();
         let lit = if accumulated > 1.0e-12 {
             shading / accumulated
         } else {
@@ -442,15 +634,6 @@ impl WorldField {
         // itself internally so that finite differences still come back in world
         // space, where the lighting wants them.
         let p = skewed(world);
-
-        // Central differences at a tenth of a mound: fine enough to catch a
-        // mound's flank, coarse enough not to pick up the kernel's own wobble.
-        const STEP: f32 = 0.16;
-        let dx =
-            self.mound_height(world + Vec2::X * STEP) - self.mound_height(world - Vec2::X * STEP);
-        let dy =
-            self.mound_height(world + Vec2::Y * STEP) - self.mound_height(world - Vec2::Y * STEP);
-        let slope = Vec2::new(dx, dy) / (2.0 * STEP);
 
         // Crown is height against a broad local average rather than against
         // zero. `fbm` at a third of the mound frequency stands in for the
@@ -566,7 +749,6 @@ impl WorldField {
             height,
             lit,
             crown,
-            slope,
             density,
             tint,
             // Turned back into a *world* azimuth, which is the frame everything
@@ -867,6 +1049,73 @@ impl WorldField {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The early rejection in [`WorldField::mounds`] is only sound while
+    /// [`MOUND_REACH`] really does bound every ellipse.
+    ///
+    /// It is a derived constant, and a derived constant is a claim about code
+    /// somewhere else. If the draws it is derived from are ever widened, this
+    /// fails; without it, the mounds simply get quietly clipped at the rejection
+    /// radius, which is a step discontinuity in the height field — an invisible
+    /// straight line where the lighting changes, and the exact artefact the
+    /// whole placed-point design exists to avoid.
+    ///
+    /// So this replays the draw sequence rather than trusting the arithmetic in
+    /// the comment: same streams, same order, across enough cells that every
+    /// branch of the aspect draw is taken many times.
+    #[test]
+    fn mound_reach_bounds_every_ellipse() {
+        let mut worst = 0.0f32;
+        for x in -40..40 {
+            for y in -40..40 {
+                let mut draw = Draw::at(0x5eed_1234, Stream::Mound, x, y);
+                if !draw.chance(0.74) {
+                    continue;
+                }
+                let (_, _) = (draw.unit(), draw.unit());
+                let extent = draw.range(MOUND_EXTENT.0, MOUND_EXTENT.1);
+                let aspect = if draw.chance(0.26) {
+                    draw.range(0.85, 1.25)
+                } else {
+                    draw.range(MOUND_ASPECT.0, MOUND_ASPECT.1)
+                };
+                worst = worst.max(extent * aspect.sqrt());
+            }
+        }
+        // The sampled tail, and then the analytic endpoint. A sweep of cells
+        // finds what the draws happen to produce; the endpoint is what they are
+        // *allowed* to produce, and a bound that only clears the sample can be
+        // beaten by a cell the sweep did not reach.
+        let limit = MOUND_EXTENT.1 * MOUND_ASPECT.1.sqrt();
+        assert!(
+            MOUND_REACH >= limit,
+            "a mound's semi-major axis may legally reach {limit} and the \
+             rejection radius is {MOUND_REACH}, so mounds can be clipped"
+        );
+        assert!(
+            MOUND_REACH >= worst,
+            "a mound's semi-major axis reached {worst} and the rejection radius \
+             is {MOUND_REACH}, so mounds are being clipped"
+        );
+        // And it must not be loose either: every extra metre admits cells that
+        // then pay for eight draws and contribute nothing.
+        assert!(
+            MOUND_REACH < limit * 1.05,
+            "the rejection radius is {MOUND_REACH} for a legal limit of {limit}"
+        );
+        // The window has to be wide enough for the bound as well as the bound
+        // wide enough for the mounds. Two cells out is what `-2..=2` gives.
+        // Written against the constants rather than as a literal comparison, so
+        // that clippy sees two names rather than two numbers it can fold — the
+        // point of the assertion is that it fails if either one moves.
+        let window = MOUND_SPACING * 2.0;
+        let reach = MOUND_REACH;
+        assert!(
+            window >= reach,
+            "a mound can reach {MOUND_REACH} m and the window sees \
+             {window} m, so one can be missed entirely"
+        );
+    }
 
     #[test]
     fn the_field_is_a_pure_function_of_position() {

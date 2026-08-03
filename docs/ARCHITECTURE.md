@@ -133,6 +133,56 @@ collage of decals stacked on one another. A depth test — using
 what gives the cache an inside, because a stroke that loses its pixel still
 counts as occlusion.
 
+**Bake at the scale the camera will show, not at the scale the art was drawn.**
+`iso::PX_PER_METRE` is where the reference art is authored, and for a long time
+it was also the only scale anything was baked at. It should never have been. At
+the height this game ships at the ground is presented at about a fifth, so a page
+baked at the authoring scale spends twenty-four pixels of work on every pixel the
+player sees and then discards twenty-three of them in the minification filter.
+
+`Page::at_detail` makes the bake scale a parameter and `Page::for_view` picks it
+from the camera. What makes it a level of *detail* rather than a smaller picture
+is that the art scales with it. Lengths already in metres — blade length, tuft
+radius, mound spacing — scale themselves because the projection does it for them.
+Lengths the art states in **cache pixels** do not, and every one of them has to
+be carried through by hand: stroke widths, under-strokes, the guard band, the
+macro lattice stride, every blur radius in `resolve`. Miss one and the field
+shrinks while its brush marks keep their pixel size, which is the difference
+between distant grass and a page of bristles. `Page::detail` is the list.
+
+Two things are deliberately *not* scaled. Canopy height stays in reference pixels
+everywhere, so a shading term keyed on how tall the grass stands means the same
+thing at every level. And the composition fields are read on a world-anchored
+lattice (`field::GroundCache`) whose spacing comes from the page's scale rather
+than its position — which is what keeps two neighbouring coarse pages quantising
+every point identically, and is measured by `coarse_pages_meet_without_a_seam`.
+
+The correctness bar is not "does the coarse page look nice". It is **"is it where
+the minification filter would have landed"**, and
+`a_coarse_page_agrees_with_a_minified_fine_one` asks exactly that — including
+`detail_ratio`, because a cheap page that is cheap because it is blurrier passes
+every test of tone.
+
+**Where a page's time goes is not guessable, and every guess so far has been
+wrong.** `benches/bake.rs` exists because of this and its `page_stage` group is
+the first thing to read. Three findings from taking it seriously, none of which
+were visible from the source:
+
+- The stroke pass was 93% of a page, and most of *that* was not pixels. It was
+  four `powf` and two `sin_cos` calls per rib, and marks rasterised in full
+  before the guard band discovered they never touched the page. Neither shows up
+  as a hot line; both show up as a stage that costs more than it should.
+- `Ground::slope` was four extra evaluations of the mound window — the most
+  expensive function in the crate — computed for every blade of grass considered,
+  stored, and read by nothing in the workspace.
+- `bake_grid` parallelised over bands of rows, which is one task per page *row*.
+  A view five pages tall used five cores of sixteen, and the narrower the view the
+  worse it got. Page count and task count should be the same number.
+
+The pattern is the same each time: the cost was in something structural — an
+order of evaluation, a dead field, a task granularity — rather than in the code
+that looked expensive. Measure the stage, then look.
+
 **Detail belongs to the mound, not to the pixel.** The art is not uniformly
 detailed: bright crowns, dark backs and dark interiors are organised by a mound
 field, and grass that is uniformly busy everywhere reads as carpet however good

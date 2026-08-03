@@ -27,6 +27,7 @@
 
 use bevy::prelude::*;
 
+use crate::fastmath;
 use crate::iso;
 use crate::palette::Tone;
 use crate::surface::{SUPERSAMPLE, Surface};
@@ -43,6 +44,12 @@ pub enum Profile {
 }
 
 impl Profile {
+    /// The taper, written the obvious way.
+    ///
+    /// Not on the rasteriser's path — [`Profile::width_from_logs`] is — but kept
+    /// as the definition the fast one is checked against, which is the only
+    /// thing that makes the fast one reviewable.
+    #[cfg(test)]
     #[inline]
     fn width_at(self, s: f32) -> f32 {
         match self {
@@ -52,6 +59,25 @@ impl Profile {
             Profile::Tapered => (1.0 - s).powf(1.2),
             Profile::Oval => (s * (1.0 - s) * 4.0).powf(0.55),
             Profile::Stem => (1.0 - s * 0.55).powf(0.7),
+        }
+    }
+
+    /// [`Profile::width_at`], reusing logarithms the caller already has.
+    ///
+    /// Every one of these is a power of `s` or of `1 - s`, and so are three more
+    /// terms the same loop needs. Taking the two logarithms once and reusing
+    /// them turns six transcendentals per rib into two — see [`fastmath`] for
+    /// why that was worth restructuring the signature for.
+    #[inline]
+    fn width_from_logs(self, s: f32, log_s: f32, log_rest: f32) -> f32 {
+        match self {
+            Profile::Tapered => fastmath::pow_from_log2(log_rest, 1.2),
+            // log2(4·s·(1−s)) — the product becomes a sum, so this one shares
+            // both logarithms rather than needing a third.
+            Profile::Oval => fastmath::pow_from_log2(log_s + log_rest + 2.0, 0.55),
+            // The only base that is neither `s` nor `1 - s`, and the rarest
+            // profile in the vocabulary, so it pays for its own logarithm.
+            Profile::Stem => fastmath::pow(1.0 - s * 0.55, 0.7),
         }
     }
 }
@@ -151,29 +177,52 @@ pub struct Painter<'a> {
     light: Vec3,
     /// The light's direction on the screen plane, normalised.
     light_plane: Vec2,
+    /// This page's cache pixels per world metre.
+    px_per_metre: f32,
+    /// That, as a fraction of the scale the art is authored at.
+    ///
+    /// Every width on a [`Stroke`] is in *reference* cache pixels — the units
+    /// the reference art is drawn in — and is multiplied by this on the way to
+    /// the page. Keeping the conversion here rather than at the two dozen places
+    /// a stroke is built means a mark is described once and drawn correctly at
+    /// any scale.
+    detail: f32,
 }
 
 impl<'a> Painter<'a> {
+    /// A painter for a page baked at the authoring scale.
     pub fn new(surface: &'a mut Surface, origin: Vec2, light: Vec3) -> Self {
+        Self::at_scale(surface, origin, light, iso::PX_PER_METRE)
+    }
+
+    /// A painter for a page baked at `px_per_metre` cache pixels to the metre.
+    pub fn at_scale(
+        surface: &'a mut Surface,
+        origin: Vec2,
+        light: Vec3,
+        px_per_metre: f32,
+    ) -> Self {
         let plane = Vec2::new(light.x, light.y);
         Self {
             surface,
             origin,
             light,
             light_plane: plane.normalize_or_zero(),
+            px_per_metre,
+            detail: px_per_metre / iso::PX_PER_METRE,
         }
     }
 
     /// World point to supersampled page pixel.
     #[inline]
     pub fn to_page(&self, world: Vec3) -> Vec2 {
-        (iso::to_cache(world) - self.origin) * SUPERSAMPLE as f32
+        (iso::to_cache_at(world, self.px_per_metre) - self.origin) * SUPERSAMPLE as f32
     }
 
     /// Supersampled page pixel back to the ground plane.
     #[inline]
     pub fn to_ground(&self, page: Vec2) -> Vec2 {
-        iso::from_cache_ground(page / SUPERSAMPLE as f32 + self.origin)
+        iso::from_cache_ground_at(page / SUPERSAMPLE as f32 + self.origin, self.px_per_metre)
     }
 
     pub fn surface(&self) -> &Surface {
@@ -199,13 +248,45 @@ impl<'a> Painter<'a> {
         self.surface.write(index, depth, light, tone, top);
     }
 
+    /// A bound, in cache pixels, on how far this stroke's marks can land from
+    /// its own root.
+    ///
+    /// Conservative and cheap, and the cheapness is the point: it is evaluated
+    /// once per stroke to decide whether to rasterise the stroke at all, and
+    /// most pages reject about two marks in three this way. The bound has to be
+    /// genuinely an upper bound — a stroke wrongly rejected is a mark present on
+    /// one side of a page join and missing on the other — so it is derived
+    /// rather than estimated, and
+    /// [`crate::bake::tests::the_stroke_reach_bound_is_never_beaten`] sweeps the
+    /// vocabulary against it.
+    ///
+    /// An arc of length `L` cannot displace its own tip further than `L` in a
+    /// straight line. The projection turns a world displacement `(dx, dy, dz)`
+    /// into `((dx - dy), (dx + dy)/2 - dz)` cache-pixel units, and maximising
+    /// each of those over the sphere of radius `L` gives `√2 L` across and
+    /// `√1.5 L` down. So `1.42` covers both, and the rib's own half-width and
+    /// under-stroke are added on top because those measure from the centreline
+    /// rather than from the root.
+    #[inline]
+    pub fn reach(&self, stroke: &Stroke) -> f32 {
+        const SPREAD: f32 = 1.4143;
+        stroke.length.abs() * self.px_per_metre * SPREAD
+            + (stroke.width.abs() + stroke.tip_width.abs() + stroke.under.abs()) * self.detail
+            + 1.0
+    }
+
     /// Draw one stroke.
     pub fn draw(&mut self, stroke: &Stroke) {
         let scale = SUPERSAMPLE as f32;
         // Sample the centreline finely enough that consecutive ribs overlap:
         // half a supersampled pixel apart leaves no gaps at any angle, and the
         // cost is linear in a quantity that is already small.
-        let screen_length = stroke.length * iso::PX_PER_METRE * scale;
+        //
+        // And it is linear in the *page's* scale, which is the whole of why a
+        // distant page is cheap: the same blade of grass, drawn onto a page
+        // baked at a quarter scale, is a quarter as long in pixels and so walks
+        // a quarter of the ribs — each of which is a quarter as wide.
+        let screen_length = stroke.length * self.px_per_metre * scale;
         let steps = (screen_length * 2.0).clamp(6.0, 512.0) as usize;
         let inverse = 1.0 / steps as f32;
 
@@ -215,27 +296,83 @@ impl<'a> Painter<'a> {
         let segment = stroke.length * inverse;
         let mut previous_page = self.to_page(position);
 
+        // Hoisted out of the rib loop, all of it constant per stroke. The three
+        // widths are authored in reference pixels and land on the page in this
+        // page's own.
+        let pen = scale * self.detail;
+        let width = stroke.width * pen;
+        let tip_width = stroke.tip_width * pen;
+        let under = stroke.under * pen;
+        let under_light = (stroke.base_light - 0.22).max(0.0);
+        // The heading only turns if this mark has an S in it or an elbow that
+        // twists; most of the vocabulary has neither, and a straight lean lets
+        // its sine and cosine be taken once for the whole blade rather than
+        // once per rib.
+        let turns = stroke.sway != 0.0 || stroke.kink_turn != 0.0;
+        let fixed_heading = fastmath::sin_cos(stroke.azimuth);
+
         for step in 0..=steps {
             let s = step as f32 * inverse;
+            // Both logarithms, once. Five of the terms below are powers of one
+            // or the other; taking them here is what makes the loop affordable.
+            let log_s = fastmath::log2(s);
+            let log_rest = fastmath::log2(1.0 - s);
             // Smooth arc, plus an elbow. The smoothstep is narrow on purpose:
             // spread it out and the kink becomes just more curvature.
             let elbow = {
                 let t = ((s - stroke.kink_at) / 0.10).clamp(0.0, 1.0);
                 t * t * (3.0 - 2.0 * t)
             };
-            let angle = stroke.bend * s.powf(1.55) + stroke.curl * s.powi(4) + stroke.kink * elbow;
-            let heading = stroke.azimuth + stroke.sway * s * s + stroke.kink_turn * elbow;
-            let (sin_heading, cos_heading) = heading.sin_cos();
-            let (sin_angle, cos_angle) = angle.sin_cos();
+            let angle = stroke.bend * fastmath::pow_from_log2(log_s, 1.55)
+                + stroke.curl * s.powi(4)
+                + stroke.kink * elbow;
+            let (sin_heading, cos_heading) = if turns {
+                fastmath::sin_cos(stroke.azimuth + stroke.sway * s * s + stroke.kink_turn * elbow)
+            } else {
+                fixed_heading
+            };
+            let (sin_angle, cos_angle) = fastmath::sin_cos(angle);
 
             let page = self.to_page(position);
             let tangent = (page - previous_page).normalize_or(Vec2::NEG_Y);
             previous_page = page;
 
-            let half = (stroke.width * stroke.profile.width_at(s) + stroke.tip_width) * scale;
+            let half = width * stroke.profile.width_from_logs(s, log_s, log_rest) + tip_width;
             let depth = iso::depth(position) - stroke.depth_bias;
+            // In *reference* pixels at every page scale, on purpose. Every
+            // shading term downstream keys on how tall the canopy stands, and
+            // grass of a given world height has to mean the same thing to those
+            // terms whether the page holding it was baked at full detail or a
+            // quarter of it.
             let top = position.z * iso::Z_SCALE * iso::PX_PER_METRE;
-            self.rib(stroke, page, tangent, half, s, depth, top);
+
+            // Two terms doing different jobs, and — crucially — carried by two
+            // different fields so they can be dealt out at different rates. The
+            // gentle one lifts the whole blade a little. The sharp one is the
+            // glint, and it does not wake up until the last fifth.
+            // Eighth power, not fifth. The glint has to be a catch on the last
+            // few pixels of a mark, not a pale upper half: spread it further and
+            // the marks read as bright ribbons rather than as dark grass with
+            // something bright riding on top of it.
+            let tip =
+                stroke.tip_light * fastmath::pow_from_log2(log_s, 1.4) + stroke.glint * s.powi(8);
+            // Roots sit in their own shadow. Without this every blade glows at
+            // the base and the canopy loses its floor.
+            let root_shade = 0.085 * fastmath::pow_from_log2(log_rest, 2.5);
+
+            self.rib(
+                stroke,
+                Rib {
+                    centre: page,
+                    tangent,
+                    half,
+                    under,
+                    depth,
+                    top,
+                    body_light: stroke.base_light + tip - root_shade,
+                    under_light,
+                },
+            );
 
             // Advance along the arc. Past a right angle `cos` goes negative and
             // the tip starts descending, which is exactly the hook shape the
@@ -249,49 +386,55 @@ impl<'a> Painter<'a> {
     }
 
     /// One perpendicular slice across the stroke.
-    #[allow(clippy::too_many_arguments)]
-    fn rib(
-        &mut self,
-        stroke: &Stroke,
-        centre: Vec2,
-        tangent: Vec2,
-        half: f32,
-        s: f32,
-        depth: f32,
-        top: f32,
-    ) {
+    fn rib(&mut self, stroke: &Stroke, rib: Rib) {
+        let Rib {
+            centre,
+            tangent,
+            half,
+            under,
+            depth,
+            top,
+            body_light,
+            under_light,
+        } = rib;
         let perpendicular = Vec2::new(-tangent.y, tangent.x);
         // The under-stroke goes on the side facing away from the light, which is
         // what makes it read as the blade's own shadow rather than as an
         // outline.
-        let away = if perpendicular.dot(self.light_plane) > 0.0 {
-            -1.0
-        } else {
-            1.0
-        };
-        let under = stroke.under * SUPERSAMPLE as f32;
-        let (low, high) = if away < 0.0 {
+        let away = perpendicular.dot(self.light_plane) > 0.0;
+        let (low, high) = if away {
             (-half - under, half)
         } else {
             (-half, half + under)
         };
 
-        // Two terms doing different jobs, and — crucially — carried by two
-        // different fields so they can be dealt out at different rates. The
-        // gentle one lifts the whole blade a little. The sharp one is the glint,
-        // and it does not wake up until the last fifth.
-        // Eighth power, not fifth. The glint has to be a catch on the last
-        // few pixels of a mark, not a pale upper half: spread it further and
-        // the marks read as bright ribbons rather than as dark grass with
-        // something bright riding on top of it.
-        let tip = stroke.tip_light * s.powf(1.4) + stroke.glint * s.powi(8);
-        // Roots sit in their own shadow. Without this every blade glows at the
-        // base and the canopy loses its floor.
-        let root_shade = 0.085 * (1.0 - s).powf(2.5);
-
         let span = high - low;
         let steps = (span.ceil() as usize).max(1);
         let step = span / steps as f32;
+
+        // Whole ribs fall outside the page — the guard band exists so that
+        // strokes rooted off the edge still lean in, and the parts of them that
+        // do not lean in are most of their length. One rectangle test here
+        // replaces a bounds check on every pixel of the rib.
+        let extent = perpendicular.abs() * high.abs().max(low.abs());
+        if centre.x + extent.x < 0.0
+            || centre.y + extent.y < 0.0
+            || centre.x - extent.x >= self.surface.width as f32
+            || centre.y - extent.y >= self.surface.height as f32
+        {
+            return;
+        }
+
+        // The lateral shading, without building a vector per pixel. The normal
+        // leans along `perpendicular` by the lateral term and stands up by
+        // whatever is left of a unit vector, so its dot with the key light is
+        // two constants and one square root.
+        let plane_dot = perpendicular.x * self.light.x + perpendicular.y * self.light.y;
+        let up_dot = self.light.z;
+        let inverse_half = 1.0 / half.max(1.0e-3);
+        // Pushed a hair behind the body so a neighbouring blade at the same
+        // depth still wins the pixel.
+        let under_depth = depth - 1.0e-4;
 
         for i in 0..=steps {
             let offset = low + step * i as f32;
@@ -300,11 +443,10 @@ impl<'a> Painter<'a> {
             let (light, depth) = if offset < -half || offset > half {
                 // Under-stroke: darker by a fixed amount rather than by a
                 // fraction, so a bright blade and a dim one cast the same
-                // weight of shadow, and pushed a hair behind the body so a
-                // neighbouring blade at the same depth still wins the pixel.
-                ((stroke.base_light - 0.22).max(0.0), depth - 1.0e-4)
+                // weight of shadow.
+                (under_light, under_depth)
             } else {
-                let r = (offset / half.max(1.0e-3)).clamp(-1.0, 1.0);
+                let r = (offset * inverse_half).clamp(-1.0, 1.0);
                 // Pseudo-cylindrical: one edge faces the key, the other faces
                 // away, and the middle faces the viewer.
                 // Low on purpose. A blade lit as a full cylinder reads as a
@@ -312,22 +454,36 @@ impl<'a> Painter<'a> {
                 // roundness only just enough to say which edge faces the light.
                 const ROUNDNESS: f32 = 0.72;
                 let lateral = ROUNDNESS * r;
-                let normal = Vec3::new(
-                    lateral * perpendicular.x,
-                    lateral * perpendicular.y,
-                    (1.0 - lateral * lateral).max(0.0).sqrt(),
-                );
-                let lambert = normal.dot(self.light).max(0.0);
+                let lambert = (lateral * plane_dot
+                    + (1.0 - lateral * lateral).max(0.0).sqrt() * up_dot)
+                    .max(0.0);
                 // Centred on the mean rather than added: a stroke's average
                 // brightness is its own business, and the lateral term is only
                 // meant to say which *side* of it is lit.
-                let side = stroke.side_light * (lambert - 0.62);
-                (stroke.base_light + tip + side - root_shade, depth)
+                (body_light + stroke.side_light * (lambert - 0.62), depth)
             };
 
             self.plot(point.x, point.y, depth, light, stroke.tone, top);
         }
     }
+}
+
+/// One slice across a stroke, with everything the slice needs already worked
+/// out.
+///
+/// A struct rather than nine arguments, and the terms in it are the ones that
+/// used to be recomputed per rib and are now computed per stroke or hoisted out
+/// of the pixel loop.
+struct Rib {
+    centre: Vec2,
+    tangent: Vec2,
+    half: f32,
+    under: f32,
+    depth: f32,
+    top: f32,
+    /// `base_light + tip - root_shade`: everything but the lateral term.
+    body_light: f32,
+    under_light: f32,
 }
 
 #[cfg(test)]
@@ -435,6 +591,24 @@ mod tests {
         let (heights, _) = surface.height_maps(32, 32);
         for y in 0..32 {
             assert_eq!(heights[y * 32], 0.0, "row {y} picked up a wrapped stroke");
+        }
+    }
+
+    #[test]
+    fn the_fast_taper_is_the_taper() {
+        // The rasteriser stopped calling `width_at` and started calling a
+        // version that shares its logarithms with five other terms. If the two
+        // ever disagree, every blade in the field changes shape and no test
+        // that looks at one blade would notice.
+        for profile in [Profile::Tapered, Profile::Oval, Profile::Stem] {
+            let mut worst = 0.0f32;
+            for step in 0..=2000 {
+                let s = step as f32 / 2000.0;
+                let (log_s, log_rest) = (fastmath::log2(s), fastmath::log2(1.0 - s));
+                let fast = profile.width_from_logs(s, log_s, log_rest);
+                worst = worst.max((fast - profile.width_at(s)).abs());
+            }
+            assert!(worst < 1.0e-6, "{profile:?} drifts by {worst}");
         }
     }
 

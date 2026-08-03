@@ -11,14 +11,22 @@
 //! [`project`] returns **screen metres** — Bevy 2D world space, +Y up. That is
 //! what a mesh vertex wants.
 //!
-//! The baker works in **cache pixels** — image space, +Y down, at a fixed
-//! [`PX_PER_METRE`]. That is what a rasteriser wants. [`to_cache`] converts.
+//! The baker works in **cache pixels** — image space, +Y down. That is what a
+//! rasteriser wants. [`to_cache`] converts, and [`to_cache_at`] does it at a
+//! chosen scale.
 //!
-//! The cache is baked at one fixed zoom on purpose. Every art constant in this
-//! crate — blade length, stroke width, mound diameter — is expressed in cache
-//! pixels, because that is the unit the reference art is authored in. Zoom is
-//! then the camera's business: it scales the finished page like any other
-//! sprite, and the mip chain handles the rest.
+//! [`PX_PER_METRE`] is where the art is *authored*: every art constant in this
+//! crate — blade length, stroke width, mound diameter — is expressed against it,
+//! because that is the unit the reference art is drawn in. It used to be the
+//! only scale anything was baked at as well, and that is the part that was
+//! wrong. The camera decides how much of a metre reaches the screen, and at the
+//! height this game ships at that is about a fifth, so a page baked at the
+//! authoring scale did twenty-four pixels of work for every pixel anyone saw.
+//!
+//! So the authoring scale and the bake scale are now two different things. See
+//! [`crate::bake::Page::detail`] for what has to be carried through to move
+//! between them — the short version is that a length in metres scales itself and
+//! a length in cache pixels does not.
 
 use bevy::prelude::*;
 
@@ -101,14 +109,40 @@ pub fn unproject_ground(screen: Vec2) -> Vec2 {
 /// origin.
 #[inline]
 pub fn to_cache(world: Vec3) -> Vec2 {
-    let screen = project(world);
-    Vec2::new(screen.x * PX_PER_METRE, -screen.y * PX_PER_METRE)
+    to_cache_at(world, PX_PER_METRE)
 }
 
 /// Invert [`to_cache`] onto the ground plane.
 #[inline]
 pub fn from_cache_ground(cache: Vec2) -> Vec2 {
-    unproject_ground(Vec2::new(cache.x / PX_PER_METRE, -cache.y / PX_PER_METRE))
+    from_cache_ground_at(cache, PX_PER_METRE)
+}
+
+/// [`to_cache`] at a chosen cache scale.
+///
+/// [`PX_PER_METRE`] is the scale the art is *authored* at, and for a long time
+/// it was the only scale anything was baked at. It is not the scale a page has
+/// to be baked at. The camera decides how much of a metre reaches the screen,
+/// and at the height this game ships at that is about a fifth — so a page baked
+/// at the authoring scale spends twenty-four pixels of work on every pixel the
+/// player sees, and then throws twenty-three of them away in the minification
+/// filter.
+///
+/// Baking at the scale the page will be *shown* at is therefore not a quality
+/// setting, it is the removal of a mistake. See [`crate::bake::Page::detail`]
+/// for what has to travel with it: every length the art expresses in cache
+/// pixels has to shrink by the same factor, or the blades keep their pixel width
+/// while the field shrinks around them and the grass turns to bristles.
+#[inline]
+pub fn to_cache_at(world: Vec3, px_per_metre: f32) -> Vec2 {
+    let screen = project(world);
+    Vec2::new(screen.x * px_per_metre, -screen.y * px_per_metre)
+}
+
+/// Invert [`to_cache_at`] onto the ground plane.
+#[inline]
+pub fn from_cache_ground_at(cache: Vec2, px_per_metre: f32) -> Vec2 {
+    unproject_ground(Vec2::new(cache.x / px_per_metre, -cache.y / px_per_metre))
 }
 
 /// Metres of world height per cache pixel of screen rise.

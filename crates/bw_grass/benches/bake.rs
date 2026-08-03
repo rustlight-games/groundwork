@@ -34,11 +34,19 @@
 //! | `page_bake` | The shipping number: one page, one thread, three places |
 //! | `page_stage` | **Which part of that page.** Five stages, timed apart |
 //! | `stroke` | One mark, so the stroke pass divides into a count and a unit cost |
+//! | `detail` | **The same ground at four bake scales.** What the camera buys |
+//! | `stream_page` | The same *page* at two bake scales: what one draw call costs |
+//! | `view` | One 1080p screenful, baked both ways, on every core |
 //! | `page_size` | Is cost proportional to area, or does the guard band dominate? |
 //! | `seed_spread` | Does the world you are in change what a page costs? |
 //! | `field_sample` | The composition fields, which every lattice point pays for |
 //! | `blur` | The shading terms, which scale with radius and not with content |
 //! | `resample` | Minification — what a mip chain would have to beat |
+//!
+//! `detail` and `stream_page` are the same measurement asked from two ends, and
+//! the pair is worth reading together. A page baked for the camera is cheaper
+//! *and* covers more ground, so quoting either fact alone understates it by
+//! about the same factor again.
 //!
 //! `page_stage` is the one to read first. Everything else here refines a number
 //! it has already localised, and its rows sum to `page_bake` — so a stage that
@@ -56,7 +64,7 @@ use std::hint::black_box;
 use bevy::prelude::*;
 use bw_bench::SEEDS;
 use bw_grass::bake::{
-    BakeParams, Macro, Page, TILE_PIXELS, bake, lay_floor, plant_strokes, resolve,
+    BakeParams, Macro, Page, TILE_PIXELS, bake, bake_grid, lay_floor, plant_strokes, resolve,
 };
 use bw_grass::field::WorldField;
 use bw_grass::fixtures::{PLACES, place_name};
@@ -109,6 +117,138 @@ fn page_size(c: &mut Criterion) {
             b.iter(|| {
                 bake(
                     black_box(Page::new(PLACES[0], side, side)),
+                    black_box(&params),
+                )
+            })
+        });
+    }
+    group.finish();
+}
+
+/// The same patch of ground, baked at four scales.
+///
+/// The group that answers the question the whole cache design turns on. A page
+/// is baked at [`iso::PX_PER_METRE`] and then *shown* at whatever the camera
+/// says, and at the height this game ships at that is about a fifth — so a
+/// fifth of a pixel in each direction, a twenty-fourth of the area, and the
+/// minification filter throws the rest away. The alternative is to bake the page
+/// at the scale it will be seen at, and this measures what that is worth.
+///
+/// Every row covers the **same world rectangle**, which is what makes them
+/// comparable: the page shrinks as the detail does, so a quarter-detail row is a
+/// 64-pixel page over the ground a 256-pixel page covers at full detail. The
+/// throughput figure is therefore per square metre of ground rather than per
+/// pixel, and it is the number a streaming budget is actually denominated in.
+///
+/// What it cannot say is whether the cheap page still looks right. That is
+/// `compare::detail`, and
+/// [`bw_grass::bake::tests::a_coarse_page_agrees_with_a_minified_fine_one`].
+fn detail_levels(c: &mut Criterion) {
+    let mut group = c.benchmark_group("detail");
+    group.sample_size(SAMPLES);
+    let params = params(SEEDS[0]);
+
+    for detail in [1.0f32, 0.5, 0.25, 0.125] {
+        let side = ((TILE_PIXELS as f32 * detail) as usize).max(1);
+        // Per square metre of ground, scaled by a thousand because criterion
+        // counts whole elements. Every row covers the same ground, so this is
+        // the same number on each of them — which is the point: only the pixel
+        // count moves, and the throughput column reads directly as how much
+        // world a millisecond buys.
+        let per_metre = iso::PX_PER_METRE * detail;
+        let ground = (side * side) as f32 / (per_metre * per_metre);
+        group.throughput(Throughput::Elements((ground * 1000.0) as u64));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("{detail}x_{side}px")),
+            &detail,
+            |b, &detail| {
+                b.iter(|| {
+                    bake(
+                        black_box(Page::at_detail(PLACES[0] * detail, side, side, detail)),
+                        black_box(&params),
+                    )
+                })
+            },
+        );
+    }
+    group.finish();
+}
+
+/// One streamed page, at the authoring scale and at the camera's.
+///
+/// [`detail_levels`] holds the *ground* fixed and lets the page shrink, which is
+/// how the levels are compared with one another. This holds the **page** fixed
+/// at [`TILE_PIXELS`] and lets the ground grow, which is how a streaming budget
+/// is actually written: a page is one bake task, one texture and one draw call
+/// whatever scale it was baked at, so the operational questions are what one
+/// costs and how much world it buys.
+///
+/// The two rows do not cover the same ground and are not meant to. At
+/// [`bw_grass::fixtures::SHIPPING_VIEW`] the ground is presented at about a
+/// fifth, so the second row's page carries roughly twenty-four times the world
+/// the first one's does — which is the whole point, and why the interesting
+/// figure here is the metres of ground per millisecond printed alongside.
+fn stream_page(c: &mut Criterion) {
+    use bw_grass::fixtures::{SCREEN, SHIPPING_VIEW};
+    let mut group = c.benchmark_group("stream_page");
+    group.sample_size(SAMPLES);
+    let params = params(SEEDS[0]);
+    let (_, _, scale) = iso::view_pixels(SHIPPING_VIEW, SCREEN);
+
+    for (name, detail) in [("authoring_scale", 1.0), ("camera_scale", scale.min(1.0))] {
+        // Square metres of ground one page of this scale covers. The projection
+        // is area-preserving — its Jacobian is exactly the square of the cache
+        // scale — so this is the pixel area over that, scaled by a thousand
+        // because criterion counts in whole elements.
+        let per_metre = iso::PX_PER_METRE * detail;
+        let ground = (TILE_PIXELS * TILE_PIXELS) as f32 / (per_metre * per_metre);
+        group.throughput(Throughput::Elements((ground * 1000.0) as u64));
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                bake(
+                    black_box(Page::at_detail(
+                        PLACES[0] * detail,
+                        TILE_PIXELS,
+                        TILE_PIXELS,
+                        detail,
+                    )),
+                    black_box(&params),
+                )
+            })
+        });
+    }
+    group.finish();
+}
+
+/// One screenful of ground, at the camera the game ships at.
+///
+/// The end-to-end number, and the only one in this file that answers the
+/// question a player would ask. [`bw_grass::fixtures::BATTLE_VIEW`] metres of
+/// world on a 1080p window fixes both how much cache is needed and how far it is
+/// minified, and [`bw_grass::iso::view_pixels`] reconciles the two.
+///
+/// Both rows cover the same screen. The first bakes at the authoring scale and
+/// lets the sampler shrink it; the second bakes at the scale the screen will
+/// show and does not. All cores, because filling a view is the one thing in this
+/// crate that is genuinely a throughput problem rather than a latency one.
+fn view_fill(c: &mut Criterion) {
+    use bw_grass::fixtures::{SCREEN, SHIPPING_VIEW};
+    let mut group = c.benchmark_group("view");
+    group.sample_size(10);
+    group.measurement_time(std::time::Duration::from_secs(30));
+    let params = params(SEEDS[0]);
+
+    let (full_w, full_h, scale) = iso::view_pixels(SHIPPING_VIEW, SCREEN);
+    group.throughput(Throughput::Elements((SCREEN.0 * SCREEN.1) as u64));
+
+    for (name, detail, width, height) in [
+        ("authoring_scale", 1.0, full_w, full_h),
+        ("camera_scale", scale, SCREEN.0, SCREEN.1),
+    ] {
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                bake_grid(
+                    black_box(Page::at_detail(PLACES[0] * detail, width, height, detail)),
                     black_box(&params),
                 )
             })
@@ -275,10 +415,18 @@ fn page_stage(c: &mut Criterion) {
         b.iter(|| Macro::build(black_box(&page), black_box(&field)))
     });
 
-    // Allocation is its own row because it is not small: six channels over a
-    // 3x supersampled page is more than five million entries to zero, and an
+    // Allocation is its own row because it is not small: a twelve-byte cell
+    // over a 3x supersampled page is seven megabytes to fill, and an
     // optimisation that reuses the buffer between pages would collect exactly
     // this much.
+    //
+    // It got four times *slower* when the six channels were interleaved into one
+    // cell, and the number is honest in both directions rather than in either.
+    // Six separate arrays of zeroes are handed out by the allocator as untouched
+    // pages, so almost none of that fill was happening here — it was happening
+    // in `floor` and in `strokes`, as a page fault each, which is why both of
+    // those got faster by more than this row lost. What this measures now is the
+    // whole seven megabytes actually being written, once, where it can be seen.
     group.bench_function("allocate", |b| {
         b.iter(|| Surface::new(black_box(TILE_PIXELS), black_box(TILE_PIXELS)))
     });
@@ -361,6 +509,9 @@ criterion_group!(
     page_bake,
     page_stage,
     stroke_draw,
+    detail_levels,
+    stream_page,
+    view_fill,
     page_size,
     seed_spread,
     field_sample,
