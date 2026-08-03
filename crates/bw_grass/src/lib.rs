@@ -63,6 +63,7 @@ pub mod compare;
 pub mod fastmath;
 pub mod field;
 pub mod fixtures;
+pub mod geometry;
 pub mod iso;
 pub mod lab;
 pub mod material;

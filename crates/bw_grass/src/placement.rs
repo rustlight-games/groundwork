@@ -33,6 +33,7 @@ use bevy::prelude::*;
 
 use crate::bake::{BakeParams, Page};
 use crate::field::{Ground, GroundCache, WorldField};
+use crate::geometry::TipProfile;
 use crate::palette::Tone;
 use crate::rng::{Draw, Stream};
 use crate::stroke::{Profile, Stroke};
@@ -755,16 +756,64 @@ impl Mark {
         } else {
             0.0
         };
+
+        // How broad this mark is within the vocabulary's own range. Twist and
+        // forking both key on it, because both are properties of a mature blade
+        // with some material in it — a thread does neither.
+        let width = draw.range(thin, thick);
+        let broad = smoothstep(thin, thick, width);
+
+        // Twist, which is the cheapest thing in the vocabulary and close to the
+        // most valuable: without it every blade in a tuft shows the sun the same
+        // face and the tuft reads as a comb.
+        //
+        // Signed, so blades turn both ways. Scaled by breadth, because a fine
+        // blade is nearly round in section and has no face to turn — the range
+        // runs from about a quarter turn on the thinnest to a half turn on the
+        // broadest, which is what real grass does.
+        let twist = draw.signed() * (0.44 + broad * 1.13);
+
+        // And the tip. Forks belong to broad, mature, well-described blades and
+        // nowhere else: fork everything and the field becomes antlers, which is
+        // a louder failure than the plain tips it replaced.
+        //
+        // The notch is the quiet majority partner. It costs one segment, it
+        // reads at any distance, and it is what a fork becomes when the page is
+        // too coarse to draw one — so having it in the vocabulary in its own
+        // right means the two are the same shape rather than a shape and its
+        // apology.
+        let mature = broad * ground.resolution * (1.0 - ground.bare * 0.8);
+        let tip = if draw.chance(0.10 * mature) {
+            let split_at = draw.range(0.76, 0.90);
+            // One branch longer than the other, always. A symmetric fork is a
+            // tuning fork and the eye finds the mirror line immediately.
+            let remaining = 1.0 - split_at;
+            TipProfile::Forked {
+                split_at,
+                opening: draw.range(0.10, 0.32),
+                long: remaining + draw.range(0.0, 0.06),
+                short: remaining * draw.range(0.40, 0.72),
+            }
+        } else if draw.chance(0.11 + mature * 0.06) {
+            TipProfile::Notched {
+                depth: draw.range(0.03, 0.11),
+            }
+        } else {
+            TipProfile::Pointed
+        };
+
         let base = Stroke {
             length: draw.range(short, tall),
             bend: draw.range(low, high) + lodged,
-            width: draw.range(thin, thick),
+            width,
             tip_width: 0.30,
             profile: if draw.chance(0.08) {
                 Profile::Stem
             } else {
-                Profile::Tapered
+                Profile::Leaf
             },
+            twist,
+            tip,
             // Straw belongs where the ground is already drifting olive, not
             // sprinkled at a fixed rate across the whole field. A uniform
             // scatter of pale stems says "some blades are dry"; a scatter that

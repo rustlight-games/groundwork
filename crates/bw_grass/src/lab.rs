@@ -29,6 +29,7 @@ use bevy::prelude::*;
 
 use crate::bake::{BakeParams, Macro, Page, lay_floor, resolve};
 use crate::field::WorldField;
+use crate::geometry::TipProfile;
 use crate::iso;
 use crate::palette::Tone;
 use crate::quality::GrassRenderQuality;
@@ -295,8 +296,10 @@ pub fn plant_fixture(painter: &mut Painter, lab: &Lab, fixture: Fixture, centre:
     let blade = |draw: &mut Draw| Stroke {
         length: draw.range(0.16, 0.24),
         bend: draw.range(0.35, 0.7),
-        width: draw.range(1.2, 1.8),
+        width: draw.range(0.7, 1.6),
+        twist: draw.signed() * 0.8,
         tip_light: 0.42,
+        side_light: 0.34,
         ..default()
     };
 
@@ -317,9 +320,10 @@ pub fn plant_fixture(painter: &mut Painter, lab: &Lab, fixture: Fixture, centre:
         }
 
         Fixture::TwistFan => {
-            // Eight blades around the compass, all the same shape. Whatever
-            // differs between them across the cell is the lighting talking, and
-            // that is the whole point of the fixture.
+            // Eight blades around the compass, all the same shape, at rising
+            // twist. Whatever differs between them across the cell is the
+            // lighting talking, and that is the whole point of the fixture: turn
+            // the key and the lit edge has to walk round with it.
             for step in 0..8 {
                 let azimuth = step as f32 / 8.0 * std::f32::consts::TAU;
                 painter.draw(&Stroke {
@@ -328,27 +332,39 @@ pub fn plant_fixture(painter: &mut Painter, lab: &Lab, fixture: Fixture, centre:
                     length: 0.22,
                     bend: 0.55,
                     width: 1.7,
+                    twist: step as f32 / 8.0 * std::f32::consts::PI,
                     tip_light: 0.42,
+                    side_light: 0.42,
                     ..default()
                 });
             }
         }
 
         Fixture::ForkedBlade => {
-            // Until forks are geometry this is the pair of children drawn by
-            // hand, which is exactly what the cell is for: it shows what the
-            // shape has to become before anything can produce it.
-            painter.draw(&Stroke {
-                root: centre.extend(0.0),
-                azimuth: 0.2,
-                length: 0.30,
-                bend: 0.5,
-                width: 2.4,
-                tip_width: 0.5,
-                tip_light: 0.42,
-                glint: 0.85,
-                ..default()
-            });
+            // Three, at rising split depth, so the cell says both whether a fork
+            // reads as one blade separating and where along the blade it stops
+            // doing so.
+            for (step, split_at) in [0.74f32, 0.82, 0.90].into_iter().enumerate() {
+                painter.draw(&Stroke {
+                    root: (centre + Vec2::new(step as f32 * 0.08 - 0.08, 0.0)).extend(0.0),
+                    azimuth: 0.2,
+                    length: 0.30,
+                    bend: 0.45,
+                    width: 1.9,
+                    tip_width: 0.4,
+                    twist: 0.4,
+                    tip: TipProfile::Forked {
+                        split_at,
+                        opening: 0.26,
+                        long: (1.0 - split_at) + 0.05,
+                        short: (1.0 - split_at) * 0.55,
+                    },
+                    tip_light: 0.42,
+                    side_light: 0.42,
+                    glint: 0.85,
+                    ..default()
+                });
+            }
         }
 
         Fixture::Crossing => {

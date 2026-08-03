@@ -50,6 +50,28 @@ pub enum Stream {
     Flow = 0x0e,
     /// Regional hue drift, independent of how bright the region is.
     Hue = 0x0f,
+    /// Which tuft group a bunch belongs to, and where the group's crown sits.
+    TuftGroup = 0x10,
+    /// How old and how established a patch of ground is.
+    Maturity = 0x11,
+    /// How damp it is. Drives density, root darkness and hue together.
+    Moisture = 0x12,
+    /// How much sky a patch of canopy can see.
+    Exposure = 0x13,
+    /// How far a blade's face rotates about its own axis.
+    Twist = 0x14,
+    /// Whether a blade's tip splits at all.
+    Fork = 0x15,
+    /// Where it splits, how far it opens, and how unequal the halves are.
+    ForkGeometry = 0x16,
+    /// How pronounced a blade's midrib is.
+    Ridge = 0x17,
+    /// How much darker a blade's underside runs.
+    Underside = 0x18,
+    /// The fine grass layer that closes the canopy under the statement tufts.
+    Fine = 0x19,
+    /// Shoot bundles within a tuft — several related blades from one root.
+    Tiller = 0x1a,
 }
 
 /// Mix a 64-bit value until its bits are independent.
