@@ -22,10 +22,20 @@ use bw_grass::scene::GrassScene;
 
 fn main() {
     let options = Options::parse();
-    let params = BakeParams {
+    let mut params = BakeParams {
         seed: options.seed,
         ..default()
     };
+    // Density and length are swept from the command line because the counts the
+    // rasteriser was tuned to are counts of *strokes covering pixels*, and a
+    // path tracer wants counts of *plants occupying space*. They are not the
+    // same number and there is no way to derive one from the other.
+    params.tufts *= options.density;
+    params.fine *= options.density;
+    params.thatch *= options.density;
+    params.leaves *= options.density;
+    params.blade_length.0 *= options.length;
+    params.blade_length.1 *= options.length;
 
     let page = Page::at_detail(
         Vec2::ZERO,
@@ -129,6 +139,8 @@ struct Options {
     device: String,
     view_transform: String,
     blade_width: f32,
+    density: f32,
+    length: f32,
     passes: bool,
     keep: bool,
     out: String,
@@ -149,6 +161,14 @@ impl Options {
             device: "GPU".to_string(),
             view_transform: "Standard".to_string(),
             blade_width: 0.35,
+            // Eight times the rasteriser's counts and blades half again as
+            // long. Not arbitrary: the old numbers are counts of *strokes
+            // covering pixels*, tuned so a 2D mark vocabulary filled the frame,
+            // and a path tracer wants counts of *plants occupying space*. Swept
+            // against the target art, these are where the canopy closes and the
+            // five gated bands all hold.
+            density: 8.0,
+            length: 1.6,
             passes: false,
             keep: false,
             out: "target/cycles.png".to_string(),
@@ -167,6 +187,8 @@ impl Options {
                 "--blade-width" => {
                     options.blade_width = value().parse().unwrap_or(options.blade_width);
                 }
+                "--density" => options.density = value().parse().unwrap_or(options.density),
+                "--length" => options.length = value().parse().unwrap_or(options.length),
                 "--cpu" => options.device = "CPU".to_string(),
                 "--agx" => options.view_transform = "AgX".to_string(),
                 "--passes" => options.passes = true,
@@ -175,7 +197,8 @@ impl Options {
                 "--help" | "-h" => {
                     println!(
                         "grass_cycles [--size PX] [--px-per-metre N] [--seed N] [--samples N]\n\
-                         \x20            [--blade-width N] [--cpu] [--agx] [--passes] [--keep]\n\
+                         \x20            [--blade-width N] [--density N] [--length N]\n\
+                         \x20            [--cpu] [--agx] [--passes] [--keep]\n\
                          \x20            [--out PATH]"
                     );
                     std::process::exit(0);

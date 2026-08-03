@@ -47,39 +47,75 @@ def clear_scene():
 
 
 def build_blades(scene_dir, spec, settings):
-    """Curves, straight from the exported buffer.
+    """Folded ribbons, straight from the exported buffer.
 
-    `foreach_set` on a flat numpy array is the only viable path: a page holds
-    a few hundred thousand curves and touching them through Python objects one
-    at a time takes minutes rather than the tenth of a second this takes.
+    A mesh rather than Cycles curve primitives, and that is not an optimisation
+    — see `bw_grass::cycles::VERTICES_PER_RIB`. A `RIBBONS` curve is a
+    camera-facing quad whose shading normal faces the viewer, so every blade in
+    the field presents the same normal to the sun and the canopy shades flat.
+    Three vertices per rib give a real fold, and the fold is what puts a lit side
+    and a shaded side inside one blade.
+
+    Built with numpy and `foreach_set` throughout. A page holds a few hundred
+    thousand blades and touching them through Python objects one at a time takes
+    minutes rather than the fraction of a second this takes.
     """
     count = spec["count"]
-    per_curve = spec["points_per_blade"]
+    ribs = spec["ribs_per_blade"]
+    across = spec["vertices_per_rib"]
     if count == 0:
         return None
 
+    per_blade = ribs * across
     raw = np.fromfile(os.path.join(scene_dir, spec["path"]), dtype=np.float32)
-    expected = count * per_curve * 4
+    expected = count * per_blade * 3
     if raw.size != expected:
         raise SystemExit(f"blades.bin has {raw.size} floats, expected {expected}")
-    raw = raw.reshape(count * per_curve, 4)
 
-    curves = bpy.data.hair_curves.new("grass")
-    curves.add_curves([per_curve] * count)
-    curves.points.foreach_set("position", raw[:, :3].ravel())
-    curves.points.foreach_set("radius", np.ascontiguousarray(raw[:, 3]))
+    mesh = bpy.data.meshes.new("grass")
+    mesh.vertices.add(count * per_blade)
+    mesh.vertices.foreach_set("co", raw)
+
+    # Two quads per rib gap — one per facet — as triangles. Indices are built
+    # once for a single blade and then broadcast across all of them, which keeps
+    # the whole thing to a handful of numpy operations.
+    blade = []
+    for rib in range(ribs - 1):
+        base = rib * across
+        for side in range(across - 1):
+            a = base + side
+            b = a + 1
+            c = a + across
+            d = b + across
+            blade.append((a, c, b))
+            blade.append((b, c, d))
+    blade = np.asarray(blade, dtype=np.int32)
+    offsets = (np.arange(count, dtype=np.int32) * per_blade)[:, None, None]
+    faces = (blade[None, :, :] + offsets).reshape(-1, 3)
+
+    mesh.loops.add(faces.size)
+    mesh.polygons.add(len(faces))
+    mesh.loops.foreach_set("vertex_index", faces.ravel())
+    mesh.polygons.foreach_set("loop_start", np.arange(len(faces), dtype=np.int32) * 3)
+    mesh.update()
+    mesh.validate()
+    # Smooth along the blade so the arc has no facets, while the fold still
+    # rotates the normal across the width — the vertex normals at the two edges
+    # average different pairs of triangles.
+    mesh.shade_smooth()
 
     attributes = np.fromfile(
         os.path.join(scene_dir, spec["attributes"]), dtype=np.float32
     ).reshape(count, spec["attributes_per_blade"])
-    # Per-curve attributes reach the shader through Attribute nodes by name. The
-    # material varies without the geometry changing, which is what lets one
-    # export be re-lit.
+    # Per-blade attributes reach the shader through Attribute nodes by name, so
+    # the material can vary without the geometry changing. Repeated to the face
+    # domain because that is the coarsest domain every vertex of a blade shares.
+    per_face = faces.shape[0] // count
     for index, name in enumerate(("maturity", "moisture", "tone", "exposure")):
-        layer = curves.attributes.new(name=name, type="FLOAT", domain="CURVE")
-        layer.data.foreach_set("value", np.ascontiguousarray(attributes[:, index]))
+        layer = mesh.attributes.new(name=name, type="FLOAT", domain="FACE")
+        layer.data.foreach_set("value", np.repeat(attributes[:, index], per_face))
 
-    obj = bpy.data.objects.new("grass", curves)
+    obj = bpy.data.objects.new("grass", mesh)
     bpy.context.collection.objects.link(obj)
     obj.data.materials.append(blade_material(settings))
     return obj
@@ -149,27 +185,47 @@ def blade_material(settings):
     principled = nodes.new("ShaderNodeBsdfPrincipled")
     principled.location = (-300, 0)
 
-    # Root-to-tip position along the curve. Cycles supplies it as the curve
-    # parameter, which is exactly the `along` the rasteriser carried by hand.
-    info = nodes.new("ShaderNodeHairInfo")
-    info.location = (-1100, -200)
+    # Root-to-tip position. With curves this was the curve parameter; on a mesh
+    # it has to be carried, and the cheapest honest carrier is height above the
+    # soil — a blade's tip is its highest point and its root its lowest, so the
+    # two agree everywhere it matters and disagree only on blades lying flat,
+    # which is where a tip highlight would be wrong anyway.
+    geometry = nodes.new("ShaderNodeNewGeometry")
+    geometry.location = (-1500, -200)
+    separate = nodes.new("ShaderNodeSeparateXYZ")
+    separate.location = (-1300, -200)
+    along = nodes.new("ShaderNodeMapRange")
+    along.location = (-1100, -200)
+    along.inputs["From Min"].default_value = 0.0
+    along.inputs["From Max"].default_value = 0.30
+    links.new(geometry.outputs["Position"], separate.inputs["Vector"])
+    links.new(separate.outputs["Z"], along.inputs["Value"])
 
     maturity = nodes.new("ShaderNodeAttribute")
     maturity.attribute_name = "maturity"
     maturity.attribute_type = "GEOMETRY"
     maturity.location = (-1100, 100)
 
-    # A ramp along the blade: darker and bluer at the root where it is buried,
-    # fuller green through the body, warming toward the tip.
+    # A ramp along the blade: darker at the root where it is buried, fuller
+    # green through the body, warming toward the tip.
+    #
+    # **These are linear reflectances, not colours picked by eye.** That
+    # distinction cost a render: the first set were chosen as though they were
+    # sRGB, and linear (0.205, 0.310, 0.070) is a greyish yellow-green that
+    # measured a Lab chroma of 13 against the target's 39. A saturated grass
+    # green needs far *less* red and blue relative to green than it looks like
+    # it should — the eye reads (0.09, 0.28, 0.02) as vivid, and the arithmetic
+    # agrees, because saturation lives in the ratio between channels rather than
+    # in their size.
     ramp = nodes.new("ShaderNodeValToRGB")
     ramp.location = (-700, -100)
     ramp.color_ramp.interpolation = "EASE"
     stops = [
-        (0.00, (0.030, 0.055, 0.014, 1.0)),
-        (0.22, (0.055, 0.105, 0.022, 1.0)),
-        (0.55, (0.090, 0.170, 0.032, 1.0)),
-        (0.82, (0.135, 0.235, 0.045, 1.0)),
-        (1.00, (0.205, 0.310, 0.070, 1.0)),
+        (0.00, (0.0060, 0.0340, 0.0035, 1.0)),
+        (0.22, (0.0125, 0.0790, 0.0055, 1.0)),
+        (0.55, (0.0230, 0.1620, 0.0075, 1.0)),
+        (0.82, (0.0360, 0.2450, 0.0095, 1.0)),
+        (1.00, (0.0620, 0.3300, 0.0130, 1.0)),
     ]
     first = ramp.color_ramp.elements[0]
     first.position, first.color = stops[0][0], stops[0][1]
@@ -183,9 +239,9 @@ def blade_material(settings):
     mix = nodes.new("ShaderNodeMix")
     mix.data_type = "RGBA"
     mix.location = (-500, 0)
-    mix.inputs["B"].default_value = (0.115, 0.140, 0.038, 1.0)
+    mix.inputs["B"].default_value = (0.045, 0.132, 0.010, 1.0)
 
-    links.new(info.outputs["Intercept"], ramp.inputs["Fac"])
+    links.new(along.outputs["Result"], ramp.inputs["Fac"])
     links.new(ramp.outputs["Color"], mix.inputs["A"])
     links.new(maturity.outputs["Fac"], mix.inputs["Factor"])
     links.new(mix.outputs["Result"], principled.inputs["Base Color"])
@@ -232,8 +288,8 @@ def ground_material():
 
     ramp = nodes.new("ShaderNodeValToRGB")
     ramp.location = (-600, 0)
-    ramp.color_ramp.elements[0].color = (0.020, 0.024, 0.012, 1.0)
-    ramp.color_ramp.elements[1].color = (0.055, 0.052, 0.030, 1.0)
+    ramp.color_ramp.elements[0].color = (0.030, 0.038, 0.014, 1.0)
+    ramp.color_ramp.elements[1].color = (0.086, 0.090, 0.036, 1.0)
 
     links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
     links.new(ramp.outputs["Color"], principled.inputs["Base Color"])
@@ -367,12 +423,6 @@ def configure_render(render_spec, camera_spec, output):
     # The dimetric stretch. See `bw_grass::cycles::Camera`.
     scene.render.pixel_aspect_x = 1.0
     scene.render.pixel_aspect_y = camera_spec["pixel_aspect_y"]
-
-    # Ribbons: flat curves turned to face the viewer. Grass blades are sheets,
-    # and a round hair primitive would give every blade a cylindrical highlight
-    # running down its middle.
-    scene.cycles_curves.shape = "RIBBONS"
-    scene.cycles_curves.subdivisions = 2
 
     cycles = scene.cycles
     cycles.samples = render_spec["samples"]

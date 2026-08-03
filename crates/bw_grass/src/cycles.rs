@@ -63,19 +63,42 @@ use crate::quality::GrassRenderQuality;
 use crate::scene::GrassScene;
 use crate::stroke::{BladeSample, walk_blade};
 
-/// How many points each exported curve carries.
+/// How many cross-sections each exported blade carries.
 ///
-/// Eight. A blade is a cubic arc with at most one kink, and Cycles subdivides
-/// curve segments itself — `cycles_curves.subdivisions` defaults to two, so
-/// eight control points arrive at the integrator as about thirty. Sampling the
-/// centreline more finely than that spends file size and BVH memory to describe
-/// a curve the renderer is going to smooth anyway.
+/// Seven. A blade is a cubic arc with at most one kink, so its centreline needs
+/// few samples; what sets this is that the *silhouette* has to stay smooth under
+/// magnification, and six segments is where a bent blade stops showing its
+/// corners.
 ///
 /// Fixed rather than per-blade because Python reads the whole buffer with one
 /// `numpy.fromfile` and reshapes it. A variable-length format would need a
 /// second pass and an index, and would cost more in Python loop time than it
 /// saves in bytes.
-pub const POINTS_PER_BLADE: usize = 8;
+pub const RIBS_PER_BLADE: usize = 7;
+
+/// Vertices across one rib: left edge, raised centre, right edge.
+///
+/// Three, and this is the whole reason blades are exported as a mesh rather than
+/// as Cycles curve primitives.
+///
+/// A Cycles `RIBBONS` curve is a camera-facing quad. Its shading normal is
+/// derived to face the viewer, so **every blade in the field presents the same
+/// normal to the sun** — the light lands on all of them identically and the
+/// canopy shades flat. Measured, that render had seven tenths of a percent of
+/// its pixels above the highlight threshold against the target's seven and a
+/// half, and no amount of extra light fixes it, because the missing thing is
+/// variation rather than brightness. There is no way to override that normal:
+/// it is a property of the primitive.
+///
+/// Three vertices give a real fold. The centre stands proud by
+/// [`crate::geometry::RIDGE`] of the half-width, so the two facets face
+/// genuinely different directions and one can catch the sun while the other does
+/// not — the value break *inside* a single blade that the reference art has
+/// everywhere.
+pub const VERTICES_PER_RIB: usize = 3;
+
+/// Vertices one exported blade occupies.
+pub const VERTICES_PER_BLADE: usize = RIBS_PER_BLADE * VERTICES_PER_RIB;
 
 /// Per-blade attributes carried alongside the geometry.
 ///
@@ -87,8 +110,8 @@ pub const ATTRIBUTES_PER_BLADE: usize = 4;
 /// The scene as Cycles will receive it.
 pub struct CyclesScene {
     pub page: Page,
-    /// Curve points: `count × POINTS_PER_BLADE` of `(x, y, z, radius)`.
-    pub points: Vec<[f32; 4]>,
+    /// Ribbon vertices: `count × VERTICES_PER_BLADE` of `(x, y, z)`.
+    pub points: Vec<[f32; 3]>,
     /// Per-blade `(maturity, moisture, tone, exposure)`.
     pub attributes: Vec<[f32; ATTRIBUTES_PER_BLADE]>,
     /// Ground heights over [`CyclesScene::footprint`], row-major.
@@ -271,10 +294,10 @@ impl Default for RenderSettings {
             sun_elevation: 35.0f32.to_radians(),
             sun_azimuth: 125.0f32.to_radians(),
             sun_angle: 3.0f32.to_radians(),
-            sun_strength: 4.0,
+            sun_strength: 11.0,
             sun_colour: [1.0, 0.96, 0.88],
-            sky_strength: 0.45,
-            sky_colour: [0.42, 0.55, 0.78],
+            sky_strength: 0.70,
+            sky_colour: [0.30, 0.44, 0.72],
             passes: false,
             blade_width: 0.35,
         }
@@ -285,7 +308,7 @@ impl CyclesScene {
     /// Turn a grown scene into curves a path tracer can trace.
     pub fn build(scene: &GrassScene, field: &WorldField, settings: RenderSettings) -> Self {
         let page = scene.page;
-        let mut points = Vec::with_capacity(scene.marks.len() * POINTS_PER_BLADE);
+        let mut points = Vec::with_capacity(scene.marks.len() * VERTICES_PER_BLADE);
         let mut attributes = Vec::with_capacity(scene.marks.len());
 
         // How finely to walk a centreline. The rasteriser asks for ribs per
@@ -294,14 +317,14 @@ impl CyclesScene {
         // roughly that many samples and then resampled to exactly that many.
         for mark in &scene.marks {
             let arc = mark.length * page.px_per_metre;
-            let mut walked: Vec<BladeSample> = Vec::with_capacity(POINTS_PER_BLADE * 4);
+            let mut walked: Vec<BladeSample> = Vec::with_capacity(RIBS_PER_BLADE * 6);
             walk_blade(
                 mark,
                 arc.max(4.0),
                 // Enough samples that the resample below is interpolating a
                 // dense polyline rather than inventing points between sparse
                 // ones.
-                (POINTS_PER_BLADE as f32 * 2.0) / arc.max(4.0),
+                (RIBS_PER_BLADE as f32 * 3.0) / arc.max(4.0),
                 mark.tip,
                 &mut |sample| walked.push(sample),
             );
@@ -333,9 +356,9 @@ impl CyclesScene {
         }
     }
 
-    /// How many curves this scene holds.
+    /// How many blades this scene holds.
     pub fn blades(&self) -> usize {
-        self.points.len() / POINTS_PER_BLADE
+        self.points.len() / VERTICES_PER_BLADE
     }
 
     /// Write the scene to a directory, returning the header's path.
@@ -394,7 +417,8 @@ impl CyclesScene {
     "path": "blades.bin",
     "attributes": "attributes.bin",
     "count": {},
-    "points_per_blade": {},
+    "ribs_per_blade": {},
+    "vertices_per_rib": {},
     "attributes_per_blade": {}
   }},
   "ground": {{
@@ -444,7 +468,8 @@ impl CyclesScene {
             settings.view_transform,
             settings.passes,
             self.blades(),
-            POINTS_PER_BLADE,
+            RIBS_PER_BLADE,
+            VERTICES_PER_RIB,
             ATTRIBUTES_PER_BLADE,
             self.ground_rows,
             self.ground_columns,
@@ -478,19 +503,20 @@ pub fn bearing_to_blender(azimuth: f32) -> f32 {
     std::f32::consts::FRAC_PI_2 - azimuth
 }
 
-/// Resample a walked centreline to exactly [`POINTS_PER_BLADE`] points.
+/// Turn a walked centreline into a folded ribbon of exactly
+/// [`VERTICES_PER_BLADE`] vertices.
 ///
-/// By arc length rather than by sample index. `walk_blade` spaces its ribs to
-/// fill pixels, so its samples bunch where the blade turns; taking every n-th
-/// one would put most of the control points in the bend and leave the straight
-/// run described by two.
+/// Resampled by arc length rather than by sample index. `walk_blade` spaces its
+/// ribs to fill pixels, so its samples bunch where the blade turns; taking every
+/// n-th one would put most of the cross-sections in the bend and leave the
+/// straight run described by two.
 ///
-/// A forked blade arrives as three concatenated runs — parent, long child,
-/// short child — and this deliberately flattens them into one curve. A fork is
-/// a few millimetres of silhouette at the tip, and splitting it into three
-/// Cycles curves would triple the count of the most numerous object in the
-/// scene to describe something the sun's own penumbra is wider than.
-fn resample_into(walked: &[BladeSample], width_scale: f32, out: &mut Vec<[f32; 4]>) {
+/// A forked blade arrives as three concatenated runs — parent, long child, short
+/// child — and this deliberately flattens them into one ribbon. A fork is a few
+/// millimetres of silhouette at the tip, and splitting it into three meshes
+/// would triple the vertex count of the most numerous object in the scene to
+/// describe something the sun's own penumbra is wider than.
+fn resample_into(walked: &[BladeSample], width_scale: f32, out: &mut Vec<[f32; 3]>) {
     let mut lengths = Vec::with_capacity(walked.len());
     let mut total = 0.0f32;
     lengths.push(0.0);
@@ -498,36 +524,46 @@ fn resample_into(walked: &[BladeSample], width_scale: f32, out: &mut Vec<[f32; 4
         total += pair[1].position.distance(pair[0].position);
         lengths.push(total);
     }
-    if total <= 1.0e-6 {
-        // A degenerate blade still has to contribute its points, or every curve
-        // after it in the buffer shifts by one and the whole page shears.
-        let sample = walked[0];
-        let radius = sample.half_reference / iso::PX_PER_METRE * width_scale;
-        let p = to_blender(sample.position);
-        for _ in 0..POINTS_PER_BLADE {
-            out.push([p.x, p.y, p.z, radius]);
-        }
-        return;
-    }
 
     let mut cursor = 0usize;
-    for i in 0..POINTS_PER_BLADE {
-        let wanted = total * i as f32 / (POINTS_PER_BLADE - 1) as f32;
-        while cursor + 2 < walked.len() && lengths[cursor + 1] < wanted {
-            cursor += 1;
+    for i in 0..RIBS_PER_BLADE {
+        let (position, frame, half) = if total <= 1.0e-6 {
+            // A degenerate blade still has to contribute its vertices, or every
+            // blade after it in the buffer shifts and the whole page shears.
+            let sample = walked[0];
+            (sample.position, sample.frame, sample.half_reference)
+        } else {
+            let wanted = total * i as f32 / (RIBS_PER_BLADE - 1) as f32;
+            while cursor + 2 < walked.len() && lengths[cursor + 1] < wanted {
+                cursor += 1;
+            }
+            let span = (lengths[cursor + 1] - lengths[cursor]).max(1.0e-9);
+            let t = ((wanted - lengths[cursor]) / span).clamp(0.0, 1.0);
+            let a = walked[cursor];
+            let b = walked[cursor + 1];
+            (
+                a.position.lerp(b.position, t),
+                // The frame is taken from the nearer sample rather than
+                // interpolated. Two frames a fraction of a blade apart differ by
+                // a small rotation, and lerping their axes denormalises them —
+                // which would show up as a seam of wrong-facing normals exactly
+                // where the blade twists most.
+                if t < 0.5 { a.frame } else { b.frame },
+                a.half_reference + (b.half_reference - a.half_reference) * t,
+            )
+        };
+
+        let half_width = (half / iso::PX_PER_METRE * width_scale).max(1.0e-5);
+        let ridge = crate::geometry::RIDGE * half_width;
+        for step in 0..VERTICES_PER_RIB {
+            // −1, 0, +1 across the blade.
+            let u = step as f32 - 1.0;
+            // A parabolic crown: proud at the middle, flush at both edges.
+            let lift = ridge * (1.0 - u * u);
+            let vertex = position + frame.binormal * (u * half_width) + frame.normal * lift;
+            let reflected = to_blender(vertex);
+            out.push([reflected.x, reflected.y, reflected.z]);
         }
-        let span = (lengths[cursor + 1] - lengths[cursor]).max(1.0e-9);
-        let t = ((wanted - lengths[cursor]) / span).clamp(0.0, 1.0);
-        let a = walked[cursor];
-        let b = walked[cursor + 1];
-        let position = to_blender(a.position.lerp(b.position, t));
-        let half = a.half_reference + (b.half_reference - a.half_reference) * t;
-        out.push([
-            position.x,
-            position.y,
-            position.z,
-            (half / iso::PX_PER_METRE * width_scale).max(1.0e-5),
-        ]);
     }
 }
 
@@ -742,18 +778,25 @@ mod tests {
 
         let mut points = Vec::new();
         resample_into(&walked, 1.0, &mut points);
-        assert_eq!(points.len(), POINTS_PER_BLADE);
+        assert_eq!(points.len(), VERTICES_PER_BLADE);
 
         // The ends have to be the ends: a resample that drifts off the root
         // detaches every blade in the page from the ground it grows out of.
         // Compared against the *reflected* walk, because the export crosses the
         // handedness boundary — see `to_blender`.
-        let first = Vec3::new(points[0][0], points[0][1], points[0][2]);
-        assert!(first.distance(to_blender(walked[0].position)) < 1.0e-4);
-        let last = points[POINTS_PER_BLADE - 1];
+        // The middle vertex of a rib sits on the centreline plus the ridge, so
+        // the root is checked against the rib's own centre rather than against a
+        // corner of it.
+        let centre = Vec3::new(points[1][0], points[1][1], points[1][2]);
+        let root = to_blender(walked[0].position);
+        assert!(
+            centre.distance(root) < 0.01,
+            "root rib centred at {centre:?}, not {root:?}"
+        );
+        let last = points[VERTICES_PER_BLADE - 2];
         let tip = Vec3::new(last[0], last[1], last[2]);
         let end = to_blender(walked[walked.len() - 1].position);
-        assert!(tip.distance(end) < 1.0e-3);
+        assert!(tip.distance(end) < 0.01, "tip rib at {tip:?}, not {end:?}");
     }
 
     #[test]
@@ -797,6 +840,48 @@ mod tests {
     }
 
     #[test]
+    fn a_ribbon_is_folded_so_its_two_facets_face_different_ways() {
+        // The property the whole mesh export exists for. A flat ribbon presents
+        // one normal and shades uniformly; this checks the fold is real by
+        // measuring the angle between the two facets of one rib.
+        use crate::geometry::Frame;
+        let frame = Frame::build(0.0, 1.0, 0.0, 1.0, 0.0);
+        let walk: Vec<BladeSample> = [0.0f32, 0.5, 1.0]
+            .iter()
+            .map(|t| BladeSample {
+                position: Vec3::new(0.0, 0.0, *t),
+                frame,
+                half_reference: 6.0,
+                along: *t,
+                tip_light: 0.0,
+                root_shade: 0.0,
+            })
+            .collect();
+        let mut points = Vec::new();
+        resample_into(&walk, 1.0, &mut points);
+
+        let at = |i: usize| Vec3::new(points[i][0], points[i][1], points[i][2]);
+        let (left, centre, right) = (at(0), at(1), at(2));
+        // The centre stands proud of the chord between the edges.
+        let chord = left.lerp(right, 0.5);
+        assert!(
+            centre.distance(chord) > 1.0e-4,
+            "the rib is flat: centre {centre:?} sits on the chord {chord:?}"
+        );
+
+        // And the two facets genuinely diverge.
+        let along = Vec3::Z;
+        let left_normal = (centre - left).cross(along).normalize();
+        let right_normal = (right - centre).cross(along).normalize();
+        let angle = left_normal.dot(right_normal).clamp(-1.0, 1.0).acos();
+        assert!(
+            angle.to_degrees() > 15.0,
+            "the facets differ by only {:.1}°",
+            angle.to_degrees()
+        );
+    }
+
+    #[test]
     fn resampling_spaces_points_by_arc_length() {
         // A straight run with samples deliberately bunched at one end. Even
         // spacing on the output is what says the resample read distance rather
@@ -817,13 +902,15 @@ mod tests {
         let mut points = Vec::new();
         resample_into(&bunched, 1.0, &mut points);
 
-        let step = 1.0 / (POINTS_PER_BLADE - 1) as f32;
-        for (i, point) in points.iter().enumerate() {
-            let wanted = step * i as f32;
+        // Read the centre vertex of each rib; the edges are offset sideways by
+        // construction and would not sit on the centreline.
+        let step = 1.0 / (RIBS_PER_BLADE - 1) as f32;
+        for rib in 0..RIBS_PER_BLADE {
+            let z = points[rib * VERTICES_PER_RIB + 1][2];
+            let wanted = step * rib as f32;
             assert!(
-                (point[2] - wanted).abs() < 1.0e-3,
-                "point {i} landed at {} rather than {wanted}",
-                point[2]
+                (z - wanted).abs() < 1.0e-3,
+                "rib {rib} landed at {z} rather than {wanted}"
             );
         }
     }
