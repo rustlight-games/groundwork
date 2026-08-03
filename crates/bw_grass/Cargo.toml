@@ -44,6 +44,11 @@ path = "examples/grass_lab.rs"
 name = "grass_dataset"
 path = "examples/grass_dataset.rs"
 
+# The look gate: absolute numbers for a plate, against reference art.
+[[example]]
+name = "grass_critique"
+path = "examples/grass_critique.rs"
+
 # The performance suite. `harness = false` because criterion supplies its own.
 [[bench]]
 name = "bake"

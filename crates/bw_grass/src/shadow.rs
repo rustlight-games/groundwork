@@ -340,9 +340,28 @@ pub fn sun_samples(count: usize) -> Vec<Vec2> {
 /// The real sun is about half a degree across and casts shadows far crisper than
 /// this. Grass does not read that way in a stylised isometric plate — a hard
 /// shadow edge on a blade a few pixels wide is a jagged line, not a shadow — so
-/// this is deliberately several times life size, which is the same licence the
-/// art takes everywhere else.
-pub const SUN_RADIUS: f32 = 0.055;
+/// this is deliberately far larger than life, which is the same licence the art
+/// takes everywhere else.
+///
+/// ## Why it has to be this large, arithmetically
+///
+/// A penumbra is `2 · d · radius` wide, where `d` is how far the caster stands
+/// above what it shades. Grass is short: a blade sits some ten centimetres up,
+/// so at the half-degree of the real sun the penumbra is *nine microns*, and
+/// even at several times life size it stays under one page pixel at
+/// [`crate::iso::PX_PER_METRE`].
+///
+/// A sub-pixel penumbra is not a soft shadow that went unnoticed. It is a
+/// **binary** term — every sample lands on the same side of the blocker — and
+/// what it produces is not a shadow but a stencil: hard-edged blotches with
+/// nothing in between. That shows up in the numbers as a bimodal `sunlight`
+/// channel, which is precisely what it was before this constant was derived
+/// rather than picked.
+///
+/// Nine degrees puts the penumbra at about three page pixels for a caster a
+/// hand's width up and grades smoothly from there, which is the softness the
+/// term needs to read as light falling off rather than as a mask.
+pub const SUN_RADIUS: f32 = 0.16;
 
 /// Turn the sun by a disc offset.
 pub fn nudge(sun: Vec3, offset: Vec2, radius: f32) -> Vec3 {

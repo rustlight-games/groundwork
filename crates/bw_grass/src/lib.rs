@@ -60,6 +60,7 @@
 
 pub mod bake;
 pub mod compare;
+pub mod critique;
 pub mod dataset;
 pub mod fastmath;
 pub mod field;
@@ -81,6 +82,7 @@ pub mod surface;
 
 pub use bake::{BakeParams, Page, bake};
 pub use compare::{Similarity, Verdict};
+pub use critique::Critique;
 pub use dataset::{Pair, ShardMetadata};
 pub use field::WorldField;
 pub use lab::{Fixture, Key, Lab, bake_lab};
