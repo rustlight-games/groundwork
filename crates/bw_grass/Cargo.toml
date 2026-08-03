@@ -49,6 +49,11 @@ path = "examples/grass_dataset.rs"
 name = "grass_critique"
 path = "examples/grass_critique.rs"
 
+# Placement here, light transport in Cycles.
+[[example]]
+name = "grass_cycles"
+path = "examples/grass_cycles.rs"
+
 # The performance suite. `harness = false` because criterion supplies its own.
 [[bench]]
 name = "bake"

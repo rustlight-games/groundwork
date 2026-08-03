@@ -61,6 +61,7 @@
 pub mod bake;
 pub mod compare;
 pub mod critique;
+pub mod cycles;
 pub mod dataset;
 pub mod fastmath;
 pub mod field;

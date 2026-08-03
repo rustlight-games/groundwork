@@ -59,15 +59,22 @@ impl GrassRenderQuality {
         }
     }
 
-    /// Light-space texels per final page pixel, or zero for no cast shadows.
+    /// Light-space texels per final page pixel. Never zero.
     ///
     /// Above one on purpose. Grass shadows are thin, and a shadow map at the
     /// resolution of the thing receiving it aliases into a dotted line — the
     /// blade is a pixel wide and the shadow test either hits it or does not.
+    ///
+    /// Preview's one and a half used to be zero, and zero was a mistake of a
+    /// particular kind: it read as "this tier cannot afford shadows" when what
+    /// it actually meant was "this tier renders a different meadow". See
+    /// [`GrassRenderQuality::shadow_density`]'s sibling note on the module
+    /// invariant — a tier may change how finely a thing is measured, never
+    /// whether it is there.
     #[inline]
     pub const fn shadow_density(self) -> f32 {
         match self {
-            Self::Preview => 0.0,
+            Self::Preview => 1.5,
             Self::Dataset => 3.0,
             Self::Reference => 4.0,
         }
@@ -80,20 +87,30 @@ impl GrassRenderQuality {
     /// filter that follows it. Reference spends more because a soft shadow with
     /// too few samples does not look noisy, it looks *banded*, and banding is
     /// the one artefact a neural renderer will faithfully learn.
+    ///
+    /// Preview takes three rather than one for the same reason it now takes a
+    /// shadow map at all: one sample is a point sun, and a point sun's shadow
+    /// has a hard edge wherever the geometry does. That is not a cheaper version
+    /// of the soft shadow, it is a different mark.
     #[inline]
     pub const fn sun_samples(self) -> usize {
         match self {
-            Self::Preview => 1,
+            Self::Preview => 3,
             Self::Dataset => 4,
             Self::Reference => 12,
         }
     }
 
     /// Horizon directions ambient occlusion is gathered over.
+    ///
+    /// Six in preview, not zero. Occlusion is where most of this renderer's
+    /// darkness lives — the interiors of tufts, the channels between them — and
+    /// a tier without it is not a rougher picture of the same field, it is a
+    /// picture of a field lit from everywhere at once.
     #[inline]
     pub const fn ao_directions(self) -> usize {
         match self {
-            Self::Preview => 0,
+            Self::Preview => 6,
             Self::Dataset => 8,
             Self::Reference => 16,
         }
@@ -111,9 +128,19 @@ impl GrassRenderQuality {
     }
 
     /// Whether a blade is given a real cross-section rather than a flat ribbon.
+    ///
+    /// Always. This was a tier switch and should never have been one: a flat
+    /// ribbon presents one normal across its whole width, so it catches a single
+    /// uniform lighting value and reads as a painted stroke. The fold is what
+    /// puts a lit side and a shaded side *inside* one blade, and that internal
+    /// value break is most of what makes the mark read as a leaf.
+    ///
+    /// It is kept as a method rather than deleted because the cost is real and
+    /// the question — is the fold worth its ribs — is one a future tier may want
+    /// to ask again. What it may not do is ask it and get a different picture.
     #[inline]
     pub const fn cross_section(self) -> bool {
-        matches!(self, Self::Dataset | Self::Reference)
+        true
     }
 
     /// Ribs per supersampled pixel of blade length.
@@ -173,12 +200,30 @@ mod tests {
     }
 
     #[test]
-    fn only_the_cheap_tier_goes_without_shadows() {
-        assert_eq!(GrassRenderQuality::Preview.shadow_density(), 0.0);
-        for tier in [GrassRenderQuality::Dataset, GrassRenderQuality::Reference] {
+    fn no_tier_goes_without_the_things_that_make_the_picture() {
+        // The module invariant, as a test. A tier may change how finely a thing
+        // is measured; it may not change whether the thing is there. This
+        // replaces an assertion that Preview had *no* shadows, which was the
+        // invariant being violated rather than upheld: measured against the same
+        // art, the shadowless tier came out at twice the median luminance and
+        // had two tenths of a percent of the deep shadow the others did. It was
+        // not a rougher picture of the same field, it was a different field.
+        for tier in TIERS {
             assert!(
-                tier.shadow_density() > 1.0,
-                "{tier:?} cannot resolve a blade"
+                tier.shadow_density() > 0.0,
+                "{tier:?} casts no shadows at all"
+            );
+            assert!(
+                tier.sun_samples() > 1,
+                "{tier:?} has a point sun, so its shadows have no penumbra"
+            );
+            assert!(
+                tier.ao_directions() > 0,
+                "{tier:?} gathers no occlusion, so its tufts have no interior"
+            );
+            assert!(
+                tier.cross_section(),
+                "{tier:?} draws flat ribbons, so its blades catch one flat value"
             );
         }
     }

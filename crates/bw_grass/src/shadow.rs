@@ -517,20 +517,29 @@ mod tests {
     }
 
     #[test]
-    fn the_preview_tier_builds_no_map_at_all() {
+    fn every_tier_builds_a_map_and_the_dearer_ones_build_finer_ones() {
+        // Preview used to build no map at all, and the picture it produced was
+        // a different meadow rather than a cheaper one. What a tier is allowed
+        // to change is the *texel size*.
         let params = BakeParams::default();
         let page = Page::new(Vec2::ZERO, 32, 32);
         let field = WorldField::lit_by(params.seed, params.light);
         let scene = GrassScene::build(page, &field, &params);
-        assert!(
-            ShadowMap::cast(
-                &scene,
-                sun_at(0.6),
-                0.4,
-                GrassRenderQuality::Preview,
-                Vec2::ZERO
-            )
-            .is_none()
-        );
+
+        let mut previous = f32::INFINITY;
+        for tier in [
+            GrassRenderQuality::Preview,
+            GrassRenderQuality::Dataset,
+            GrassRenderQuality::Reference,
+        ] {
+            let map = ShadowMap::cast(&scene, sun_at(0.6), 0.4, tier, Vec2::ZERO)
+                .unwrap_or_else(|| panic!("{tier:?} built no shadow map"));
+            assert!(
+                map.texel() < previous,
+                "{tier:?} texel {} is not finer than {previous}",
+                map.texel()
+            );
+            previous = map.texel();
+        }
     }
 }

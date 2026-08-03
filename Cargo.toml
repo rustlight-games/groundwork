@@ -6,6 +6,11 @@ rust-version.workspace = true
 
 [workspace]
 members = ["crates/bw_core", "crates/bw_content", "crates/bw_nav", "crates/bw_sim", "crates/bw_ai", "crates/bw_bench", "crates/bw_render", "crates/bw_grass", "crates/bw_ui", "crates/bw_app", "plugins/*", "tools/*"]
+# `tools/*` is a glob over Rust crates, and `bw_cycles` is not one — it is the
+# Blender-side half of the path-traced renderer, driven as a subprocess. It lives
+# under `tools/` because that is where a thing you run rather than link belongs,
+# and Cargo has to be told it is not a member.
+exclude = ["tools/bw_cycles"]
 
 [workspace.package]
 version = "0.1.0"
