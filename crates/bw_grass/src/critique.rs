@@ -72,6 +72,20 @@ pub struct Critique {
     pub coherence: f32,
     /// L\* at the 5th, 25th, 50th, 75th and 95th percentiles.
     pub ladder: [f32; 5],
+    /// Mean Lab chroma of the highlight population alone.
+    ///
+    /// Separate from [`Critique::chroma`] because the two fail apart, and the
+    /// whole-image figure hides it. A canopy can hold a perfectly good average
+    /// saturation while every one of its *bright* pixels is white — which is
+    /// what a specular lobe on a coloured surface produces, and what tells the
+    /// difference between a blade lit through green tissue and one varnished
+    /// with white light.
+    pub highlight_chroma: f32,
+    /// Fraction of pixels with any channel at or above full scale.
+    ///
+    /// Clipping is not a look, it is lost information, and on a training corpus
+    /// it is lost information the network will faithfully reproduce.
+    pub clipped: f32,
 }
 
 /// Below this L\*, a pixel counts as true shadow.
@@ -128,6 +142,23 @@ impl Critique {
 
         let deep = lstar.iter().filter(|l| **l < DEEP_SHADOW_LSTAR).count();
         let bright = lstar.iter().filter(|l| **l > HIGHLIGHT_LSTAR).count();
+
+        let mut highlight_chroma = 0.0f64;
+        let mut clipped = 0usize;
+        for (pixel, l) in pixels.iter().zip(&lstar) {
+            if *l > HIGHLIGHT_LSTAR {
+                let lab = lab_of(*pixel);
+                highlight_chroma += (lab[1] * lab[1] + lab[2] * lab[2]).sqrt() as f64;
+            }
+            if pixel.x >= 1.0 || pixel.y >= 1.0 || pixel.z >= 1.0 {
+                clipped += 1;
+            }
+        }
+        let highlight_chroma = if bright == 0 {
+            0.0
+        } else {
+            (highlight_chroma / bright as f64) as f32
+        };
         let mean_luminance = (luminance.iter().map(|l| *l as f64).sum::<f64>() / n) as f32;
 
         let mut sorted_luminance = luminance.clone();
@@ -148,6 +179,8 @@ impl Critique {
             gradient_energy: gradient_energy(&lstar, width, height),
             detail_energy: detail_energy(&lstar, width, height),
             coherence: coherence(&lstar, width, height),
+            highlight_chroma,
+            clipped: clipped as f32 / count as f32,
             ladder: [
                 percentile(&sorted_lstar, 0.05),
                 percentile(&sorted_lstar, 0.25),
@@ -161,7 +194,7 @@ impl Critique {
     /// A one-line-per-number table, with a second plate beside it if given.
     pub fn table(&self, against: Option<&Critique>) -> String {
         let mut out = String::new();
-        let rows: [(&str, f32, fn(f32) -> String); 11] = [
+        let rows: [(&str, f32, fn(f32) -> String); 13] = [
             ("median luminance", self.median_luminance, three),
             ("mean luminance", self.mean_luminance, three),
             ("deep shadow L*<20", self.deep_shadow * 100.0, percent),
@@ -172,9 +205,11 @@ impl Critique {
             ("gradient energy", self.gradient_energy, two),
             ("detail energy", self.detail_energy, two),
             ("coherence @32px", self.coherence, three),
+            ("highlight chroma", self.highlight_chroma, one),
+            ("clipped", self.clipped * 100.0, percent),
             ("L* median", self.ladder[2], one),
         ];
-        let theirs: Option<[f32; 11]> = against.map(|o| {
+        let theirs: Option<[f32; 13]> = against.map(|o| {
             [
                 o.median_luminance,
                 o.mean_luminance,
@@ -186,6 +221,8 @@ impl Critique {
                 o.gradient_energy,
                 o.detail_energy,
                 o.coherence,
+                o.highlight_chroma,
+                o.clipped * 100.0,
                 o.ladder[2],
             ]
         });
@@ -279,7 +316,7 @@ impl Band {
 /// Grading a plate down satisfies the second and immediately breaks the first,
 /// so the only way to hold both is to put the darkness where darkness belongs —
 /// in occlusion and cast shadow — rather than in the exposure.
-pub const BANDS: [Band; 5] = [
+pub const BANDS: [Band; 6] = [
     Band {
         name: "median luminance",
         low: 0.042,
@@ -305,17 +342,23 @@ pub const BANDS: [Band; 5] = [
         low: 32.0,
         high: 46.0,
     },
+    Band {
+        name: "highlight chroma",
+        low: 30.0,
+        high: 58.0,
+    },
 ];
 
 impl Critique {
     /// The gated numbers, in [`BANDS`] order.
-    pub fn gated(&self) -> [f32; 5] {
+    pub fn gated(&self) -> [f32; 6] {
         [
             self.median_luminance,
             self.deep_shadow,
             self.highlight,
             self.coherence,
             self.chroma,
+            self.highlight_chroma,
         ]
     }
 

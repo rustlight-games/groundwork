@@ -221,11 +221,11 @@ def blade_material(settings):
     ramp.location = (-700, -100)
     ramp.color_ramp.interpolation = "EASE"
     stops = [
-        (0.00, (0.0060, 0.0340, 0.0035, 1.0)),
-        (0.22, (0.0125, 0.0790, 0.0055, 1.0)),
-        (0.55, (0.0230, 0.1620, 0.0075, 1.0)),
-        (0.82, (0.0360, 0.2450, 0.0095, 1.0)),
-        (1.00, (0.0620, 0.3300, 0.0130, 1.0)),
+        (0.00, (0.0040, 0.0330, 0.0022, 1.0)),
+        (0.22, (0.0085, 0.0800, 0.0034, 1.0)),
+        (0.55, (0.0165, 0.1680, 0.0046, 1.0)),
+        (0.82, (0.0260, 0.2560, 0.0058, 1.0)),
+        (1.00, (0.0470, 0.3450, 0.0078, 1.0)),
     ]
     first = ramp.color_ramp.elements[0]
     first.position, first.color = stops[0][0], stops[0][1]
@@ -239,26 +239,38 @@ def blade_material(settings):
     mix = nodes.new("ShaderNodeMix")
     mix.data_type = "RGBA"
     mix.location = (-500, 0)
-    mix.inputs["B"].default_value = (0.045, 0.132, 0.010, 1.0)
+    mix.inputs["B"].default_value = (0.034, 0.138, 0.006, 1.0)
 
     links.new(along.outputs["Result"], ramp.inputs["Fac"])
     links.new(ramp.outputs["Color"], mix.inputs["A"])
     links.new(maturity.outputs["Fac"], mix.inputs["Factor"])
     links.new(mix.outputs["Result"], principled.inputs["Base Color"])
 
-    principled.inputs["Roughness"].default_value = 0.32
-    principled.inputs["Subsurface Weight"].default_value = 0.55
-    principled.inputs["Subsurface Scale"].default_value = 0.006
-    principled.inputs["Subsurface Radius"].default_value = (0.004, 0.010, 0.002)
+    # ## Why the specular lobe is kept small
+    #
+    # A specular highlight is the *light's* colour, not the surface's, so on a
+    # green blade it is white. The first pass gave blades a waxy cuticle — high
+    # specular, a sheen and a coat — and the result measured a highlight chroma
+    # of 36 against the target's 59, with twelve times its clipped-pixel count.
+    # Read at native size those highlights were white wires laid over the field
+    # rather than blades catching the sun.
+    #
+    # The target's bright pixels are lit *through* green tissue. So the energy
+    # moves out of the specular lobe and into subsurface and transmission, both
+    # of which are tinted by the blade — brightness that stays green. What
+    # specular remains is broad rather than sharp, because a rough lobe spreads
+    # the same energy over a wider band and stops clipping.
+    principled.inputs["Roughness"].default_value = 0.48
+    principled.inputs["Subsurface Weight"].default_value = 0.70
+    principled.inputs["Subsurface Scale"].default_value = 0.008
+    principled.inputs["Subsurface Radius"].default_value = (0.004, 0.012, 0.002)
     # A blade is a sheet, not a solid; this is what stops Cycles treating it as
     # a volume with an inside.
     principled.inputs["Thin Wall"].default_value = True
-    principled.inputs["Transmission Weight"].default_value = 0.16
-    principled.inputs["Specular IOR Level"].default_value = 0.42
-    principled.inputs["Sheen Weight"].default_value = 0.18
-    principled.inputs["Sheen Roughness"].default_value = 0.35
-    principled.inputs["Coat Weight"].default_value = 0.06
-    principled.inputs["Coat Roughness"].default_value = 0.22
+    principled.inputs["Transmission Weight"].default_value = 0.32
+    principled.inputs["Specular IOR Level"].default_value = 0.20
+    principled.inputs["Sheen Weight"].default_value = 0.06
+    principled.inputs["Sheen Roughness"].default_value = 0.55
 
     links.new(principled.outputs["BSDF"], output.inputs["Surface"])
     return material
@@ -288,8 +300,8 @@ def ground_material():
 
     ramp = nodes.new("ShaderNodeValToRGB")
     ramp.location = (-600, 0)
-    ramp.color_ramp.elements[0].color = (0.030, 0.038, 0.014, 1.0)
-    ramp.color_ramp.elements[1].color = (0.086, 0.090, 0.036, 1.0)
+    ramp.color_ramp.elements[0].color = (0.022, 0.036, 0.009, 1.0)
+    ramp.color_ramp.elements[1].color = (0.070, 0.086, 0.024, 1.0)
 
     links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
     links.new(ramp.outputs["Color"], principled.inputs["Base Color"])
