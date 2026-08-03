@@ -193,8 +193,11 @@ impl Critique {
 
     /// A one-line-per-number table, with a second plate beside it if given.
     pub fn table(&self, against: Option<&Critique>) -> String {
+        /// A label, the value, and how to print it.
+        type Row = (&'static str, f32, fn(f32) -> String);
+
         let mut out = String::new();
-        let rows: [(&str, f32, fn(f32) -> String); 13] = [
+        let rows: [Row; 13] = [
             ("median luminance", self.median_luminance, three),
             ("mean luminance", self.mean_luminance, three),
             ("deep shadow L*<20", self.deep_shadow * 100.0, percent),
@@ -492,9 +495,9 @@ fn coherence(lstar: &[f32], width: usize, height: usize) -> f32 {
     let mut total = 0.0f64;
     let mut windows = 0usize;
     let mut y0 = 1;
-    while y0 + window <= height - 1 {
+    while y0 + window < height {
         let mut x0 = 1;
-        while x0 + window <= width - 1 {
+        while x0 + window < width {
             let (mut jxx, mut jxy, mut jyy) = (0.0f64, 0.0f64, 0.0f64);
             for y in y0..y0 + window {
                 for x in x0..x0 + window {
