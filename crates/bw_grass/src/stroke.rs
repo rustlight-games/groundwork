@@ -191,6 +191,38 @@ pub struct Stroke {
     pub depth_bias: f32,
 }
 
+impl Stroke {
+    /// A bound, in cache pixels, on how far this mark's paint can land from its
+    /// own root when drawn at `px_per_metre`.
+    ///
+    /// Conservative and cheap, and the cheapness is the point: it is evaluated
+    /// once per mark to decide whether to rasterise it at all, and most pages
+    /// reject about two marks in three this way. The bound has to be genuinely
+    /// an upper bound — a mark wrongly rejected is present on one side of a page
+    /// join and missing on the other — so it is derived rather than estimated,
+    /// and [`crate::bake::tests::the_stroke_reach_bound_is_never_beaten`] sweeps
+    /// the vocabulary against it.
+    ///
+    /// An arc of length `L` cannot displace its own tip further than `L` in a
+    /// straight line. The projection turns a world displacement `(dx, dy, dz)`
+    /// into `((dx - dy), (dx + dy)/2 - dz)` cache-pixel units, and maximising
+    /// each of those over the sphere of radius `L` gives `√2 L` across and
+    /// `√1.5 L` down. So `1.42` covers both, and the rib's own half-width and
+    /// under-stroke are added on top because those measure from the centreline
+    /// rather than from the root.
+    ///
+    /// On the mark rather than on the painter, because placement has to ask it
+    /// before there is a painter — a scene is built and only then drawn.
+    #[inline]
+    pub fn reach(&self, px_per_metre: f32) -> f32 {
+        const SPREAD: f32 = 1.4143;
+        let detail = px_per_metre / iso::PX_PER_METRE;
+        self.length.abs() * px_per_metre * SPREAD
+            + (self.width.abs() + self.tip_width.abs() + self.under.abs()) * detail
+            + 1.0
+    }
+}
+
 impl Default for Stroke {
     fn default() -> Self {
         Self {
@@ -333,10 +365,7 @@ impl<'a> Painter<'a> {
     /// rather than from the root.
     #[inline]
     pub fn reach(&self, stroke: &Stroke) -> f32 {
-        const SPREAD: f32 = 1.4143;
-        stroke.length.abs() * self.px_per_metre * SPREAD
-            + (stroke.width.abs() + stroke.tip_width.abs() + stroke.under.abs()) * self.detail
-            + 1.0
+        stroke.reach(self.px_per_metre)
     }
 
     /// Draw one stroke.

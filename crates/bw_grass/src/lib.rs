@@ -67,9 +67,11 @@ pub mod iso;
 pub mod lab;
 pub mod material;
 pub mod palette;
+pub mod placement;
 pub mod plugin;
 pub mod quality;
 pub mod rng;
+pub mod scene;
 pub mod stroke;
 pub mod surface;
 
@@ -81,3 +83,4 @@ pub use material::GrassSurfaceMaterial;
 pub use palette::Tone;
 pub use plugin::{GrassPlugin, GrassWorld, PAGE_PIXELS};
 pub use quality::GrassRenderQuality;
+pub use scene::{BakeRegion, GrassScene};
