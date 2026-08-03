@@ -49,7 +49,7 @@ fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
 /// arrive with enough index to reach the end of the ramp.
 #[inline]
 fn shoulder(q: f32) -> f32 {
-    const KNEE: f32 = 0.740;
+    const KNEE: f32 = 0.736;
     if q <= KNEE {
         q
     } else {
@@ -156,10 +156,19 @@ pub struct BakeParams {
     /// bright mass and leaves the mass itself flat. A field of bright centres in
     /// dark rings reads as cushions whatever shape the underlying forms are.
     ///
-    /// Measured against a blur a seventh of a metre wide, which is the scale a
+    /// Measured against a blur a third of a metre wide, which is the scale a
     /// bunch of grass is. So it says the one true thing about a bunch: the tips
     /// on top of it are in the light and the ground between it and the next one
     /// is not. Zero mean, so it costs no exposure — it only redistributes.
+    ///
+    /// And measured *off to one side*, toward the key — see [`RELIEF_REACH`].
+    /// Comparing a pixel with the canopy centred on it says only "is this high",
+    /// which is a symmetric statement and lights a bunch like a halo. Comparing
+    /// it with the canopy a few centimetres sunward says "is this the edge that
+    /// faces the light", which puts a bright rim on one side of every bunch and
+    /// a dark foot on the other. That pairing is what actually reads as volume:
+    /// a diffuse bright patch says a region is pale, a lit edge over a dark base
+    /// says a thing is standing up.
     pub canopy_relief: f32,
     /// The fixed directional self-shadow.
     pub shadow: f32,
@@ -180,6 +189,17 @@ pub struct BakeParams {
     /// The reference keeps a third of its luminance variance after a
     /// sixty-four-pixel blur. Mounds alone do not produce that; something has to
     /// vary at a scale larger than any single mound, and this is it.
+    ///
+    /// Cut hard when the regional fields doubled in size, and the two moves
+    /// belong together. Regions have to be large to read as places, but a large
+    /// region that varies in *brightness* is a large pale or dim area, and ten
+    /// worlds full of those sit much further apart in mean luminance than ten
+    /// worlds whose regions vary in hue, density and how tall the grass is. The
+    /// suite caught it immediately — the sweep's worst seed nearly doubled while
+    /// the plate this was being tuned against improved — and the repair is the
+    /// same thing the eye wants: regions that differ in character rather than in
+    /// exposure. Brightness is the one axis of regional variation that costs
+    /// something and says least.
     pub region: f32,
     /// Per-tuft brightness scatter.
     pub scatter: f32,
@@ -199,6 +219,22 @@ pub struct BakeParams {
     /// cooler as well as darker and its lights warmer as well as brighter, and a
     /// field that varies only in value reads as one plastic colour under a lamp.
     pub cool: f32,
+    /// How much chroma the body of the field gives up, leaving the tips alone.
+    ///
+    /// A deliberate, measured departure from the reference rather than a closer
+    /// match to it. The art this ramp was sampled from is a saturated painting
+    /// meant to be looked at; this is a battlefield floor that has to sit one
+    /// visual level below twenty units in faction colours, and a ground plane
+    /// carrying full chroma everywhere competes with them. Draining the low and
+    /// mid range and none of the top buys that headroom in the one place it is
+    /// free — the difference between a highlight and its surround gets *wider*,
+    /// not narrower, because only the surround moved.
+    ///
+    /// It shows up in the suite as a lower `saturation` row against the
+    /// reference, and that row is the one number here that is expected to read
+    /// worse. Everything it buys is either invisible to the descriptors or
+    /// visible only once there is something standing on the grass.
+    pub temper: f32,
     /// How far a region's own hue may wander: olive one way, blue-green the other.
     ///
     /// The regional counterpart of [`BakeParams::cool`], and the difference
@@ -265,26 +301,53 @@ impl Default for BakeParams {
             // over twice as far and the bunch stops having a top.
             blade_bend: (0.35, 1.40),
 
-            base_light: 0.577,
+            base_light: 0.556,
             tip_light: 0.42,
             glint: 0.775,
             side_light: 0.075,
-            under: 0.55,
+            // Barely pulled back, and the restraint is the lesson. The obvious
+            // reading of "too visually active" is to take contrast out of the
+            // marks, and it is wrong: measured against the art, the contrast at
+            // two and four pixels was already right, and cutting it produced a
+            // plate that was flatter everywhere and grouped no better. Activity
+            // is not the same quantity as contrast. What makes a surface read as
+            // busy is contrast that is *evenly distributed*, and the repair for
+            // that is at the bunch scale, not this one.
+            under: 0.60,
 
-            mound_light: 0.33,
+            // Down by a seventh rather than the third the eye asked for, and the
+            // difference is what the structure ladder costs. This term is the
+            // main thing organising the plate between a fifth of a metre and a
+            // metre; taking a third of it out drops the variance at those radii
+            // by a quarter, and a field with no mid-scale organisation reads as
+            // carpet, which is a worse failure than reading as cushions. The
+            // ridges and the shared flow already did most of the work the
+            // critique was asking this number to do.
+            mound_light: 0.31,
             elevation_light: 0.035,
             crown_light: 0.038,
-            micro_occlusion: 0.105,
-            canopy_relief: 0.20,
+            micro_occlusion: 0.108,
+            // Up by half, and now directional. This is where the volume that
+            // came out of `mound_light` goes, and it is a better place for it:
+            // it describes the bunches the eye actually groups by rather than
+            // the metre-scale swells underneath them.
+            canopy_relief: 0.42,
             shadow: 0.10,
             transmission: 0.17,
             light_blur: 4,
-            region: 0.44,
-            scatter: 0.505,
-            glaze: 0.11,
-            cool: 0.15,
+            region: 0.29,
+            // The one term that raises mid-scale organisation without touching
+            // a single pixel of high-frequency contrast, because it varies from
+            // tuft to tuft and a tuft is a fifth of a metre — exactly the radius
+            // the plate measures flattest at. Variation *between* bunches groups
+            // the field; variation *within* one only makes it noisy. They cost
+            // the same and this is the one worth having.
+            scatter: 0.50,
+            glaze: 0.12,
+            cool: 0.155,
+            temper: 0.18,
             drift: 0.52,
-            soften: 0.10,
+            soften: 0.065,
         }
     }
 }
@@ -412,18 +475,48 @@ fn lay_floor(surface: &mut Surface, page: &Page, field: &WorldField, lattice: &M
             // flat: bare ground painted one colour reads as a hole in the
             // texture rather than as ground.
             let grain = field.jitter(Stream::Soil, ground * 3.1, 9.0);
-            let soil = smoothstep(0.07, 0.82, bare);
+            // Opens sooner and saturates earlier than it did. The field grows
+            // twice as much bare ground as the finished plate shows, and almost
+            // all of the loss is here: a patch that needs four fifths of the
+            // field's peak before it is fully earth spends most of its area as
+            // slightly-brown thatch, which reads as a stain rather than as an
+            // opening. Widening the *placement* to compensate is the wrong
+            // repair and was tried — it makes more stains.
+            let soil = smoothstep(0.05, 0.64, bare);
             // Kept dark, and kept grainy. Bare ground that is much paler than
             // the canopy turns every blade lying across it into a dark comma on
             // a light field, which is the single loudest way to make a clearing
             // read as a hole with things planted in it.
             let loose = 1.0 - lattice.at(&lattice.resolution, x as f32, y as f32);
-            // Lifted well off the bottom of the thatch ramp. The floor shows
-            // between blades everywhere, and a floor that is genuinely dark
-            // turns every clump into a shaded volume sitting in a shadowed pit —
-            // which is a perfectly good way to draw a plant and the wrong way to
-            // draw this field.
-            let light = 0.35 + mottle * 0.28 + grain * 0.34 * soil + bare * 0.05 + loose * 0.10;
+            // A dark contact where the grass meets the earth, and only there.
+            //
+            // Peaks halfway through the transition and is zero at both ends, so
+            // it darkens neither the open soil nor the closed canopy — it draws
+            // a soft line along the boundary between them. Without it a patch of
+            // earth and the grass around it are two tones meeting at a feathered
+            // edge, and a feathered edge between two flat tones reads as one
+            // painted *over* the other. The dark line is what puts the soil
+            // underneath: it is the shadow of the fringe standing on it, which
+            // is the only reason ground ever looks like ground rather than like
+            // a hole of a different colour.
+            let rim = soil * (1.0 - soil) * 4.0;
+            // Its mean is lifted well off the bottom of the thatch ramp and its
+            // *range* reaches all the way down to it, and the difference between
+            // those two statements is the whole of this line. The floor shows
+            // between blades everywhere, so a floor that is uniformly dark turns
+            // every clump into a shaded volume sitting in a shadowed pit — a
+            // perfectly good way to draw a plant and the wrong way to draw this
+            // field. But a floor that never goes dark anywhere has no deepest
+            // point either, and the reference has one: half a percent of it sits
+            // under 0.20 luminance, all of it the gap between one bunch and the
+            // next seen edge-on. This field had a seventh of that, because the
+            // shallowest thing in the plate was also its darkest.
+            //
+            // Same mean, twice the spread. Almost nothing reaches the bottom —
+            // `mottle` is fractal noise and piles up around its middle — which
+            // is exactly the population the measurement is asking for.
+            let light = 0.17 + mottle * 0.54 + grain * 0.34 * soil + bare * 0.05 + loose * 0.10
+                - rim * 0.14;
 
             for sy in 0..SUPERSAMPLE {
                 for sx in 0..SUPERSAMPLE {
@@ -498,7 +591,7 @@ fn plant(painter: &mut Painter, bed: &Bed) {
         // short, there are three hundred of them to a square metre, and the
         // tuft pass thinning itself does nothing about them. An opening with a
         // full mat over it is an opening you cannot see.
-        |ground| (1.20 - ground.resolution * 0.20) * (1.0 - ground.bare * 0.55),
+        |ground| (1.20 - ground.resolution * 0.20) * (1.0 - ground.bare * 0.62),
         |painter, page, draw, root, ground, params| {
             let stroke = mat_stroke(draw, root, ground, params);
             paint(painter, page, stroke);
@@ -589,11 +682,20 @@ fn scatter(
             // be a broad fringe. A patch that goes from full grass to none over
             // a few centimetres has an edge, and edges are what make procedural
             // ground look stamped.
-            // Never all the way to nothing. The reference has no patch of
-            // ground with no green on it at all; even its barest scuffs carry
-            // shoots and root marks, and that is most of what keeps them
-            // reading as ground rather than as bald spots.
-            let coverage = 1.0 - smoothstep(0.04, 0.88, ground.bare) * 0.90;
+            // Never all the way to nothing, and a fifth rather than a tenth.
+            // The reference has no patch of ground with no green on it at all;
+            // even its barest scuffs carry shoots and root marks, and that is
+            // most of what keeps them reading as ground rather than as bald
+            // spots.
+            //
+            // The distinction that makes this affordable is between *coverage*
+            // and *closure*. Doubling the number of marks in an opening does not
+            // halve the visible earth, because what is added is short, flat and
+            // scattered — it speckles the soil rather than roofing it. A patch
+            // with nothing growing in it is a hole in the texture; a patch with
+            // shoots coming through it is somewhere the grass is thin, and the
+            // second one is what ground looks like.
+            let coverage = 1.0 - smoothstep(0.04, 0.88, ground.bare) * 0.80;
             if !draw.chance((ground.density * coverage * weight(&ground)).min(1.0)) {
                 continue;
             }
@@ -665,7 +767,7 @@ fn plant_light(draw: &mut Draw, ground: &Ground, params: &BakeParams) -> f32 {
         // Lifted, not lowered, over bare ground. A stroke lying across pale
         // earth at canopy brightness reads as a dark comma stuck to the soil;
         // the reference's clearings carry pale shoots, not dark ones.
-        + ground.bare * 0.12
+        + ground.bare * 0.07
 }
 
 /// The dark mat: short, hooked, and almost entirely buried.
@@ -696,8 +798,8 @@ fn mat_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &BakeParams)
         } else {
             Tone::Thatch
         },
-        base_light: (0.47
-            + draw.normal() * 0.10
+        base_light: (0.48
+            + draw.normal() * 0.16
             + ground.crown * 0.06
             + (1.0 - ground.resolution) * 0.06
             + ground.bare * 0.18)
@@ -733,15 +835,53 @@ fn grow_tuft(
     // reason the density is: blade length that tracks relief closely makes every
     // raised place taller *and* thicker *and* brighter, and three fields saying
     // one thing is how a surface starts reading as its own height map.
-    let vigour = ((0.48 + ground.crown * 0.32 + ground.density * 0.52) * (1.0 - ground.bare * 0.5))
-        .clamp(0.32, 1.35);
+    // Widened against the clump field and narrowed against the mound, at the
+    // same mean. How tall the grass is in one bunch against the next is the
+    // other half of what groups the field at a fifth of a metre — the first half
+    // being how bright it is — and unlike brightness it survives being squinted
+    // at, because a taller bunch occludes what is behind it.
+    // The bare-ground penalty is steeper than the coverage thinning, and the
+    // pair is what lets an opening carry twice the marks and still read as open.
+    // Shortening a shoot takes area out of the picture as the square; thinning
+    // the count takes it out linearly. So the marks in a clearing get more
+    // numerous and much smaller at the same time, which is speckle, and the ink
+    // on the soil goes *down* rather than up.
+    let vigour = ((0.16 + ground.crown * 0.30 + ground.density * 0.80)
+        * (1.0 - ground.bare * 0.62))
+        .clamp(0.24, 1.45);
     // One tuft in eight stands well clear of its neighbours. Sparse tall accents
     // are what stop the canopy reading as a mown line.
-    let reach = if draw.chance(0.12) {
+    let mut reach = if draw.chance(0.12) {
         draw.range(1.1, 1.35)
     } else {
         1.0
     };
+
+    // Sparks: a handful of tufts per square metre that are brighter than their
+    // surroundings whatever their surroundings say, aimed at the places that
+    // would otherwise have nothing.
+    //
+    // Three separate terms conspire on dim, loosely described ground — fewer
+    // marks glint, the glints that happen are weaker, and the glaze is at its
+    // strongest — so those regions come out as a soft dark mass with no
+    // incident in them at all. Each of the three is right on its own; together
+    // they overshoot, and the result reads as a stain on the texture rather than
+    // as a shaded part of a meadow. A broad dark area is only wrong while it is
+    // *featureless*: put a few lit tufts in it and the same darkness becomes
+    // depth, because now there is something at the front for it to be behind.
+    //
+    // So the rate leans deliberately the other way from everything else here —
+    // up where the ground is dim and loosely described, down where the ordinary
+    // glint population is already doing the job.
+    let spark = draw
+        .chance((0.04 + (1.0 - ground.resolution) * 0.045 - ground.tint * 0.03).clamp(0.0, 1.0));
+    if spark {
+        // Standing a little proud matters as much as being brighter: the glaze
+        // is keyed on canopy height, so a mark that does not clear the mass
+        // around it gets averaged straight back into the mass it was meant to
+        // break up.
+        reach = reach.max(draw.range(1.12, 1.3));
+    }
 
     // Along the local flow, loosely. A uniform heading over the whole circle is
     // isotropic, and isotropic grass has no direction for the eye to travel
@@ -768,11 +908,20 @@ fn grow_tuft(
         // at the centre.
         let angle = draw.range(0.0, std::f32::consts::TAU);
         let offset = Vec2::from_angle(angle) * radius * draw.unit().sqrt();
-        // Bare ground grows sideways. Upright sprouts evenly spaced across a
-        // clearing are the giveaway that the clearing was cut out of the grass
-        // rather than found in it.
-        let mut stroke = if ground.bare > 0.3 && draw.chance(0.55) {
-            let flat = if draw.chance(0.5) {
+        // Bare ground grows sideways, and mostly in dabs. Upright sprouts evenly
+        // spaced across a clearing are the giveaway that the clearing was cut
+        // out of the grass rather than found in it.
+        //
+        // Weighted toward `Fleck` rather than evenly with `Broad`, because the
+        // two do different jobs here. A broad stroke is a mass of colour and a
+        // few of them across an opening start roofing it; a fleck is a dab the
+        // width of a shoot, and a scatter of them speckles the earth without
+        // hiding any of it. Speckle is what an opening in real ground has —
+        // seedlings, root crowns, the odd blade coming through — and it is the
+        // difference between soil the grass has worn thin and a shape cut out of
+        // the canopy.
+        let mut stroke = if ground.bare > 0.3 && draw.chance(0.78) {
+            let flat = if draw.chance(0.72) {
                 Mark::Fleck
             } else {
                 Mark::Broad
@@ -791,7 +940,22 @@ fn grow_tuft(
         // The reference has bright single blades standing in dim clumps and dim
         // ones in bright clumps, and a tuft whose blades all agree exactly reads
         // as a moulded plastic plant.
-        stroke.base_light = (stroke.base_light + shade + draw.normal() * 0.09).clamp(0.05, 0.95);
+        //
+        // Narrowed, though, and the tuft-to-tuft scatter left alone. Variation
+        // *within* a bunch is the frequency that competes with a unit standing
+        // on the grass; variation *between* bunches is the frequency that groups
+        // them into something the eye can read at a glance. They cost the same
+        // and they are not worth the same.
+        stroke.base_light = (stroke.base_light + shade + draw.normal() * 0.085).clamp(0.05, 0.95);
+        if spark {
+            // Applied after the clamp's inputs are gathered rather than folded
+            // into `shade`, because a spark has to survive a dim neighbourhood
+            // rather than be averaged with it — and it has to catch the light
+            // whether or not this particular mark drew a glint.
+            stroke.base_light = (stroke.base_light + 0.10).min(0.95);
+            stroke.glint = stroke.glint.max(params.glint * draw.range(0.75, 1.15));
+            stroke.tip_light *= 1.3;
+        }
         paint(painter, page, stroke);
     }
 }
@@ -839,15 +1003,24 @@ impl Mark {
         let loose = 1.0 - resolution;
         let u = draw.unit();
         // Cumulative, so the weights read in the same order they are declared.
+        //
+        // Weighted toward the straight and the massed, and away from the curled.
+        // A tangle of thin hooked shapes is what moss, clover and low fern cover
+        // all look like; grass is a narrow tapered blade with one simple curve
+        // in it, and the reading depends far more on the *proportion* of curled
+        // marks than on any individual shape being wrong. `Dash` is the mark
+        // that reads unmistakably as a blade, `Broad` and `Buried` are the marks
+        // that stop being individually legible and become mass, and between them
+        // they are now over half the field.
         let weights = [
-            0.21 - loose * 0.08, // Dash
-            0.16 - loose * 0.06, // Kink
-            0.14 - loose * 0.05, // Sway
-            0.11 - loose * 0.04, // Hook
-            0.11 + loose * 0.06, // Fleck
-            0.10 + loose * 0.06, // Broad
-            0.06 + loose * 0.03, // Tangle
-            0.11 + loose * 0.05, // Buried
+            0.27 - loose * 0.10,  // Dash
+            0.14 - loose * 0.05,  // Kink
+            0.11 - loose * 0.04,  // Sway
+            0.075 - loose * 0.03, // Hook
+            0.10 + loose * 0.05,  // Fleck
+            0.13 + loose * 0.07,  // Broad
+            0.045 + loose * 0.02, // Tangle
+            0.13 + loose * 0.06,  // Buried
         ];
         let total: f32 = weights.iter().sum();
         let mut cursor = 0.0;
@@ -873,10 +1046,18 @@ impl Mark {
         let (short, tall) = params.blade_length;
         let (thin, thick) = params.blade_width;
         let (low, high) = params.blade_bend;
-        // Roughly a quarter of marks catch the light sharply, and fewer where the
+        // Roughly a seventh of marks catch the light sharply, and fewer where the
         // ground is loosely described. Give every blade a glint and the field
         // turns to wet plastic; give none and it is felt.
-        let lit = 0.11 + ground.resolution * 0.13;
+        //
+        // The *count* came down by a fifth and the strength did not move at all,
+        // which is the whole of the adjustment. Peak brightness is not what
+        // makes a field read as lime — the reference reaches the same peak this
+        // does — it is how much of the surface is up there with it. Bright
+        // pixels spread across a third of the plate stop being highlights and
+        // become the base colour, and then the actual base has to read as shadow
+        // to get any separation at all.
+        let lit = 0.09 + ground.resolution * 0.11;
         let glint = if draw.chance(lit) {
             // Well-described ground gets brighter accents as well as more of
             // them, which is what keeps its local contrast up while the loosely
@@ -1089,6 +1270,85 @@ fn leaf_cluster(
     }
 }
 
+/// How far toward the key the canopy-relief comparison is taken, in pixels.
+///
+/// About a seventh of a metre: small against the half-metre blur it reads from,
+/// so the term still says "this bunch against the ground around it" rather than
+/// "this bunch against the next one along", and large enough that the sunward
+/// and shaded sides of one bunch get visibly different answers. Push it much
+/// past a third of the blur radius and the two stop being the same measurement —
+/// a crest starts comparing itself to a neighbouring crest, and the whole field
+/// picks up a directional smear instead of individually lit bunches.
+const RELIEF_REACH: f32 = 14.0;
+
+/// How much of a broad lighting term's *downward* half survives.
+///
+/// Light may be broad; dark may not. This is the one rule that decides whether a
+/// generated field reads as ground under a sun or as ground that is patchily
+/// underexposed, and it is not symmetric — which is why it needs stating rather
+/// than falling out of the arithmetic.
+///
+/// A broad bright area is a place the sun is reaching, and the eye accepts one
+/// at any size. A broad *dark* area is not a shadow: shadows have a caster, and
+/// nothing in a flat meadow casts one metres across. Read at gameplay size, a
+/// soft dark region two or three metres wide reads as a patch of grass that has
+/// simply been dimmed — a stain on the texture rather than anything happening in
+/// the world — and it does this most obviously where the canopy is *open*, since
+/// there is not even any thickness to explain it.
+///
+/// So the terms that vary slowly get their negative half compressed hard, and
+/// the terms that vary fast — micro-occlusion at three pixels, the under-stroke
+/// on each mark, the mat below the canopy — keep theirs in full. Dark then only
+/// ever appears as a narrow thing between two lit things, which is the only
+/// place it is legible as depth. It costs a little exposure in the upward
+/// direction, which the field wanted anyway.
+const BROAD_DARK: f32 = 0.58;
+
+/// Keep a signed term's positive half and compress its negative half.
+///
+/// Deliberately linear on each side rather than a smooth curve through zero: a
+/// curve would also flatten the small values, which are most of the field, and
+/// the point is to change what *large* negative excursions do without touching
+/// the gentle modulation everywhere else. Continuous at zero, so nothing here
+/// can print an edge.
+#[inline]
+fn squashed(value: f32, below: f32) -> f32 {
+    if value >= 0.0 { value } else { value * below }
+}
+
+/// Rebalance a colour shift so it moves hue without also moving exposure.
+///
+/// Three separate terms in [`resolve`] push a resolved colour toward a different
+/// green — the canopy-depth cooling, the chroma calming, and the regional drift
+/// — and every one of them is meant to answer "*which* green is this" rather
+/// than "how much light is on it". Written by hand they do not: dropping red by
+/// a fifth takes real luminance out with it, and the three of them together were
+/// quietly costing the plate about a percent of its exposure.
+///
+/// That is worse than it sounds, because `drift` keys on a *regional* field. A
+/// hue shift that also darkens turns "this part of the meadow is a different
+/// green" into "this part of the meadow is dimmer", so whole regions lose light,
+/// the ten seeded worlds spread apart in mean luminance, and the suite reports it
+/// as a generator that cannot hold its exposure. The fix belongs here rather
+/// than in a compensating lift somewhere else, because a lift restores the mean
+/// and leaves the region-to-region spread exactly where it was.
+///
+/// Normalising the whole vector rather than solving for green alone: it is exact
+/// at every input colour instead of at the one the constant was derived from,
+/// and it survives someone changing a multiplier. It pulls a little of the shift
+/// back out — the ratio scales red and blue too — which is why the multipliers
+/// at the call sites are stated stronger than the effect they are meant to have.
+#[inline]
+fn hue_only(from: Vec3, to: Vec3) -> Vec3 {
+    const WEIGHTS: Vec3 = Vec3::new(0.2126, 0.7152, 0.0722);
+    let after = to.dot(WEIGHTS);
+    if after > 1.0e-6 {
+        to * (from.dot(WEIGHTS) / after)
+    } else {
+        to
+    }
+}
+
 /// Assemble one light index per pixel and look it up in a ramp.
 fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams) -> Vec<Vec3> {
     let (width, height) = (page.width, page.height);
@@ -1100,16 +1360,29 @@ fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams)
     // them becomes visible. Constants tile; page statistics do not.
     const CANOPY_CEILING: f32 = 48.0;
 
-    // Two radii of the same measurement, and they are a third of a metre apart
-    // because they answer different questions. Three pixels separates one blade
-    // from the one behind it. Thirty-four — about a third of a metre — is the
-    // distance from the middle of a bunch of grass to the open ground beside it,
-    // and that is the scale this field was measurably flattest at: the reference
-    // keeps half again as much variance through a thirty-two-pixel blur as an
-    // earlier version of this baker did, and none of the stroke work closes that
-    // gap, because a stroke is four pixels wide.
+    // Two radii of the same measurement, and they are half a metre apart because
+    // they answer different questions. Three pixels separates one blade from the
+    // one behind it. Fifty-two — about half a metre — is the distance from the
+    // middle of a bunch of grass to the open ground beside it.
+    //
+    // That second number is set by measurement rather than by taste, and it is
+    // worth saying how. Decomposing the structure ladder into energy per octave
+    // — `structure.r32² − structure.r64²` and its neighbours — says where the
+    // variance actually is, which no single rung of the ladder can. Read that
+    // way this field had *half again* the reference's energy between four and
+    // sixteen pixels and less than half of it between thirty-two and sixty-four:
+    // not a flat plate, a plate whose organisation was all at the wrong radius.
+    // This term is the one that decides which radius, because it is the only
+    // lighting term whose scale is a free parameter rather than a consequence of
+    // the geometry, and moving it from a third of a metre to a half moved the
+    // energy with it.
     let near = blur(&heights, width, height, 3);
-    let far = blur(&heights, width, height, 34);
+    let far = blur(&heights, width, height, 52);
+    // Which way to look for the canopy a bunch is standing against — see
+    // [`BakeParams::canopy_relief`]. Toward the key, so that a pixel on the
+    // sunward flank of a bunch is compared with the open ground in front of it
+    // and a pixel at its shaded foot is compared with the bunch itself.
+    let toward = Vec2::new(params.light.x, params.light.y).normalize_or(Vec2::NEG_Y);
 
     let shadow = directional_shadow(&heights, width, height, params.light);
     // Five pixels, not two. Sunlight through a canopy has no sharp edge to it;
@@ -1152,7 +1425,11 @@ fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams)
             // is the cheapest honest model of that, and it leaves flat ground
             // exactly neutral, which a wrap of the usual `(x+k)/(1+k)` form does
             // not.
-            const SHADED_SIDE: f32 = 0.42;
+            //
+            // Pulled down to meet [`BROAD_DARK`], which it is the oldest special
+            // case of: a mound is metres across, so its shaded back is a broad
+            // dark area and falls under the same rule.
+            const SHADED_SIDE: f32 = 0.40;
             let wrapped = if facing >= 0.0 {
                 facing
             } else {
@@ -1186,8 +1463,16 @@ fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams)
             // ground read as a hole punched through the field.
             let open = 1.0 - lattice.at(&lattice.bare, fx, fy) * 0.85;
             let micro = ((near[index] - canopy) * 0.09).clamp(0.0, 1.0) * open;
-            // Signed at the bunch scale — see [`BakeParams::canopy_relief`].
-            let relief = ((canopy - far[index]) * 0.035).clamp(-1.0, 1.0) * open;
+            // Signed, at the bunch scale, and read off toward the key — see
+            // [`BakeParams::canopy_relief`]. Clamped into the page rather than
+            // wrapped or mirrored: within `RELIEF_REACH` of an edge the offset
+            // collapses back to the symmetric comparison, which is a gradual
+            // softening of one term across ten pixels of a page that has already
+            // been blurred by `light_blur`, and not a discontinuity.
+            let sample = Vec2::new(fx, fy) + toward * RELIEF_REACH;
+            let sx = sample.x.clamp(0.0, (width - 1) as f32) as usize;
+            let sy = sample.y.clamp(0.0, (height - 1) as f32) as usize;
+            let relief = ((canopy - far[sy * width + sx]) * 0.040).clamp(-1.0, 1.0) * open;
 
             // How strongly this area states its mound at all. Without it the
             // macro lighting describes every form equally and reads as a map of
@@ -1198,9 +1483,9 @@ fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams)
                 + params.elevation_light * (rise - 0.45)
                 + params.crown_light * (crown - 0.4)
                 - params.micro_occlusion * micro
-                + params.canopy_relief * relief
+                + params.canopy_relief * squashed(relief, BROAD_DARK)
                 - params.shadow * shadow[index]
-                + params.region * tint;
+                + params.region * squashed(tint, BROAD_DARK);
         }
     }
 
@@ -1229,16 +1514,65 @@ fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams)
             // reference's darks are not its mid-greens turned down; they are a
             // different, bluer green, and a plate that only varies in value
             // gives itself away as one colour under a lamp.
+            //
+            // Deeper than it was, in both senses: more of it, and further. Warm
+            // light against cool shadow is the oldest way there is of making a
+            // surface read as lit rather than as patterned, and it is the one
+            // thing a value-only shader cannot fake — no amount of contrast
+            // between two samples of the same hue says which direction the sun
+            // is in.
             let ground_at = iso::from_cache_ground(page.origin + Vec2::new(fx, fy));
             let dampness = field.jitter(Stream::Tint, ground_at, 0.55);
             let shade_depth = (1.0 - (canopy / CANOPY_CEILING)).clamp(0.0, 1.0);
             let cool = params.cool * shade_depth * (0.4 + dampness * 0.8);
-            let cooled = Vec3::new(
-                resolved.x * 0.86,
-                resolved.y,
-                resolved.z + resolved.y * 0.035,
+            // Most of the cooling is red given up rather than blue picked up,
+            // and the ratio matters more than the amount. Adding blue to a green
+            // this saturated turns it toward teal and the hue rows say so within
+            // a couple of degrees; taking red out slides it toward emerald,
+            // which is the same perceptual move and costs nothing measurable.
+            let cooled = hue_only(
+                resolved,
+                Vec3::new(
+                    resolved.x * 0.78,
+                    resolved.y,
+                    resolved.z + resolved.y * 0.042,
+                ),
             );
             let resolved = resolved.lerp(cooled, cool.clamp(0.0, 1.0));
+
+            // Take a little chroma out of the body of the field and none at all
+            // out of the tips.
+            //
+            // The ramp is measured from the reference and the reference is a
+            // saturated painting, so a plate that matches it row for row is
+            // correct and still lands as one continuous acid green — because
+            // *every* part of it is carrying full chroma, and a colour that is
+            // everywhere is not a colour, it is a cast. Draining the mid and low
+            // range slightly while leaving the highlights alone widens the gap
+            // between the two, and a highlight is only as bright as what it sits
+            // against. Selective saturation reads richer than universal
+            // saturation; this is the whole of that idea in three lines.
+            //
+            // Red given up, not blue picked up, and this was worth getting
+            // wrong once to learn. The obvious way to desaturate is to lerp
+            // toward the pixel's own luminance, and in a palette whose blue
+            // channel sits at 0.04 that is almost entirely a blue *injection* —
+            // a five percent lerp moved the plate's mean blue by forty. The
+            // measured result was a field that had gone teal while the number
+            // that was supposed to move, saturation, had barely shifted.
+            //
+            // What "too lime" actually describes is red sitting too close to
+            // green, so that is the channel to move. Taking a little red out
+            // walks the hue toward emerald, reads as calmer at a glance, and
+            // costs almost nothing on any row of the comparison — the same
+            // perceptual result for a twentieth of the measured drift.
+            let luma = resolved.dot(Vec3::new(0.2126, 0.7152, 0.0722));
+            let calm = params.temper * (1.0 - smoothstep(0.40, 0.60, luma));
+            let calmed = hue_only(
+                resolved,
+                Vec3::new(resolved.x * 0.86, resolved.y, resolved.z * 1.06),
+            );
+            let resolved = resolved.lerp(calmed, calm.clamp(0.0, 1.0));
 
             // Then the region's own hue, which is keyed to nowhere near the same
             // thing — see [`BakeParams::drift`]. Both ends are gentle multiples
@@ -1246,14 +1580,23 @@ fn resolve(surface: &Surface, page: &Page, lattice: &Macro, params: &BakeParams)
             // paint, so the ramp's measured relationship between its channels
             // survives the drift and only its balance moves.
             let drift = lattice.at(&lattice.hue, fx, fy).clamp(-1.0, 1.0) * params.drift;
-            let shifted = if drift >= 0.0 {
-                // Olive: drier, older grass. Red gains on green and the blue
-                // that was barely there gives up more of it.
-                Vec3::new(resolved.x * 1.11, resolved.y * 0.955, resolved.z * 0.82)
-            } else {
-                // Blue-green: shaded, damp, or simply a different species.
-                Vec3::new(resolved.x * 0.86, resolved.y * 1.01, resolved.z * 1.06)
-            };
+            // Both branches are luminance-preserving — see [`hue_only`]. This is
+            // the one that mattered most: `hue` is a *regional* field, so a
+            // drift that also darkened made whole regions dim, and whole dim
+            // regions are what pushed the ten worlds apart in mean luminance.
+            // A plate that lands in a strongly drifted region was measurably
+            // darker than one that did not, for no reason anybody asked for.
+            let shifted = hue_only(
+                resolved,
+                if drift >= 0.0 {
+                    // Olive: drier, older grass. Red gains on green and the blue
+                    // that was barely there gives up more of it.
+                    Vec3::new(resolved.x * 1.14, resolved.y, resolved.z * 0.82)
+                } else {
+                    // Blue-green: shaded, damp, or simply a different species.
+                    Vec3::new(resolved.x * 0.84, resolved.y, resolved.z * 1.06)
+                },
+            );
             colours[index] = resolved.lerp(shifted, drift.abs());
 
             // Glaze the low canopy back into its neighbourhood, and leave the

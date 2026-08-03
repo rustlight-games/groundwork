@@ -152,6 +152,36 @@ against a blur a third of a metre wide and applied *signed* — a term that only
 ever darkens the shortfall draws a ring at the foot of every bright mass, which
 is the cushion reading arriving by a different route.
 
+**Light may be broad; dark may not.** The single least symmetric rule here, and
+the one that most changes how a generated field reads. A broad bright area is a
+place the sun is reaching and the eye accepts one at any size. A broad *dark*
+area is not a shadow — shadows have a caster, and nothing in a flat meadow casts
+one metres across — so it reads as a patch of grass that has simply been dimmed,
+a stain on the texture rather than an event in the world. It gives itself away
+worst where the canopy is open, since there is not even any thickness to explain
+it. So every slowly varying lighting term gets its negative half compressed hard
+(`bake::BROAD_DARK`) and the fast ones — micro-occlusion at three pixels, the
+under-stroke on each mark, the mat below the canopy — keep theirs in full. Dark
+then only ever appears as a narrow thing between two lit things, which is the
+only place it is legible as depth. There is a corollary that took a round of
+tuning to find: a broad dark area is only wrong while it is *featureless*. A
+handful of lit tufts scattered through one turn the same darkness back into
+depth, because there is finally something in front for it to be behind — so the
+baker seeds bright accents at a rate that deliberately rises where the ground is
+dim and loosely described, against the grain of every other term.
+
+**A hue shift is not an exposure shift.** Three terms push a resolved colour
+toward a different green — canopy-depth cooling, chroma calming, regional drift
+— and each answers "*which* green is this", never "how much light is on it".
+Written by hand they fail that: dropping red by a fifth takes real luminance with
+it. `bake::hue_only` renormalises each shift back to the luminance it started
+from. It matters most for the regional drift, because that one keys on position:
+a hue shift that also darkens turns "this part of the meadow is a different
+green" into "this part of the meadow is dimmer", whole regions lose light, and
+the ten seeded worlds spread apart in mean luminance. A compensating lift
+elsewhere restores the mean and leaves the spread exactly where it was, which is
+why the fix belongs at the shift rather than after it.
+
 **Isotropy is a look, and it is the wrong one.** Grass with a uniformly random
 heading looks the same in every direction, so nothing at the middle scale
 survives except the outline of each clump. One low-frequency flow field orients

@@ -174,6 +174,27 @@ Each rung diagnoses a different subsystem: 2–4 pixels is the stroke language,
 colour. The mistake this ladder exists to prevent is answering a mismatch at 64
 pixels by drawing more grass.
 
+#### Read the ladder as energy per octave, not rung by rung
+
+The rungs are cumulative — each is the variance surviving a blur — so a single
+rung reading low says almost nothing about *where* the shortfall is. Differencing
+the squares does: `structure.r32² − structure.r64²` is the energy between those
+two radii, and the row of differences localises a problem to one octave.
+
+This is worth doing before touching anything, because the two readings suggest
+opposite repairs. A ladder that is uniformly ten percent low means the plate is
+flat and wants more contrast everywhere. A ladder that is low at every rung
+because one octave is empty means the plate has the right amount of contrast at
+the wrong *scale*, and adding more will make it worse. The second has happened
+here twice. The most recent time, the plate carried half again the reference's
+energy between four and sixteen pixels and less than half of it between
+thirty-two and sixty-four — a field organised at the stroke scale and not at the
+scale the eye groups by — and the repair was to move the radius the canopy-relief
+term reads at, not to change any amount of anything.
+
+Both times the naive reading pointed at "add detail", and both times detail was
+already in surplus.
+
 ### The light index is a percentile, so tone matching is arithmetic
 
 `bw_grass::palette::GRASS` is measured from the reference in equal-population

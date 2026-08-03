@@ -134,28 +134,46 @@ pub const GRASS: [[f32; 3]; 33] = [
 /// grass, the bunches lose their separation, and the field reads as one
 /// continuous sward. Only the lowest two stops are down here, and almost nothing
 /// reaches them.
+///
+/// The bottom of it also swings toward emerald rather than simply down, and the
+/// swing fades out by the top where this ramp has to meet the grass. Deep
+/// vegetation that is only a darker version of the vegetation above it says
+/// nothing about depth — it says the lamp is dimmer there. A canopy interior is
+/// lit by light that has already been through several centimetres of leaf, and
+/// what comes out the other side is cooler as well as weaker. Two stops of red
+/// given up and a little blue picked up is the whole of it, and it is the
+/// difference between a cavity and a smudge.
 pub const THATCH: [[f32; 3]; 8] = [
-    [0.0910, 0.1930, 0.0262],
-    [0.1120, 0.2290, 0.0292],
-    [0.1340, 0.2620, 0.0338],
-    [0.1560, 0.2930, 0.0350],
-    [0.1790, 0.3230, 0.0360],
-    [0.1990, 0.3490, 0.0370],
+    [0.0838, 0.1938, 0.0318],
+    [0.1058, 0.2298, 0.0330],
+    [0.1292, 0.2625, 0.0362],
+    [0.1530, 0.2934, 0.0368],
+    [0.1770, 0.3232, 0.0372],
+    [0.1980, 0.3492, 0.0376],
     [0.2130, 0.3700, 0.0384],
     [0.2239, 0.3842, 0.0397],
 ];
 
-/// Bare earth. Olive, not red — the reference's soil sits near hue 50°, which is
+/// Bare earth. Olive-brown — the reference's soil sits near hue 50°, which is
 /// closer to its own grass than to anything a painter would call brown.
+///
+/// Warmed a few percent off that measurement, deliberately, and it is the only
+/// ramp here that is allowed to disagree with the art. Soil is the one material
+/// in the field that is not green, so it is the only place a *complementary*
+/// contrast is available at all — and a complementary contrast is worth far more
+/// to a green field than another green is. Pushed to a true brown it would read
+/// as a different game; held a few degrees warm of the grass it gives the eye
+/// somewhere to rest, and makes the green around it read as green rather than as
+/// the colour everything happens to be.
 pub const SOIL: [[f32; 3]; 8] = [
-    [0.2050, 0.2320, 0.0680],
-    [0.2540, 0.2810, 0.0800],
-    [0.3030, 0.3300, 0.0930],
-    [0.3520, 0.3800, 0.1060],
-    [0.4070, 0.4350, 0.1210],
-    [0.4680, 0.4950, 0.1390],
-    [0.5350, 0.5600, 0.1580],
-    [0.6100, 0.6320, 0.1820],
+    [0.2255, 0.2274, 0.0680],
+    [0.2794, 0.2754, 0.0800],
+    [0.3333, 0.3234, 0.0930],
+    [0.3872, 0.3724, 0.1060],
+    [0.4477, 0.4263, 0.1210],
+    [0.5148, 0.4851, 0.1390],
+    [0.5885, 0.5488, 0.1580],
+    [0.6710, 0.6194, 0.1820],
 ];
 
 /// Broadleaf: flatter shading and a touch bluer, so a leaf cluster separates

@@ -59,6 +59,21 @@ fn skewed(p: Vec2) -> Vec2 {
 /// 150–270 pixel band the reference's macro structure occupies.
 pub const MOUND_SPACING: f32 = 1.6;
 
+/// How far past its nominal size a bare patch can still be felt, as a multiple.
+///
+/// [`WorldField::blobs`] wobbles its boundary by up to five harmonics — a
+/// combined 1.638 at their limits — and then erodes the rim by a factor of up to
+/// 1.28, so the furthest a patch can contribute is 2.097 times its drawn size.
+/// This is the bound rounded up, and both the per-blob early-out and the window
+/// width are derived from it, so the two can never disagree.
+const REJECT: f32 = 2.2;
+
+/// The narrowest a bare patch's short axis gets, as a fraction of its round one.
+///
+/// Its reciprocal is how far the *long* axis reaches, which is what decides how
+/// many cells of window the field has to scan.
+const MIN_STRETCH: f32 = 0.648_074_1;
+
 /// Everything the composition layer knows about one point of ground.
 #[derive(Clone, Copy, Debug)]
 pub struct Ground {
@@ -437,25 +452,47 @@ impl WorldField {
         // large calm regions". Density varying only at the clump scale gives a
         // plate that is uniformly busy once you step back from it — every square
         // foot has had its fair share of thick and thin — and the eye reads that
-        // uniformity as machinery long before it can name what is wrong. Four
-        // metres per cycle is roughly a quarter of a 1080p view, which is the
-        // scale a painter would change their mind at.
+        // uniformity as machinery long before it can name what is wrong.
+        //
+        // Nearly eight metres per cycle, which is most of a 1080p view and about
+        // twice what it used to be. The scale is set by what the field has to
+        // read as at *gameplay* size rather than by what looks varied in a
+        // plate: a region the size of a couple of unit footprints is a mottle
+        // the player scrolls past, and one the size of half the screen is a part
+        // of the map. Regions have to be big enough that the eye meets the broad
+        // pattern first and the clumps second, which is the order this had
+        // backwards.
         let sweep = smoothstep(
             0.32,
             0.76,
-            fbm(self.seed, Stream::Family, p.x * 0.24 + 77.0, p.y * 0.24, 4),
+            fbm(self.seed, Stream::Family, p.x * 0.13 + 77.0, p.y * 0.13, 4),
         );
+        // Moved down to fill the hole the broader regions opened, not left where
+        // it was. The three scales have to *ladder*: pushing the regional field
+        // out to eight metres while this one stayed at one and a half left
+        // nothing describing the band between them, and the mounds alone are not
+        // enough to hold it. Just under a metre is where a clump of grass ends
+        // and the next begins, which is the radius directly above the one the
+        // eye groups bunches at.
         let coarse = smoothstep(
             0.30,
             0.80,
-            fbm(self.seed, Stream::Family, p.x * 0.72, p.y * 0.72, 4),
+            fbm(self.seed, Stream::Family, p.x * 1.15, p.y * 1.15, 4),
         );
+        // The bunch scale, and the one carrying the most weight in the finished
+        // plate. Its curve is the steepest of the three on purpose: this is the
+        // radius the eye groups at — a third of a metre, forty-odd cache pixels
+        // — and a gentle curve here gives ground that is *slightly* thicker in
+        // some places, which reads as one continuous sward with a mottle on it.
+        // A steep one gives a bunch, then a gap, then the next bunch, which is
+        // the thing the reference has and the thing a flat structure ladder at
+        // r16–r32 is telling you is missing.
         let fine = smoothstep(
-            0.34,
-            0.74,
-            fbm(self.seed, Stream::Family, p.x * 1.9 + 40.0, p.y * 1.9, 3),
+            0.38,
+            0.68,
+            fbm(self.seed, Stream::Family, p.x * 2.4 + 40.0, p.y * 2.4, 3),
         );
-        let bunched = sweep * 0.26 + coarse * 0.38 + fine * 0.36;
+        let bunched = sweep * 0.28 + coarse * 0.34 + fine * 0.38;
         // Weighted toward the clump fields and away from the mounds. Density
         // that follows relief closely makes thickness a second statement of
         // height, and then every raised place is also a busy place and every
@@ -467,9 +504,9 @@ impl WorldField {
         // so the multiplier climbs with the count and the constant falls to keep
         // the mean where it was. Getting that wrong is easy and quiet: the field
         // simply stops having thin ground anywhere.
-        let density = (0.05 + bunched * 1.50 + crown * 0.22 + height * 1.1).clamp(0.05, 1.45);
+        let density = (bunched * 1.62 + crown * 0.22 + height * 1.1).clamp(0.05, 1.45);
 
-        // Several metres per cycle, deliberately larger than a mound, and
+        // Six metres per cycle, deliberately larger than a mound, and
         // deliberately a single scale.
         //
         // This is the only field with structure above the mound scale, and
@@ -478,7 +515,15 @@ impl WorldField {
         // noises narrows the spread of both, so the broad end — the one nothing
         // else in the plate can supply — pays for a mid scale that the clump
         // fields already cover.
-        let tint = fbm(self.seed, Stream::Tint, p.x * 0.30, p.y * 0.30, 4) * 2.0 - 1.0;
+        //
+        // Halved in frequency along with every other regional field here, and
+        // the cost is known and accepted: a plate that spans fewer cycles of
+        // this averages less of it away, so the ten worlds sit further apart in
+        // mean luminance and `match.distance` pays for it. What is bought is the
+        // thing the distance cannot see — that a region is large enough to be a
+        // *place* rather than a mottle. See the note on the tension in
+        // docs/BENCHMARKS.md.
+        let tint = fbm(self.seed, Stream::Tint, p.x * 0.16, p.y * 0.16, 4) * 2.0 - 1.0;
 
         Ground {
             height,
@@ -503,7 +548,7 @@ impl WorldField {
             // Hue that tracked brightness would only be a longer way of saying
             // the same thing: the pale regions warm, the dim ones cool, and the
             // field still reads as one colour under a moving lamp.
-            hue: fbm(self.seed, Stream::Hue, p.x * 0.21 + 29.0, p.y * 0.21, 3) * 2.0 - 1.0,
+            hue: fbm(self.seed, Stream::Hue, p.x * 0.115 + 29.0, p.y * 0.115, 3) * 2.0 - 1.0,
             bare: self.bare(world, height, density),
             colony: smoothstep(
                 0.42,
@@ -529,15 +574,29 @@ impl WorldField {
             // mound frequency gives calm and busy passages that are themselves
             // mound-sized, so the variation lands *inside* the texture instead
             // of organising it, and the plate ends up uniformly busy at every
-            // radius the eye checks. The broad term runs at about six metres per
-            // cycle — a third of a 1080p view — and it is the one that produces
-            // the quiet ground a detailed passage needs in order to read as
-            // detailed at all.
+            // radius the eye checks. The broad term runs at about ten metres per
+            // cycle — most of a 1080p view — and it is the one that produces the
+            // quiet ground a detailed passage needs in order to read as detailed
+            // at all.
+            //
+            // The band is deliberately off centre. `fbm` returns something
+            // roughly symmetric about a half, so a band centred there splits the
+            // field evenly between described and loose; pushing it up spends
+            // most of the ground on the quiet side and keeps the articulated
+            // passages for the minority that earns them. Grass that rewards
+            // close inspection everywhere rewards it nowhere, because there is
+            // nothing left for it to be more detailed *than*.
             resolution: smoothstep(
-                0.34,
-                0.66,
-                fbm(self.seed, Stream::Detail, p.x * 0.17 + 71.0, p.y * 0.17, 3) * 0.60
-                    + fbm(self.seed, Stream::Detail, p.x * 0.62, p.y * 0.62, 3) * 0.40,
+                0.38,
+                0.74,
+                fbm(
+                    self.seed,
+                    Stream::Detail,
+                    p.x * 0.095 + 71.0,
+                    p.y * 0.095,
+                    3,
+                ) * 0.60
+                    + fbm(self.seed, Stream::Detail, p.x * 0.52, p.y * 0.52, 3) * 0.40,
             ),
         }
     }
@@ -563,8 +622,18 @@ impl WorldField {
         // most of a metre across, and many small nicks between clumps. One
         // spacing produces patches that are all the same size, and a field of
         // same-size patches reads as a pattern however irregular each one is.
-        let broad = self.blobs(q, 3.1, 0.72, (0.30, 0.82), 0x00);
-        let fine = self.blobs(q, 1.15, 0.5, (0.12, 0.34), 0x40);
+        //
+        // Fewer of both than there were, and half again as large — the same
+        // quantity of earth arranged into a smaller number of bigger openings.
+        // Patch *count* and patch *area* pull in opposite directions on the same
+        // failure: many similar openings scattered evenly read as a texture
+        // applied to the grass, because nothing about where any one of them
+        // landed has a reason. A few large irregular ones read as places, and
+        // the small nicks near them read as their edges rather than as more
+        // texture. Total exposed earth is meant to come out slightly *up*, not
+        // down; it is the arrangement that changed.
+        let broad = self.blobs(q, 4.1, 0.50, (0.46, 1.18), 0x00);
+        let fine = self.blobs(q, 1.7, 0.46, (0.17, 0.46), 0x40);
         let flecks = self.blobs(q, 0.52, 0.20, (0.025, 0.075), 0x77);
         // Where the field is worn at all: a broad, soft region about a metre
         // across, inside which openings gather and outside which they mostly do
@@ -608,8 +677,14 @@ impl WorldField {
         // Thin grass is where earth shows. Tied to density rather than placed
         // independently, so a patch never opens in the middle of a thick clump —
         // which is what makes one read as a hole rather than as ground.
-        let sparse = (1.45 - density).clamp(0.12, 1.0);
-        (best * 6.6 * valley * sparse).clamp(0.0, 1.0)
+        let sparse = (1.55 - density).clamp(0.12, 1.0);
+        // Raised alongside the patch sizing above. Fewer and larger openings
+        // cover less ground at the same gain — a patch's area goes as the square
+        // of its size but its *count* fell faster than the size grew — and the
+        // aim was to rearrange the exposed earth rather than to reduce it. The
+        // reference has a little over two percent of its surface showing soil
+        // and this field had well under half of that.
+        (best * 13.0 * valley * sparse).clamp(0.0, 1.0)
     }
 
     /// An irregular blob field: jittered centres, wobbly boundaries.
@@ -617,13 +692,33 @@ impl WorldField {
     /// `salt` separates one scale's cell hashes from another's, so the fine
     /// patches are not simply small copies of the broad ones sitting in the same
     /// places.
+    ///
+    /// ## The window is derived, not assumed
+    ///
+    /// A blob is jittered a full cell from its own corner and stretched up to
+    /// `1/sqrt(0.42)` along one axis, so how many cells away one can still be
+    /// felt is a function of `spacing` and `size` rather than a constant. Getting
+    /// that wrong does not look like a clipped patch: a blob that a sample should
+    /// have seen and did not is a *step* in the bare field, which prints as a
+    /// straight line of dirt edge running across the world along a lattice
+    /// direction — page-independent, so every page agrees on it, and therefore
+    /// indistinguishable from something that was meant to be there.
+    ///
+    /// The three call sites are all sized so this comes out at one, and the
+    /// arithmetic is here rather than in a comment beside them so that raising a
+    /// patch size widens the window instead of silently truncating it.
     fn blobs(&self, q: Vec2, spacing: f32, chance: f32, size: (f32, f32), salt: i32) -> f32 {
         let cell = (q / spacing).floor();
         let (cx, cy) = (cell.x as i32 + salt, cell.y as i32 - salt);
         let mut best = 0.0f32;
 
-        for dy in -1..=1 {
-            for dx in -1..=1 {
+        // `REJECT` below bounds the reach in the blob's own stretched frame;
+        // dividing by the tightest stretch turns that into a world distance.
+        let span = REJECT * size.1 / MIN_STRETCH;
+        let reach = (span / spacing).ceil() as i32;
+
+        for dy in -reach..=reach {
+            for dx in -reach..=reach {
                 let mut draw = Draw::at(self.seed, Stream::Dirt, cx + dx, cy + dy);
                 // Most cells grow nothing. A patch per cell would read as a
                 // polka dot however irregular its outline.
@@ -642,7 +737,7 @@ impl WorldField {
                 // shrinks. Dividing one axis alone would make every elongated
                 // patch a smaller patch too, and the total bare ground would
                 // quietly follow the aspect ratio around.
-                let stretch = draw.range(0.42, 1.0).sqrt();
+                let stretch = draw.range(MIN_STRETCH * MIN_STRETCH, 1.0).sqrt();
                 // Lying along the same flow the ridges and the blades follow,
                 // loosely. A worn opening runs *with* the ground rather than
                 // across it, and openings that share a direction with the grass
@@ -655,7 +750,7 @@ impl WorldField {
                     (world_offset.y * cos - world_offset.x * sin) / stretch,
                 );
                 let distance = offset.length();
-                if distance > base * 2.2 {
+                if distance > base * REJECT {
                     continue;
                 }
                 // Four harmonics of boundary wobble. Two would read as an
@@ -778,8 +873,26 @@ mod tests {
             }
         }
         let fraction = bare as f32 / count as f32;
+        // A twelfth, not a sixteenth, and the band moved for a reason worth
+        // recording: this field stopped meaning "here is a hole in the grass"
+        // and started meaning "here the grass is thinning".
+        //
+        // `bare` now drives three things in the baker that all fade in
+        // gradually — how far the tuft coverage is thinned, how much the mat
+        // below it is thinned, and how short and flat the marks that do grow
+        // become — so a point at `bare = 0.6` still carries shoots, and the
+        // openings read as worn ground rather than as bald spots. What actually
+        // shows as earth in a finished plate is a good deal less than what this
+        // counts, and *that* is the number with a band on it:
+        // `grass.ground.soil_share`, 0.005 to 0.03, measured on the render by
+        // `grass_score`. It currently sits at 0.019 against the reference art's
+        // 0.023 — under, not over, while this field reads eight percent.
+        //
+        // So this bound is a runaway guard, not the specification. If it starts
+        // failing again, check `soil_share` before touching the placement:
+        // moving that number is what changes the picture.
         assert!(
-            fraction < 0.06,
+            fraction < 0.12,
             "too much bare ground: {:.1}%",
             fraction * 100.0
         );
