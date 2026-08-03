@@ -1,237 +1,151 @@
-//! Iterate on the grass without launching the game.
+//! The grass on its own, in a window.
 //!
-//! `cargo run -p bw_grass --example grass_sandbox`
+//! `cargo run --release -p bw_grass --example grass_sandbox`
 //!
-//! - **Left click** sets off a blast.
-//! - **Right drag** walks something heavy through the grass.
-//! - **Space** stands everything back up.
-//! - **Arrow keys** turn the wind; **-** and **=** change its strength.
+//! - **Arrow keys / WASD** pan the camera.
+//! - **Mouse wheel** zooms.
 //! - **F12** saves a screenshot.
 //!
-//! `BW_CAPTURE=path.png BW_CAPTURE_AFTER=2.5 cargo run -p bw_grass --example
-//! grass_sandbox` runs it headlessly enough to grab a frame and exit, which is
-//! how the look gets checked without a person sitting in front of it.
-//!
-//! `BW_CANVAS_HEIGHT=1080` (or 540, or 360) overrides the canvas height for one
-//! run, so the same seed and the same wind clock can be photographed at every
-//! chunkiness and compared side by side. The window is 1080p either way.
+//! Panning is the thing worth doing here that the headless baker cannot show:
+//! pages are baked independently, and a long diagonal drive is what proves they
+//! agree along their edges.
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use bevy::window::WindowResolution;
-use bw_grass::disturbance::GrassEvents;
-use bw_grass::disturbance::GrassInteractor;
-use bw_grass::field::GrassField;
-use bw_grass::scene::GrassPointer;
-use bw_grass::{
-    GrassPlugin, GrassScenePlugin, GrassSet, PixelCanvas, PixelStyle, WindField, grass_camera,
-};
+use bw_grass::{GrassPlugin, plugin::grass_camera};
+
+/// Metres of world visible vertically. The height the game frames a battle at.
+const RTS_HEIGHT: f32 = 26.0;
 
 fn main() {
     App::new()
-        // Before the plugins, so `PixelCanvasPlugin::build` finds it rather
-        // than inserting the shipped default over the top.
-        .insert_resource(PixelStyle::from_env())
         .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "Backseat Warlord — grass sandbox".to_string(),
-                        // The battle display, so what the sandbox shows is the
-                        // canvas the game runs at rather than whatever size the
-                        // window manager felt like.
                         resolution: WindowResolution::new(1920, 1080),
                         ..default()
                     }),
                     ..default()
                 })
-                // An example's asset root is its own crate directory, not the
-                // workspace. Without this the shader silently fails to load and
-                // the grass simulates perfectly while drawing nothing at all.
+                // Absolute, resolved at compile time. An example's asset root
+                // is neither the workspace nor the crate — it is wherever the
+                // built binary happens to sit, which differs between `cargo run`
+                // and running `target/release/examples/...` by hand. A relative
+                // path works in one and not the other, and the failure is a
+                // single error line in a log that scrolls past while the grass
+                // bakes perfectly and draws nothing at all.
                 .set(AssetPlugin {
-                    file_path: "../../assets".to_string(),
+                    file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets").to_string(),
                     ..default()
                 }),
         )
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
-        .add_plugins((GrassPlugin, GrassScenePlugin))
+        .add_plugins(GrassPlugin)
+        .insert_resource(Zoom(RTS_HEIGHT))
         .add_systems(Startup, setup)
-        .add_systems(Update, (control_wind, reset_field, report, capture, zoom))
-        // Explicitly after the mouse handlers and before the stamp: the scripted
-        // drag moves the same pointer the mouse does, and whichever runs last
-        // wins. Left unordered it silently loses about half the time.
-        .add_systems(
-            Update,
-            scripted_capture
-                .after(GrassSet::Sources)
-                .before(GrassSet::Stamp),
-        )
+        .add_systems(Update, (pan, zoom, capture, report, scripted_capture))
         .run();
 }
 
-/// Metres of world visible vertically.
 #[derive(Resource)]
 struct Zoom(f32);
 
-/// The height the game frames the battlefield at.
-const RTS_HEIGHT: f32 = 26.0;
-
 fn setup(mut commands: Commands) {
-    // Start where the game starts, so what the sandbox shows is what ships.
-    // Scroll in to inspect individual blades; the pixel canvas rescales with
-    // the zoom, so blades stay a whole number of pixels wide at any height.
     commands.spawn(grass_camera(RTS_HEIGHT));
-    commands.insert_resource(Zoom(RTS_HEIGHT));
 }
 
-/// Mouse wheel zooms, so the same scene serves both close inspection and
-/// judging how the field reads at gameplay distance.
+fn pan(
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    zoom: Res<Zoom>,
+    mut cameras: Query<&mut Transform, With<Camera2d>>,
+) {
+    let mut direction = Vec2::ZERO;
+    for (key, offset) in [
+        (KeyCode::ArrowLeft, Vec2::NEG_X),
+        (KeyCode::KeyA, Vec2::NEG_X),
+        (KeyCode::ArrowRight, Vec2::X),
+        (KeyCode::KeyD, Vec2::X),
+        (KeyCode::ArrowUp, Vec2::Y),
+        (KeyCode::KeyW, Vec2::Y),
+        (KeyCode::ArrowDown, Vec2::NEG_Y),
+        (KeyCode::KeyS, Vec2::NEG_Y),
+    ] {
+        if keys.pressed(key) {
+            direction += offset;
+        }
+    }
+    if direction == Vec2::ZERO {
+        return;
+    }
+    // Scaled by zoom, so panning covers the same fraction of the screen per
+    // second however far out the camera is.
+    let step = direction.normalize() * time.delta_secs() * zoom.0 * 0.55;
+    for mut transform in &mut cameras {
+        transform.translation += step.extend(0.0);
+    }
+}
+
 fn zoom(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     mut zoom: ResMut<Zoom>,
-    mut cameras: Query<&mut Projection>,
+    mut cameras: Query<&mut Projection, With<Camera2d>>,
 ) {
-    let mut change = 0.0;
-    for event in wheel.read() {
-        change -= event.y;
-    }
+    let change: f32 = wheel.read().map(|event| -event.y).sum();
     if change == 0.0 {
         return;
     }
-    zoom.0 = (zoom.0 * (1.0 + change * 0.08)).clamp(3.0, 64.0);
+    zoom.0 = (zoom.0 * (1.0 + change * 0.08)).clamp(2.0, 64.0);
     for mut projection in &mut cameras {
-        *projection = bw_render_projection(zoom.0);
+        if let Projection::Orthographic(orthographic) = projection.as_mut() {
+            orthographic.scaling_mode = bevy::camera::ScalingMode::FixedVertical {
+                viewport_height: zoom.0,
+            };
+        }
     }
 }
 
-fn bw_render_projection(view_height: f32) -> Projection {
-    Projection::Orthographic(OrthographicProjection {
-        scaling_mode: bevy::camera::ScalingMode::FixedVertical {
-            viewport_height: view_height,
-        },
-        ..OrthographicProjection::default_2d()
-    })
-}
-
-fn capture(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut commands: Commands,
-    canvas: Option<Res<PixelCanvas>>,
-) {
+fn capture(keys: Res<ButtonInput<KeyCode>>, mut commands: Commands) {
     if keys.just_pressed(KeyCode::F12) {
         commands
-            .spawn(shot(canvas.as_deref()))
+            .spawn(Screenshot::primary_window())
             .observe(save_to_disk("grass.png"));
-    }
-}
-
-/// What to photograph: the canvas if there is one, the window otherwise.
-///
-/// The canvas, not the window, and the distinction stopped being cosmetic the
-/// moment the blit scale left one. The resemblance benchmark measures features
-/// in pixels against a pixel-art plate; photograph the window and every feature
-/// is `scale` times too big, so the same field scores differently on a retina
-/// display than on a plain one. The canvas is the art at its own resolution,
-/// which is the thing the plate is comparable to.
-fn shot(canvas: Option<&PixelCanvas>) -> Screenshot {
-    match canvas {
-        Some(canvas) => Screenshot::image(canvas.image.clone()),
-        None => Screenshot::primary_window(),
     }
 }
 
 /// Grab one frame at a set time, then quit.
 ///
-/// The point is repeatability: the same seed, the same wind clock and the same
-/// blast produce the same picture every run, so two screenshots taken weeks
-/// apart are actually comparable.
+/// `BW_CAPTURE=path.png BW_CAPTURE_AFTER=4` photographs the running renderer
+/// without a person sitting in front of it. Worth having for its own sake: the
+/// headless baker proves the plate is right, and this is the only thing that
+/// proves the plate reaches the screen — a separate claim, and the one that has
+/// quietly been false while every other check passed.
 fn scripted_capture(
     time: Res<Time>,
     mut commands: Commands,
-    mut events: ResMut<GrassEvents>,
-    mut pointers: Query<&mut GrassInteractor, With<GrassPointer>>,
     mut exit: MessageWriter<AppExit>,
     mut stage: Local<u32>,
-    canvas: Option<Res<PixelCanvas>>,
 ) {
     let Ok(path) = std::env::var("BW_CAPTURE") else {
         return;
     };
-
-    // Walk something heavy across the field, so the shot shows a trail rather
-    // than a field nothing has been through.
-    if std::env::var("BW_CAPTURE_DRAG").is_ok()
-        && let Ok(mut pointer) = pointers.single_mut()
-    {
-        let along = (time.elapsed_secs() * 1.1 - 2.0).clamp(-2.0, 2.0);
-        let target = Vec2::new(along, along * 0.35);
-        if pointer.current.x > 1.0e5 {
-            pointer.current = target;
-        }
-        pointer.move_to(target);
-    }
     let at: f32 = std::env::var("BW_CAPTURE_AFTER")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(2.5);
-    let lead: f32 = std::env::var("BW_CAPTURE_LEAD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.45);
+        .unwrap_or(4.0);
     let now = time.elapsed_secs();
-
-    // A blast shortly before the shot, so the picture catches the ring
-    // mid-flight rather than a field that has already recovered.
-    if *stage == 0 && now >= (at - lead).max(0.0) {
+    if *stage == 0 && now >= at {
         *stage = 1;
-        if std::env::var("BW_CAPTURE_BLAST").is_ok() {
-            events.shockwave(Vec2::ZERO);
-        }
-    }
-    if *stage == 1 && now >= at {
-        *stage = 2;
         commands
-            .spawn(shot(canvas.as_deref()))
+            .spawn(Screenshot::primary_window())
             .observe(save_to_disk(path));
     }
-    if *stage == 2 && now >= at + 1.0 {
+    if *stage == 1 && now >= at + 1.5 {
         exit.write(AppExit::Success);
-    }
-}
-
-fn control_wind(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut wind: ResMut<WindField>) {
-    let mut turn = 0.0;
-    if keys.pressed(KeyCode::ArrowLeft) {
-        turn += 1.0;
-    }
-    if keys.pressed(KeyCode::ArrowRight) {
-        turn -= 1.0;
-    }
-    if turn != 0.0 {
-        let angle = turn * time.delta_secs();
-        let (sin, cos) = angle.sin_cos();
-        let d = wind.direction;
-        wind.direction = Vec2::new(d.x * cos - d.y * sin, d.x * sin + d.y * cos).normalize();
-    }
-
-    let mut change = 0.0;
-    if keys.pressed(KeyCode::Equal) {
-        change += 1.0;
-    }
-    if keys.pressed(KeyCode::Minus) {
-        change -= 1.0;
-    }
-    if change != 0.0 {
-        let step = change * time.delta_secs() * 3.0;
-        wind.speed = (wind.speed + step).clamp(0.0, 14.0);
-        wind.gust_strength = (wind.gust_strength + step * 1.3).clamp(0.0, 18.0);
-    }
-}
-
-fn reset_field(keys: Res<ButtonInput<KeyCode>>, mut field: ResMut<GrassField>) {
-    if keys.just_pressed(KeyCode::Space) {
-        field.reset();
     }
 }
 
@@ -239,8 +153,8 @@ fn reset_field(keys: Res<ButtonInput<KeyCode>>, mut field: ResMut<GrassField>) {
 fn report(
     time: Res<Time>,
     diagnostics: Res<DiagnosticsStore>,
-    field: Res<GrassField>,
-    wind: Res<WindField>,
+    zoom: Res<Zoom>,
+    pages: Query<(), With<Mesh2d>>,
     mut next: Local<f32>,
 ) {
     let now = time.elapsed_secs();
@@ -248,21 +162,13 @@ fn report(
         return;
     }
     *next = now + 1.0;
-
     let fps = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
         .and_then(|d| d.smoothed())
         .unwrap_or(0.0);
-    // Peak as well as mean compaction. A mean over sixty-five thousand cells
-    // hides a small trodden patch completely — it reads 0.000 while a very
-    // visible dark blob sits in the middle of the field.
-    let peak = field.compaction().iter().cloned().fold(0.0f32, f32::max);
     info!(
-        "{fps:.0} fps | wind {:.1} m/s | mean bend {:.1} deg | max bend {:.1} deg | crushed {:.3} peak {:.3}",
-        wind.speed,
-        field.mean_bend().to_degrees(),
-        field.max_bend().to_degrees(),
-        field.mean_compaction(),
-        peak,
+        "{fps:.0} fps | {} pages | {:.1} m tall view",
+        pages.iter().count(),
+        zoom.0
     );
 }

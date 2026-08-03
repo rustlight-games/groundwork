@@ -3,43 +3,30 @@ name = "bw_grass"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Grass simulation and rendering"
-# The suite is one binary made of several modules, and without this Cargo also
-# treats every module file under `benches/` as a bench target in its own right —
-# compiling each one a second time as a crate root, where its `crate::` paths
-# refer to itself and do not resolve.
-autobenches = false
+description = "Isometric grass: a baked ground-surface cache and its renderer"
 
 [dependencies]
 bw_core.workspace = true
-bw_content.workspace = true
 bevy.workspace = true
-# Reinterpreting the field's f32 state as texture bytes. Bevy already depends on
-# it, so this costs nothing but the line.
-bytemuck.workspace = true
-# The solver's three hot loops are row-independent. Jacobi in particular reads
-# one buffer and writes another, so threading it changes nothing about the
-# answer — only how long it takes to get there.
+# Pages are independent of one another by construction — every placement decision
+# is a pure function of world coordinates — so baking them is embarrassingly
+# parallel and threading it changes nothing about the result.
 rayon.workspace = true
 
 [dev-dependencies]
 bw_bench.workspace = true
-# The benchmark reports how many pixels a blade occupies, which only means
-# anything against the height the game actually frames the battlefield at. A
-# copy of that number here would be a second source of truth that drifts.
-bw_render.workspace = true
-# The texture-match benchmark decodes a captured frame and the committed
-# reference plate.
+# The headless bake example writes a PNG, and the metrics example reads the
+# reference plate back in to compare descriptors against it.
 image.workspace = true
+
+[[example]]
+name = "grass_bake"
+path = "examples/grass_bake.rs"
+
+[[example]]
+name = "grass_score"
+path = "examples/grass_score.rs"
 
 [[example]]
 name = "grass_sandbox"
 path = "examples/grass_sandbox.rs"
-
-# `harness = false` because this prints a table rather than running libtest
-# cases, and `cargo bench` builds it optimised — which is the only way the
-# timings mean anything.
-[[bench]]
-name = "grass"
-path = "benches/grass.rs"
-harness = false

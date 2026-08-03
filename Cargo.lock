@@ -2723,10 +2723,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bw_bench",
- "bw_content",
  "bw_core",
- "bw_render",
- "bytemuck",
  "image",
  "rayon",
 ]

@@ -25,7 +25,7 @@ crates/
   bw_ai        observation encoding, DQN, policies
   bw_bench     benchmark fixtures, metrics, reporting
   bw_render    presentation: interpolation, camera, debug overlays
-  bw_grass     grass: a bend-field simulation and its blade renderer
+  bw_grass     grass: a baked ground-surface cache and its renderer
   bw_ui        screens and HUD, plus GameState
   bw_app       composition root
 
@@ -105,31 +105,52 @@ crates registering into string-keyed registries give the same modularity with
 none of that fragility — and content *data* stays hot-reloadable, which is where
 iteration speed actually matters.
 
-## Grass simulates a field, not blades
+## Grass is a cached surface, not a field of objects
 
-`bw_grass` keeps a world-aligned grid holding the posture of the canopy — which
-way it leans, how fast it is moving, where it has been trodden — and the
-renderer reconstructs however many blades it needs by sampling that grid in a
-vertex shader. Cost then scales with the *area* being disturbed rather than with
-how much grass is drawn on it, which is the only reason a battlefield's worth of
-grass can react to a battlefield's worth of units.
+`bw_grass` does not draw grass. It bakes it: a page of already-composited ground
+is generated from world coordinates, cached, and then drawn as one opaque
+texture. Roughly nine tenths of the grass pixels on screen therefore cost what a
+background costs, and the detail in them is paid for once rather than every
+frame.
 
-Two rules there are expensive to retrofit.
+Four rules there are expensive to retrofit.
 
-**Simulate in world space; project only when drawing.** A blade shoved west must
-behave exactly like a blade shoved north. Simulating in screen space makes the
-response depend on the camera, and `grass.physics.direction_isotropy` exists to
-keep it that way.
+**Place in world space; project only when baking.** A clump placed by screen
+position slides when the camera moves, and a mound shaped in screen space changes
+shape as the view scrolls. Everything in `bw_grass::field` is a pure function of
+a world coordinate — which is also the property that lets two pages that have
+never met agree along a shared edge, with no neighbour lookups and no seams to
+hide.
 
-**Blades bend in a virtual third dimension.** A blade is a curve through
-`(X, Y, Z)` that preserves its arc length, projected at the last moment. That is
-what makes leaning shorten the silhouette and the tip travel along an arc.
-Shearing a flat sprite instead is what makes grass look like rubber.
+**Shade through a ramp, never by multiplying.** Multiplying an albedo by a
+lambert term produces grey-green shadows. The reference art's darkest pixels are
+still saturated green and its brightest are yellow-green paint. `bw_grass::palette`
+encodes that directly, measured from the art rather than derived.
 
-The unusual piece is that a cell records both a signed lean *and* an unsigned
-flattening axis. A path walked in both directions cancels to zero as a
-direction while remaining visibly flattened, and only the axis can tell that
-apart from undisturbed grass. See the `bw_grass::field` module docs.
+**Composite by isometric depth, not by draw order.** Alpha-over produces a
+collage of decals stacked on one another. A depth test — using
+`bw_grass::iso::depth`, the same ordering the renderer uses against units — is
+what gives the cache an inside, because a stroke that loses its pixel still
+counts as occlusion.
+
+**Detail belongs to the mound, not to the pixel.** The art is not uniformly
+detailed: bright crowns, dark backs and dark interiors are organised by a mound
+field, and grass that is uniformly busy everywhere reads as carpet however good
+the individual marks are.
+
+**Shade the shapes you know, do not differentiate the shape you built.** The
+mounds are domes, and a dome's normal is known in closed form, so each one shades
+itself analytically and the results are averaged where they overlap. The obvious
+alternative — finite-difference the composited height field and treat the
+gradient as a normal — works and is quietly wrong: the composite is read back off
+a lattice, so its *slope* is piecewise constant and jumps at every lattice line,
+which shows up as faint creases in the one thing that must not have any. The
+canopy is also translucent rather than opaque, so its shaded side falls away at
+about half the rate its lit side climbs and picks up a transmitted term where the
+grass is thinnest. That is what makes a mound read as lit rather than cut out.
+
+There is no simulation here yet. Wind, trampling and the animated crown layer
+that would carry them are the next piece of work; today the surface is static.
 
 ## Learning
 

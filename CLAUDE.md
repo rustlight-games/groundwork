@@ -37,7 +37,7 @@ crates/
   bw_ai        observation encoding, DQN, policies
   bw_bench     benchmark fixtures, metrics, reporting
   bw_render    presentation: interpolation, camera, debug overlays
-  bw_grass     the grass renderer
+  bw_grass     grass: a baked isometric ground-surface cache and its renderer
   bw_ui        screens and HUD, plus GameState
   bw_app       composition root
 
@@ -122,12 +122,14 @@ Honest status, so nobody reports against a rig that does not exist:
 
 - The fixtures, metrics, reporting, and comparison logic exist and are tested.
 - The criterion `benches/` directories are **not written yet**, and criterion is
-  not yet a workspace dependency. They are the next piece of work, and
-  `docs/BENCHMARKS.md` is the standard they should follow.
-- `benchmarks/baseline/` does not exist yet. The first committed baseline
-  creates it.
-- `cargo run -p bw_forge -- score-rocks` is the only end-to-end aesthetic
-  measurement wired up today.
+  not yet a workspace dependency. `docs/BENCHMARKS.md` is the standard they
+  should follow.
+- Two end-to-end aesthetic measurements are wired up:
+  `cargo run -p bw_forge -- score-rocks`, and
+  `cargo run --release -p bw_grass --example grass_score`, which scores the
+  baked ground against reference art across all ten seeds and writes
+  `benchmarks/grass.ron`.
+- `benchmarks/baseline/grass.ron` is the only committed baseline.
 
 So for now, a performance claim about the tick path or a generator usually means
 building the benchmark as the first milestone of the work. That is expected —
@@ -173,7 +175,9 @@ rtk cargo fmt --all -- --check
 rtk cargo run -p bw_forge -- validate            # every content change
 rtk cargo run -p bw_forge -- score-rocks         # rock generator metrics
 rtk cargo run -p bw_train --release -- --episodes 10
-rtk cargo run -p bw_grass --example grass_sandbox
+rtk cargo run --release -p bw_grass --example grass_bake    # a plate, headless
+rtk cargo run --release -p bw_grass --example grass_score   # score it, ten seeds
+rtk cargo run --release -p bw_grass --example grass_sandbox # the live renderer
 
 ./run                  # the game, debug
 BW_DEV=1 ./run         # dynamic Bevy linking, much faster incremental builds
@@ -258,6 +262,14 @@ Real, currently true, and worth knowing before you trip over them:
   trainer). Its own comment claims a test keeps the two lists honest — there is
   no such test, and its generator registry currently omits `bw_fx_rocks`. The
   trainer/game parity invariant is therefore unenforced.
+- The grass has no wind, no trampling and no animated crown layer. The baked
+  surface is static, and the guide's rear/front crown split — the thing that
+  lets a unit stand *in* the grass rather than on it — is not built.
+- Each grass page is its own texture and its own draw call, so a 1080p view is a
+  couple of hundred draws rather than the handful an atlas-packed cache would
+  need. It runs at 60 fps today; it will not scale.
+- Baked pages have no mip chain, so the surface only samples cleanly near the
+  scale it was baked at (96 cache pixels per world metre).
 - `bw_fx_rocks` varies its palette by applying one hue drift to all three tones
   equally, which leaves the lightest-to-darkest spread unchanged. So
   `luminance_spread` reads exactly 0.360 for all ten seeds — a dead column that

@@ -10,7 +10,7 @@ pub mod registries;
 
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
-use bw_grass::{GrassPlugin, GrassScenePlugin, grass_camera};
+use bw_grass::{GrassPlugin, plugin::grass_camera};
 use bw_render::{BattleCamera, RenderPlugin};
 use bw_ui::UiPlugin;
 
@@ -22,7 +22,7 @@ pub struct GamePlugin;
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((UiPlugin, RenderPlugin, GrassPlugin, GrassScenePlugin))
+        app.add_plugins((UiPlugin, RenderPlugin, GrassPlugin))
             .add_systems(Startup, (spawn_camera, finish_boot));
     }
 }
@@ -30,9 +30,10 @@ impl Plugin for GamePlugin {
 /// Spawn the one camera the game has.
 ///
 /// Composed here rather than inside either plugin because it is two crates'
-/// business at once: `bw_grass` decides that it renders into a low-resolution
-/// canvas with multisampling and tonemapping off, and `bw_render` decides how
-/// much ground it frames. Only the composition root knows both.
+/// business at once: `bw_grass` decides that the camera runs with tonemapping
+/// and dithering off, so the baked pages reach the screen as the colours they
+/// were measured to be, and `bw_render` decides how much ground it frames. Only
+/// the composition root knows both.
 fn spawn_camera(mut commands: Commands) {
     let framing = BattleCamera::default();
     commands.spawn((grass_camera(framing.view_height), framing));
@@ -41,9 +42,8 @@ fn spawn_camera(mut commands: Commands) {
 /// Leave the boot screen.
 ///
 /// Goes straight to the battlefield rather than to the menu. There is no roster
-/// to draft and no fight to start yet, and the terrain is the thing currently
-/// worth looking at — click it to set off a blast, drag with the right button
-/// to walk something through the grass.
+/// to draft and no fight to start yet, and the ground is the thing currently
+/// worth looking at.
 fn finish_boot(mut next: ResMut<NextState<GameState>>) {
     next.set(GameState::Battle);
 }

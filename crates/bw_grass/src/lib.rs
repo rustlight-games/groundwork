@@ -1,146 +1,65 @@
-//! Grass: simulation and rendering.
+//! Isometric grass: a baked ground-surface cache and the renderer that draws it.
 //!
-//! The system is built around one decision — **simulate a field, not blades**.
-//! A world-aligned grid holds the posture of the canopy, and the renderer
-//! reconstructs however many blades it needs by sampling it. Simulation cost
-//! then depends on the area of ground being disturbed, not on how much grass is
-//! drawn over it, which is the only reason a battlefield's worth of grass can
-//! react to a battlefield's worth of units.
+//! The system is built around one decision — **bake the field, draw the cache**.
+//! Grass is not thousands of objects at runtime. It is a small number of opaque
+//! pages of already-composited ground, generated from world coordinates and
+//! cached, with the animated part kept to the few marks that actually need to
+//! move.
 //!
 //! ```text
-//!   units, blasts, wind                     assets/shaders/grass.wgsl
-//!          |                                          |
-//!          v                                          v
-//!   disturbance ---> field ---> field textures ---> blade vertex shader
-//!   (swept stamps)   (solver)   (theta/axis/       (centreline, isometric
-//!                                compaction)        projection, depth)
+//!   world fields          strokes                 surface                page
+//!   (mounds, dirt,   ->   (bezier blades,  ->     (depth-composited  ->  (opaque
+//!    density, tint)        leaves, mat)            light index)           texture)
+//!        field.rs          stroke.rs               surface.rs             material.rs
+//!                              \                      /
+//!                               \--- bake.rs --------/
 //! ```
 //!
 //! ## Reading order
 //!
-//! [`field`] first — it explains what a cell remembers and why there are six
-//! channels rather than one. Then [`iso`], which is the contract the shader
-//! must match. [`disturbance`] and [`wind`] are the two force sources, and
-//! [`blade`] and [`material`] are how it all reaches the screen.
-//!
-//! For how it *looks* rather than how it moves, read [`light`] then [`palette`]
-//! then [`pixel`], in that order. They are one idea in three parts: a lighting
-//! rig shared with the character sprites, a palette baked from that rig, and a
-//! low-resolution canvas that makes the whole thing pixel art rather than a
-//! small photograph of grass.
+//! [`iso`] first — it is the contract everything else is written against, and it
+//! is where the cache's pixel scale is set. Then [`field`], which decides where
+//! things go, and [`stroke`], which decides what one mark looks like. [`surface`]
+//! explains why compositing is a depth test rather than alpha-over, and
+//! [`bake`] is the assembly. [`palette`] can be read at any point; it is short,
+//! and it is measured from the reference art rather than invented.
 //!
 //! ## The rules that are expensive to break later
 //!
-//! - **Simulate in world space, project at the very end.** A blade shoved west
-//!   must behave exactly like a blade shoved north. Simulating in screen space
-//!   makes the response depend on the camera, which is wrong in a way players
-//!   feel without being able to name.
-//! - **Roots do not move.** Every deformation is weighted to zero at the base.
-//!   Grass whose roots slide reads instantly as a texture being dragged over
-//!   the ground.
-//! - **Bend in three dimensions, then project.** Blades reconstruct a virtual
-//!   centreline through `(X, Y, Z)` and preserve their arc length, so leaning
-//!   shortens the silhouette. Shearing a sprite instead is what makes grass
-//!   look like rubber.
-//! - **Keep neighbour coupling weak.** Grass clumps are not sewn together.
-//!   Large-scale coherence comes from the shared wind field.
+//! - **Place in world space, project at the very end.** A clump placed by screen
+//!   position slides when the camera moves. Everything in [`field`] is a pure
+//!   function of a world coordinate, which is also what lets two pages that have
+//!   never met agree along a shared edge.
+//! - **Shade through a ramp, never by multiplying.** Multiplying albedo by a
+//!   lambert term gives grey-green shadows. The reference's darkest pixels are
+//!   still saturated green and its brightest are yellow-green paint; only a
+//!   lookup reproduces that. See [`palette`].
+//! - **Composite by isometric depth, not by draw order.** Alpha-over produces a
+//!   collage of decals. The depth test is what gives the cache an inside.
+//! - **Detail belongs to the mound, not to the pixel.** The reference is not
+//!   uniformly detailed: bright crowns, dark backs and dark interiors are
+//!   organised by the mound field, and grass that is uniformly busy everywhere
+//!   reads as carpet however good the individual marks are.
 //!
-//! Iterate with `cargo run -p bw_grass --example grass_sandbox`, which brings
-//! the field and the renderer up on their own without launching the game.
+//! Iterate with `cargo run --release -p bw_grass --example grass_bake`, which
+//! bakes a plate to a PNG with no window and no GPU, and
+//! `cargo run -p bw_grass --example grass_sandbox` for the live renderer.
 
 #![forbid(unsafe_code)]
 
-pub mod blade;
-pub mod chunk;
-pub mod clump;
-pub mod density;
-pub mod disturbance;
+pub mod bake;
 pub mod field;
-pub mod ground;
 pub mod iso;
-pub mod light;
-pub mod lod;
 pub mod material;
-pub mod noise;
+pub mod metrics;
 pub mod palette;
-pub mod params;
-pub mod pixel;
-pub mod scene;
-pub mod wind;
+pub mod plugin;
+pub mod rng;
+pub mod stroke;
+pub mod surface;
 
-use bevy::prelude::*;
-use bevy::sprite_render::Material2dPlugin;
-
-pub use chunk::{CHUNK_CELLS, GrassChunk, GrassChunks};
-pub use density::DensityMap;
-pub use disturbance::{GrassEvents, GrassInteractor, Shockwave};
-pub use field::GrassField;
-pub use lod::{GrassLod, lod_for_distance};
-pub use material::GrassMaterial;
-pub use params::GrassParams;
-pub use pixel::{CANVAS_HEIGHT, PixelCanvas, PixelCanvasPlugin, PixelStyle, grass_camera};
-pub use scene::{GrassScene, GrassScenePlugin};
-pub use wind::WindField;
-
-/// Ordering within a frame.
-///
-/// Spelled out rather than inferred, because the order is a correctness
-/// property: stamping after the solve would apply every disturbance a frame
-/// late, and uploading before it would show the previous frame's grass.
-#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum GrassSet {
-    /// Advance wind and age events.
-    Sources,
-    /// Write disturbances into the field.
-    Stamp,
-    /// Step the solver.
-    Simulate,
-    /// Push field state to the GPU.
-    Upload,
-}
-
-/// Grass simulation and rendering.
-///
-/// Does not place any grass. Add [`GrassScenePlugin`] for that, or drive
-/// [`chunk`] yourself from generated terrain.
-pub struct GrassPlugin;
-
-impl Plugin for GrassPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_plugins(Material2dPlugin::<GrassMaterial>::default())
-            .add_plugins(Material2dPlugin::<ground::GroundMaterial>::default())
-            .add_plugins(Material2dPlugin::<clump::ClumpMaterial>::default())
-            // Grass draws to a low-resolution canvas rather than to the window.
-            // Bundled with the renderer rather than optional: every constant in
-            // the vertex shader is expressed in canvas pixels, so grass drawn
-            // straight to a window would size its blades against a canvas that
-            // does not exist.
-            .add_plugins(PixelCanvasPlugin)
-            .init_resource::<WindField>()
-            .init_resource::<GrassField>()
-            // After the field: it sizes its textures from the field's resolution.
-            .init_resource::<material::GrassTextures>()
-            .init_resource::<clump::ClumpAtlas>()
-            .init_resource::<GrassEvents>()
-            .init_resource::<GrassChunks>()
-            .configure_sets(
-                Update,
-                (
-                    GrassSet::Sources,
-                    GrassSet::Stamp,
-                    GrassSet::Simulate,
-                    GrassSet::Upload,
-                )
-                    .chain(),
-            )
-            .add_systems(
-                Update,
-                (
-                    (wind::advance_wind, disturbance::advance_events).in_set(GrassSet::Sources),
-                    disturbance::stamp_disturbances.in_set(GrassSet::Stamp),
-                    field::step_field.in_set(GrassSet::Simulate),
-                    (material::upload_field, clump::upload_clumps).in_set(GrassSet::Upload),
-                ),
-            );
-    }
-}
+pub use bake::{BakeParams, Page, bake};
+pub use field::WorldField;
+pub use material::GrassSurfaceMaterial;
+pub use palette::Tone;
+pub use plugin::{GrassPlugin, GrassWorld, PAGE_PIXELS};

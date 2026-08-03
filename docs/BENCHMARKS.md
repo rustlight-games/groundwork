@@ -118,173 +118,112 @@ Ask in this order:
 
 ## The grass suite
 
-`cargo bench -p bw_grass` is the worked example for a per-frame system, the way
-`score-rocks` is for a generator. It writes `benchmarks/grass.ron` and compares
-against `benchmarks/baseline/grass.ron`.
+`cargo run --release -p bw_grass --example grass_score` is the worked example for
+a cached generator, the way `score-rocks` is for a procedural one. It bakes
+**three plates per seed** in `bw_bench::SEEDS`, from three widely separated
+places in each world, describes each against the reference art, and writes
+`benchmarks/grass.ron` to compare against `benchmarks/baseline/grass.ron`.
 
-It is one binary in several modules, and `autobenches = false` is load-bearing:
-without it Cargo compiles every module file under `benches/` a second time as a
-bench target of its own.
+### Three places, not one
 
-| Module | Section | Answers |
-|---|---|---|
-| `perf.rs` | Performance | What does it cost — per phase, under load, at the margin |
-| `stability.rs` | Stability | Does it move, or does it merely change |
-| `motion.rs` | Motion | Does wind read as wind, contact as contact, a blast as a blast |
-| `atlas.rs` | Style | Does the sprite sheet read as drawn artwork |
-| `card.rs` | Card | Does the bend bend, what does a fragment cost, is the tone wide enough |
-| `texture_match.rs` | Resemblance | How close is a frame to the art target |
-| `mirror.rs` | — | A CPU model of the clump shader's vertex stage |
-| `harness.rs` | — | Sampled timing, standard scenes, signal analysis |
+One plate per seed measures the generator and the *place* together and cannot
+tell them apart, which is a trap this suite fell into and had to be dug out of.
+Ten seeds scored one plate each looked like a seed-dependent generator: mean
+luminance swung six percent between worlds. Baking four plates from four
+separated regions of a *single* world produced the same swing. So most of it was
+regional drift doing exactly its job.
+
+The distinction matters because the two findings call for opposite repairs.
+Regional spread should be left alone — a map whose ground is the same brightness
+everywhere is the defect, not the feature. A genuinely seed-dependent generator
+should be fixed. With one plate per seed you cannot tell which you are looking
+at, and tuning the generator until that one plate matches is how a suite ends up
+certifying a field that only looks right in one place.
+
+`cargo run --release -p bw_grass --example grass_bake` is the iteration loop
+rather than the record: one plate, a PNG, and the full descriptor table beside
+the target's. Use it while changing the look; use `grass_score` to decide whether
+the change was an improvement.
 
 ### The design goal the numbers serve
 
-**Grass is background.** The model is StarCraft's creep: a surface that reacts
-and reads as alive on a budget small enough that the rest of the game never
-notices it. That decides which numbers are headlines:
+The grass is a **cached ground surface**, not a field of objects. Everything a
+pixel needs is decided once, when its page is baked, and the runtime cost is one
+texture read. So the suite splits cleanly in two: how long a page takes to bake,
+and whether the baked page looks like the art it is meant to look like.
 
-- `grass.step.*.frame_share` and `grass.pressure.battle.frame_share` are what a
-  change ships or does not ship on.
-- `grass.step.trampled_multiplier` says whether a *battle* is affordable rather
-  than an empty meadow. A quiet field takes the cheap path through every branch;
-  the ratio between quiet and saturated is the honest worst case.
-- `grass.pressure.marginal_unit` is the cost of one more unit in the grass, and
-  `units_within_tenth_frame` turns it into a headroom.
-- Every timing reports a median, a p95 and a **jitter** (p95 over median).
-  Background systems fail by hitching, and a mean hides exactly that.
+`benchmarks/reference/grass_target.png` is that art. Nothing in the suite
+compares pixels against it — the candidate is generated and shares no placement
+with the plate — so every metric is a *descriptor* computed identically on both
+images.
 
-### Performance is measured per phase
+### The two ladders are the whole diagnosis
 
-A step is six phases and they are wildly unequal — the solver is six Jacobi
-sweeps over the whole grid and everything else is one pass. Timing only the
-total says the grass got slower and nothing else, so `grass.phase.*` prices each
-one, and `grass.phase.*_share` is usually the more useful form when reading a
-regression.
+`grass.detail.r{2,4,8,16,32,64}` is the standard deviation of luminance minus its
+own blur at six radii. `grass.structure.r{...}` is the standard deviation of that
+blur. Together they say something no single number can:
 
-### Every stability metric is paired with a motion metric
+| Reading | What it means |
+|---|---|
+| detail low, structure right | The composition is there and the brush is wrong. More blades will not fix it |
+| detail right, structure low | The marks are right and the field has no organisation. It reads as carpet |
+| both right, distance high | Tone or colour has drifted; check the percentile rows |
 
-The most important structural rule in the suite. A field that does not move has
-no flicker, no jerk, no chatter and no churn, and would sweep the stability
-section outright. `grass.stability.motion_share`,
-`grass.stability.tip_travel_pixels` and `grass.wind.dynamic_area` are what stop
-that reading as a win.
+Each rung diagnoses a different subsystem: 2–4 pixels is the stroke language,
+12–20 is clumps and cavities, 50 and up is mound distribution and regional
+colour. The mistake this ladder exists to prevent is answering a mismatch at 64
+pixels by drawing more grass.
 
-Flicker is measured as the share of temporal power above **8 Hz**. Grass motion
-the eye reads as motion lives below about 3 Hz; above 8 Hz is at most seven
-frames per cycle, and nothing in a stylised field should oscillate that fast.
-It is measured at four stages, because a flicker can be born in any of them and
-each looks innocent from the others:
+### The light index is a percentile, so tone matching is arithmetic
 
-| Born in | Looks like | Metric |
-|---|---|---|
-| The wind | Everything shimmering at once | `stability.wind_hf_ratio` |
-| The solver | Cells vibrating against their neighbours | `stability.field_hf_ratio`, `jerk_p95` |
-| The pixel grid | Edges crawling; motion that stutters | `stability.pixel_chatter`, `silhouette_churn` |
-| The sampler | Sparkle inside the sprite | `stability.atlas_minification`, `subpixel_*` |
+`bw_grass::palette::GRASS` is measured from the reference in equal-population
+buckets, so stop *i* is the colour of the reference at its `i/31` percentile. Feed
+it an index uniform on `[0, 1]` and the histogram that comes back is the
+reference's histogram.
 
-`grass.stability.rest_drift` is the sharpest of them: with no wind and nothing
-touching it, a settled field must stop.
+That changes what a failing row means. A low `luma.p95` is not "too dark"; it is
+"the light index does not reach far enough at the top", which is a different
+repair — and usually the highlight terms rather than the base.
 
-### The card section, and why a dead parameter needed a benchmark
+### Distribution shape, not just spread
 
-`card.rs` exists because of a specific failure: `ClumpSettings::root_stiffness`
-was documented for months as the exponent that keeps a plant's base planted
-while its tip curls over, and it did nothing at all. A clump was four vertices,
-`up` took the values zero and one, and `pow` fixes both of those for every
-exponent — so the parameter was applied to precisely the two inputs on which it
-is the identity, and the rasteriser drew a straight line between them.
+Two plates can have identical detail figures and look nothing alike: one built
+from deep shadows and hard glints, the other from a full mid-range. The
+separating measurement is the **kurtosis** of the detail residual. The reference
+sits at 5.55; a candidate above about 6.5 has too much extreme contrast and too
+little middle, however well its standard deviation matches.
 
-Nothing in the project could see it. Every correctness test passed, the field
-was bit-identical, and the shader's own comment asserted the opposite.
-`grass.card.stiffness_effect` is the guard: it places a clump at full bend and
-compares it against the same clump with the exponent forced flat. It read
-exactly `0.0000`, and could not have read anything else.
+This is not in the report because it needs the reference to be meaningful, but it
+is the measurement to reach for when the ladders match and the plate still looks
+wrong.
 
-The section carries three families, and each one answers a question that lives
-in the gap between what the code says and what the picture does:
+### Variety across seeds
 
-- **Geometry** — `stiffness_effect`, `base_lean_share`, `length_error`. Each is
-  paired with what a shear would have given (`shear_lean_share`,
-  `shear_length_error`), so the table carries the old behaviour without needing
-  a baseline run to remember it.
-- **Overdraw** — the fragment cost, which nothing priced before. `layers_per_pixel`
-  is depth complexity from geometry; `early_z_rejected` runs an actual depth test
-  over a real chunk in the order the index buffer presents it. It is reported
-  beside `early_z_other_order` because a rejection rate only means something
-  next to what the other draw order would have given.
-- **Tone** — `clump_spread` against `target_spread`. The second is a property of
-  the reference plate and never moves; the first is what the renderer produces.
-  Measured *between* clumps as well as per pixel, because a clump is thirty
-  pixels at the battle camera and nothing inside one survives to the eye.
-
-`grass.tone.clump_spread` read **0.000** when it was first written — every clump
-in the field landing in one of the art target's ten tone buckets. That is the
-kind of thing a suite exists to find.
-
-### Physics
-
-Properties that no correctness test notices going wrong, because the grass still
-moves:
-
-| Metric | Range | Catches |
-|---|---|---|
-| `timestep_invariance` | 0..1, higher | An integrator whose answer depends on frame rate |
-| `energy_monotonicity` | 0..1, higher | A solver quietly manufacturing energy — grass that eventually vibrates on its own |
-| `direction_isotropy` | 0..1, higher | Anything simulated in screen space, where a shove from the north behaves differently from one from the east |
-| `blast_isotropy` | 0..1, higher | Explosions coming out egg-shaped |
-| `coupling_locality` | 0..1, higher | Neighbour coupling creeping up until the field moves like a rubber sheet |
-| `axis_reinforcement` | 0..1, higher | The unsigned flattening axis failing to survive a path walked both ways |
-| `polar_cancellation` | 0..1, higher | Signed direction memory *not* cancelling when it should |
-| `wind.divergence` | 0, lower | Turbulence with sources and sinks, which sucks grass toward fixed points |
-| `wind.carpetness` | 0..1, lower | Local and global coherence both high — one rigid sheet, which is how grass ends up reading as water |
-
-`direction_isotropy` and `energy_monotonicity` should both read exactly 1.0.
-They are structural properties, not tuning, so treat any movement as a bug
-rather than as drift.
+`grass.variety.across_seeds` is the one metric that cannot be computed against
+the reference at all, and it catches the failure that every other number in the
+file is blind to: a generator whose ten seeds produce the same field. It scores
+near zero when the seed has stopped mattering, and perfectly everywhere else.
 
 ### Aesthetic metrics are bands, not maxima
 
-Almost nothing in the motion and style sections wants to be maximised, and this
-is the main way aesthetic metrics differ from performance ones. Wind coherence
-at 1.0 is a rigid sheet and at 0.0 is static. Contact spill near zero means a
-person walking through grass disturbs their own footprint and nothing around it.
-Each measurement records the direction of its *nearest* failure and says in a
-comment what the other end looks like.
+| Metric | Healthy band | What leaving it means |
+|---|---|---|
+| `grass.match.distance` | below 0.10 | The plate has drifted from the art it is meant to match |
+| `grass.tone.luma_mean` | 0.37–0.41 | The field is going pale or muddy |
+| `grass.tone.saturation` | 0.86–0.90 | Shading has started multiplying rather than looking up a ramp |
+| `grass.canopy.bright_share` | 0.03–0.06 | Tip glints have become sparkle, or vanished |
+| `grass.ground.soil_share` | 0.005–0.03 | Bare earth has taken over, or closed up entirely |
+| `grass.variety.across_seeds` | above 0.03 | The seed has stopped changing the field |
 
-### Resemblance to the art target
+Higher is not better for most of these, which is why they are bands. A candidate
+that improved `bright_share` to 0.12 has not improved anything.
 
-`benchmarks/reference/pixel_grass_target.png` is the art target, and nothing in
-`texture_match.rs` compares pixels by position — the shader generates unbounded
-non-tiling grass, so every metric is a *descriptor* computed identically on both
-images. `grass.match.feature_scale` is the one with no substitute: grass drawn
-at twice the right size satisfies every value and frequency statistic in the
-file and looks obviously wrong beside the plate.
-
-This section needs a screenshot and skips itself with instructions when there is
-not one:
-
-```sh
-BW_CAPTURE=$PWD/benchmarks/capture/grass.png BW_CAPTURE_AFTER=3 \
-  cargo run --release -p bw_grass --example grass_sandbox
-```
-
-The screenshot is of the **canvas**, not the window, and that distinction is
-load-bearing rather than cosmetic. Every metric in this section measures features
-in pixels; photograph the window and each one is `PixelCanvas::scale` times too
-big, so the same field scores differently on a retina display than on a plain
-one. The canvas is 960×540 whatever the display is, which is the resolution the
-art is authored at and the only one comparable to the plate.
-
-Two metrics in this section are known to punish large-scale tonal structure, and
-a run that improves the tone field will show both falling. `match.feature_scale`
-and `match.repetition` are both computed against a small tiling swatch of
-near-uniform tone; a field with 14 m patches has no way to score well on either,
-because the reference has no room to contain the thing being measured. Neither is
-wrong — read them beside `tone.spread_ratio` and `match.overall` rather than on
-their own, and see `clump.rs` for the controlled comparison that pins the cause.
-
-Everything else runs without a GPU. That is deliberate: a suite that needs a
-window does not run in CI, on a headless box, or twice in the same minute.
+`bright_share` deserves one warning. Its threshold sits almost exactly at the
+reference's own 95th percentile, so it is a knife edge there: moving `p95` by
+four percent moves it by a third. That makes it a good alarm for highlights that
+have genuinely run away, and a bad thing to aim at — chased directly it will walk
+the whole tonal range around to close a gap that is within a few percent on every
+percentile. Read it against `luma.p95`, not on its own.
 
 ### Tolerances
 
@@ -304,7 +243,17 @@ means much less than it looks like.
 
 ## Current state
 
-`bw_grass` has a full suite; the harness, fixtures, metrics, and reporting are
-tested. The criterion `benches/` directories for the simulation and navigation
-crates are not written yet, and this document is the standard they should
-follow.
+`bw_grass` has a full suite through `grass_score`, and a committed baseline. The
+harness, fixtures, metrics, and reporting are tested. The criterion `benches/`
+directories for the simulation and navigation crates are not written yet, and
+this document is the standard they should follow.
+
+Two things the grass suite does not yet measure, and should:
+
+- **Frame cost.** The runtime side is one opaque texture sample per pixel and a
+  draw per page, which is cheap enough that nothing has needed measuring — but
+  "cheap enough" is a claim without a number, and the page count is currently
+  high enough to be worth one.
+- **Anything moving.** There is no wind and no interaction yet, so there is
+  nothing to measure. When the animated crown layer lands it needs the stability
+  and motion metrics this document used to describe.
