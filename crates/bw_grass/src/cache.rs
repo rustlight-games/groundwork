@@ -44,6 +44,27 @@ pub const DEFAULT_DIRECTORY: &str = "target/grass-pages";
 /// Environment variable pointing at the page cache.
 pub const BW_GRASS_CACHE: &str = "BW_GRASS_CACHE";
 
+/// Set this to read traced pages. Unset, the game rasterises everything.
+///
+/// Off by default, and that is a correctness decision rather than caution.
+///
+/// A traced page and a rasterised one are not two qualities of one picture, they
+/// are two pictures — different tone, different saturation, different blade
+/// vocabulary. Serving whichever happens to be on disk puts them side by side,
+/// and a single traced page in a field of rasterised ones does not read as "one
+/// page is better", it reads as **a rendering fault**: a hard-edged square of
+/// some other grass in the middle of the ground. Which is exactly what it looked
+/// like the first time this shipped.
+///
+/// So the mixing is opt-in. Trace a region, set the variable, and every page in
+/// that region is traced; leave it unset and the whole field is consistent.
+pub const BW_GRASS_TRACED: &str = "BW_GRASS_TRACED";
+
+/// Whether the game should read traced pages at all.
+pub fn traced_enabled() -> bool {
+    std::env::var(BW_GRASS_TRACED).is_ok_and(|v| v != "0" && !v.is_empty())
+}
+
 /// Bytes one page occupies: RGBA, one byte a channel.
 #[inline]
 fn expected_len(page: &Page) -> usize {
@@ -97,6 +118,9 @@ pub fn path_for(page: &Page, params: &BakeParams) -> PathBuf {
 /// unreadable file is to draw the page rather than to fail — the caller has a
 /// renderer standing by, which is the whole reason this returns an `Option`.
 pub fn load(page: &Page, params: &BakeParams) -> Option<Vec<u8>> {
+    if !traced_enabled() {
+        return None;
+    }
     load_from(&directory(), page, params)
 }
 

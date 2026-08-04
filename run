@@ -7,6 +7,19 @@
 #
 #   BW_VIEW=35 ./run      world metres visible vertically; default 28
 #
+#   BW_GRASS_TRACED=1 ./run   read path-traced pages where they have been baked
+#
+# The game rasterises. Cycles takes seconds a page and a frame is 16 ms, so the
+# path tracer cannot run here — it runs ahead of time, and the game reads what it
+# left. `grass_prebake` fills that cache.
+#
+# Traced pages are opt-in because a traced page and a rasterised one are two
+# different pictures, and one of each side by side reads as a rendering fault
+# rather than as an improvement. Trace a region that covers the view first.
+#
+# To look at the renderer at its best, use `./render` instead: it places and
+# traces one whole scene with no page grid at all.
+#
 # The default frames about 50 x 28 metres of ground. The number that decides it
 # is how tall a person is on screen rather than how much ground is visible: at
 # 55 a 1.8 m figure is about 35 pixels on a 1080p window, which is where

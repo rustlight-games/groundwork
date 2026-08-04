@@ -38,9 +38,9 @@ fn main() {
     params.blade_length.1 *= options.length;
 
     let page = Page::at_detail(
-        Vec2::ZERO,
-        options.size,
-        options.size,
+        options.origin,
+        options.width,
+        options.height,
         options.px_per_metre / bw_grass::iso::PX_PER_METRE,
     );
     let field = WorldField::lit_by(params.seed, params.light);
@@ -132,7 +132,9 @@ fn main() {
 }
 
 struct Options {
-    size: usize,
+    width: usize,
+    height: usize,
+    origin: Vec2,
     px_per_metre: f32,
     seed: u64,
     samples: u32,
@@ -150,7 +152,9 @@ struct Options {
 impl Options {
     fn parse() -> Self {
         let mut options = Self {
-            size: 512,
+            width: 512,
+            height: 512,
+            origin: Vec2::ZERO,
             // Higher than the 96 the art is authored at, and on purpose. Cycles
             // draws real geometry, and a blade a third of a pixel wide does not
             // become a thin blade — it becomes noise. The target art sits at
@@ -178,7 +182,20 @@ impl Options {
         while let Some(argument) = arguments.next() {
             let mut value = || arguments.next().unwrap_or_default();
             match argument.as_str() {
-                "--size" => options.size = value().parse().unwrap_or(options.size),
+                "--size" => {
+                    let side = value().parse().unwrap_or(options.width);
+                    options.width = side;
+                    options.height = side;
+                }
+                "--width" => options.width = value().parse().unwrap_or(options.width),
+                "--height" => options.height = value().parse().unwrap_or(options.height),
+                "--origin" => {
+                    let text = value();
+                    let mut parts = text.split(',').map(|p| p.trim().parse::<f32>());
+                    if let (Some(Ok(x)), Some(Ok(y))) = (parts.next(), parts.next()) {
+                        options.origin = Vec2::new(x, y);
+                    }
+                }
                 "--px-per-metre" => {
                     options.px_per_metre = value().parse().unwrap_or(options.px_per_metre);
                 }

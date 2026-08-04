@@ -296,7 +296,7 @@ impl Default for RenderSettings {
             sun_angle: 3.0f32.to_radians(),
             sun_strength: 15.0,
             sun_colour: [1.0, 0.92, 0.72],
-            sky_strength: 1.10,
+            sky_strength: 1.30,
             sky_colour: [0.30, 0.44, 0.72],
             passes: false,
             blade_width: 0.35,

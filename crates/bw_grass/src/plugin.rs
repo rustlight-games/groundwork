@@ -219,7 +219,14 @@ fn request_pages(
 /// on disk, and the rasteriser becomes the fallback for ground nobody has traced
 /// yet rather than the way the game is meant to look.
 ///
-/// Pre-trace with `cargo run --release -p bw_grass --example grass_prebake`.
+/// Off unless `BW_GRASS_TRACED` is set — see [`crate::cache::BW_GRASS_TRACED`]
+/// for why mixing the two renderers by accident is worse than not mixing them at
+/// all. Pre-trace a region with
+/// `cargo run --release -p bw_grass --example grass_prebake`, then
+/// `BW_GRASS_TRACED=1 ./run`.
+///
+/// For one whole scene traced at once — which is what to screenshot — use
+/// `./render` instead. It has no page grid at all.
 fn bake_to_rgba(page: Page, params: &BakeParams) -> Vec<u8> {
     if let Some(bytes) = crate::cache::load(&page, params) {
         return bytes;

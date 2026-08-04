@@ -22,13 +22,50 @@ import numpy as np
 from mathutils import Matrix, Vector
 
 
-def argv_after_double_dash():
+def jobs_from_argv():
+    """One scene, or a manifest of many.
+
+    Blender takes several seconds to start and a page takes about one to trace,
+    so a process per page spends most of its life starting up. A manifest lets
+    one process do a whole pre-bake: `--manifest` names a file of
+    `scene.json<TAB>output.png` lines, and startup is paid once for all of them.
+    """
     if "--" not in sys.argv:
         raise SystemExit("usage: render.py -- <scene.json> <output.png>")
     rest = sys.argv[sys.argv.index("--") + 1 :]
+    if len(rest) >= 2 and rest[0] == "--manifest":
+        with open(rest[1], "r", encoding="utf-8") as handle:
+            jobs = []
+            for line in handle:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                scene, _, output = line.partition("\t")
+                jobs.append((scene, output))
+        return jobs
     if len(rest) < 2:
         raise SystemExit("usage: render.py -- <scene.json> <output.png>")
-    return rest[0], rest[1]
+    return [(rest[0], rest[1])]
+
+
+def live(sockets, name):
+    """The *enabled* socket of a given name.
+
+    `ShaderNodeMix` carries one A/B/Result triple per data type and they all
+    share their names, so `inputs["A"]` returns whichever comes first — the
+    `VALUE` one at index two, which is disabled whenever the node is set to
+    RGBA. Linking to it is not an error and draws no warning; the link simply
+    has no effect.
+
+    That cost two rounds of tuning. The maturity blend and the hue axis were
+    both wired to dead sockets, so a measured hue spread sat at four degrees
+    against reference art's seven and would not move however hard the tints were
+    pushed — the shader was evaluating neither of them.
+    """
+    for socket in sockets:
+        if socket.name == name and socket.enabled:
+            return socket
+    raise KeyError(f"no enabled socket named {name!r}")
 
 
 def clear_scene():
@@ -239,12 +276,61 @@ def blade_material(settings):
     mix = nodes.new("ShaderNodeMix")
     mix.data_type = "RGBA"
     mix.location = (-500, 0)
-    mix.inputs["B"].default_value = (0.026, 0.145, 0.004, 1.0)
+    live(mix.inputs, "B").default_value = (0.026, 0.145, 0.004, 1.0)
 
     links.new(along.outputs["Result"], ramp.inputs["Fac"])
-    links.new(ramp.outputs["Color"], mix.inputs["A"])
-    links.new(maturity.outputs["Fac"], mix.inputs["Factor"])
-    links.new(mix.outputs["Result"], principled.inputs["Base Color"])
+    links.new(ramp.outputs["Color"], live(mix.inputs, "A"))
+    links.new(maturity.outputs["Fac"], live(mix.inputs, "Factor"))
+
+    # ## A second colour axis, and why one is not enough
+    #
+    # Everything above varies a blade's *value* — root to tip, young to old — and
+    # a field that varies only in value is one green under a brighter or dimmer
+    # lamp. Measured, that is a Lab hue spread of four degrees against reference
+    # art's seven: half the variety, and the half the eye reads as "real plants"
+    # rather than "one plant recoloured".
+    #
+    # So this axis varies *which* green. Cool blue-green where a blade is shaded
+    # and damp, warm olive where it is exposed and drying, driven by the per-mark
+    # light index — which is the attribute that actually varies. `exposure` is the
+    # tip highlight and is nearly constant across the field, so hanging the hue
+    # axis on it changed nothing at all.
+    #
+    # Kept deliberately narrow: grass that varies its hue widely reads as several
+    # species, and the reference is one species in several moods.
+    shade = nodes.new("ShaderNodeAttribute")
+    shade.attribute_name = "moisture"
+    shade.attribute_type = "GEOMETRY"
+    shade.location = (-1100, 320)
+
+    # Tints rather than colours — multiplied, so they ride on the value ramp
+    # instead of replacing it. Two of them, so the axis runs both ways from the
+    # base green rather than only toward olive.
+    warm = nodes.new("ShaderNodeMix")
+    warm.data_type = "RGBA"
+    warm.blend_type = "MULTIPLY"
+    warm.location = (-330, 150)
+    live(warm.inputs, "Factor").default_value = 1.0
+    live(warm.inputs, "B").default_value = (2.10, 0.94, 1.05, 1.0)
+
+    cool = nodes.new("ShaderNodeMix")
+    cool.data_type = "RGBA"
+    cool.blend_type = "MULTIPLY"
+    cool.location = (-330, -70)
+    live(cool.inputs, "Factor").default_value = 1.0
+    live(cool.inputs, "B").default_value = (0.55, 1.03, 1.75, 1.0)
+
+    graded = nodes.new("ShaderNodeMix")
+    graded.data_type = "RGBA"
+    graded.location = (-170, 150)
+
+    mix_out = live(mix.outputs, "Result")
+    links.new(mix_out, live(warm.inputs, "A"))
+    links.new(mix_out, live(cool.inputs, "A"))
+    links.new(live(cool.outputs, "Result"), live(graded.inputs, "A"))
+    links.new(live(warm.outputs, "Result"), live(graded.inputs, "B"))
+    links.new(shade.outputs["Fac"], live(graded.inputs, "Factor"))
+    links.new(live(graded.outputs, "Result"), principled.inputs["Base Color"])
 
     # ## Why the specular lobe is kept small
     #
@@ -308,8 +394,8 @@ def ground_material():
 
     ramp = nodes.new("ShaderNodeValToRGB")
     ramp.location = (-600, 0)
-    ramp.color_ramp.elements[0].color = (0.026, 0.052, 0.014, 1.0)
-    ramp.color_ramp.elements[1].color = (0.090, 0.104, 0.036, 1.0)
+    ramp.color_ramp.elements[0].color = (0.042, 0.072, 0.024, 1.0)
+    ramp.color_ramp.elements[1].color = (0.120, 0.135, 0.052, 1.0)
 
     links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
     links.new(ramp.outputs["Color"], principled.inputs["Base Color"])
@@ -348,7 +434,13 @@ def build_world(sky):
     ramp = nodes.new("ShaderNodeValToRGB")
     ramp.location = (-500, 0)
     # Ground bounce at the bottom, open sky at the top.
-    ramp.color_ramp.elements[0].color = (0.075, 0.085, 0.055, 1.0)
+    #
+    # The lower stop is the only light a sealed canopy recess ever sees, so it
+    # sets where the darkest fifth of the plate lands. Too low and the image
+    # jumps from near-black to bright with no medium values between — measured,
+    # a fifth-percentile L* of 3.6 against reference art's 12.4, which is what
+    # makes a gap read as a hole rather than as depth.
+    ramp.color_ramp.elements[0].color = (0.115, 0.130, 0.080, 1.0)
     ramp.color_ramp.elements[1].color = (sky["colour"][0], sky["colour"][1], sky["colour"][2], 1.0)
 
     links.new(coordinate.outputs["Generated"], mapping.inputs["Vector"])
@@ -517,8 +609,7 @@ def enable_passes(scene):
     layer.cycles.denoising_store_passes = True
 
 
-def main():
-    header_path, output = argv_after_double_dash()
+def render_one(header_path, output):
     started = time.time()
 
     with open(header_path, "r", encoding="utf-8") as handle:
@@ -546,6 +637,26 @@ def main():
 
     bpy.ops.render.render(write_still=True)
     print(f"[bw_cycles] rendered in {time.time() - built:.1f}s -> {output}")
+
+
+def main():
+    jobs = jobs_from_argv()
+    if len(jobs) > 1:
+        print(f"[bw_cycles] manifest of {len(jobs)} pages in one process")
+    started = time.time()
+    for index, (header_path, output) in enumerate(jobs):
+        try:
+            render_one(header_path, output)
+        except Exception as error:  # noqa: BLE001
+            # One bad page must not cost the whole manifest. The driver checks
+            # for the file, so a page that fails here simply is not cached.
+            print(f"[bw_cycles] page {index} failed: {error}")
+    if len(jobs) > 1:
+        elapsed = time.time() - started
+        print(
+            f"[bw_cycles] {len(jobs)} pages in {elapsed:.0f}s "
+            f"({elapsed / max(len(jobs), 1):.1f}s each)"
+        )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,56 @@
+#!/usr/bin/env sh
+# Place a whole scene in Rust and path-trace it with Cycles, in one go.
+#
+#   ./render                    1920x1080, a natural scene, opened when done
+#   BW_SAMPLES=512 ./render     cleaner, slower
+#   BW_SIZE=2560x1440 ./render  bigger
+#   BW_DETAIL=96 ./render       pixels per metre; lower is a wider view
+#   BW_SEED=12 ./render         somewhere else entirely
+#
+# This is not `./run`. The game streams pages and has a frame to draw them in;
+# Cycles takes seconds, so it cannot run in a render loop. What it can do is
+# render the whole thing at once, which is both simpler and better for looking
+# at: no page grid, no seams to reason about, one camera over one scene.
+#
+# Placement is unchanged either way — every blade is a pure function of its world
+# coordinate, so this is the same meadow the game grows, rendered properly.
+#
+# ## Choosing BW_DETAIL
+#
+# Pixels per world metre, and it decides what the picture is *of* rather than
+# how good it looks. The art is authored at 96, which is the scale the game
+# samples pages at. The default here is 192 because a blade of grass is a few
+# millimetres wide: at 96 it is under half a pixel and cannot be drawn at all,
+# and the reference art this was matched against sits at about 200.
+#
+# Lower it to see more ground; raise it to count the blades.
+set -e
+
+cd "$(dirname "$0")"
+
+SIZE="${BW_SIZE:-1920x1080}"
+WIDTH="${SIZE%x*}"
+HEIGHT="${SIZE#*x}"
+SAMPLES="${BW_SAMPLES:-256}"
+DETAIL="${BW_DETAIL:-192}"
+SEED="${BW_SEED:-7}"
+OUT="${BW_OUT:-target/grass-render.png}"
+
+echo "placing and tracing ${WIDTH}x${HEIGHT} at ${DETAIL} px/m, ${SAMPLES} spp, seed ${SEED}"
+
+cargo run --release -p bw_grass --example grass_cycles -- \
+	--width "$WIDTH" \
+	--height "$HEIGHT" \
+	--px-per-metre "$DETAIL" \
+	--samples "$SAMPLES" \
+	--seed "$SEED" \
+	--out "$OUT" \
+	"$@"
+
+echo
+cargo run --release -p bw_grass --example grass_critique -- \
+	"$OUT" --crop 1024 --target docs/art/grass-target.png || true
+
+if [ "$(uname)" = "Darwin" ]; then
+	open "$OUT"
+fi

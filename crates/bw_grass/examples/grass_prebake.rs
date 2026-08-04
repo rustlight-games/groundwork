@@ -17,8 +17,6 @@
 //!
 //! Pages already in the cache are skipped, so an interrupted run resumes.
 
-use std::path::PathBuf;
-
 use bevy::prelude::*;
 use bw_grass::bake::{BakeParams, Page};
 use bw_grass::cache;
@@ -30,7 +28,7 @@ use bw_grass::scene::GrassScene;
 fn main() {
     let options = Options::parse();
     let blender = cycles::blender_path();
-    if !blender.exists() && blender != PathBuf::from("blender") {
+    if !blender.exists() && blender.as_os_str() != "blender" {
         eprintln!("no Blender at {}; set BW_BLENDER", blender.display());
         std::process::exit(1);
     }
@@ -74,7 +72,7 @@ fn main() {
             // and every trace misses its own cache entry.
             let page = Page::new(coordinate.as_vec2() * span, PAGE_PIXELS, PAGE_PIXELS);
 
-            if !options.force && cache::load(&page, &params).is_some() {
+            if !options.force && cache::load_from(&cache::directory(), &page, &params).is_some() {
                 skipped += 1;
                 continue;
             }
@@ -144,7 +142,9 @@ fn main() {
     if failed > 0 {
         std::process::exit(1);
     }
-    println!("\n./run will now show traced pages where they exist.");
+    println!("\nBW_GRASS_TRACED=1 ./run   to see them.");
+    println!("Pages outside the traced region fall back to the rasteriser, which");
+    println!("is a different picture — trace a radius that covers the view.");
 }
 
 /// Read the traced PNG as the RGBA bytes a texture wants.
