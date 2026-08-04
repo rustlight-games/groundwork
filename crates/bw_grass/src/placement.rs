@@ -575,15 +575,14 @@ const COLONY_SPREAD: f32 = 0.30;
 /// the reference organises itself in, and the one this renderer had nothing at.
 const COLONY_METRES: f32 = 2.25;
 
-/// How much longer a colony is along the flow than across it.
+/// How much longer a vigour mass is along the flow than across it.
 ///
-/// Two and a half. Grass spreads by runner and by seed shadow, both of which
-/// follow the ground's own run, so real stands are streaks rather than blobs —
-/// but the reason this number is *this* large is the overview rather than
-/// botany. An elongated mass carries its direction in its area, which survives
-/// minification; a round one carries direction only in the blades inside it,
-/// which does not.
-const COLONY_ELONGATION: f32 = 2.5;
+/// Three. An elongated mass carries its direction in its *area*, which is what
+/// survives being minified to a gameplay camera; a round one carries direction
+/// only in the blades inside it, which does not. Applied to noise rather than to
+/// a cell grid — see the note in [`colony_of`] for why that distinction is the
+/// difference between streaks and visible chunk boundaries.
+const COLONY_ELONGATION: f32 = 3.0;
 
 /// A group of tufts that grow as one mass.
 #[derive(Clone, Copy)]
@@ -638,30 +637,26 @@ struct Colony {
 /// discontinuity at the cell centres either — a linear blend of directions turns
 /// fastest exactly where it crosses a centre, which reads as a crease.
 fn colony_of(seed: u64, root: Vec2, ground: &Ground) -> Colony {
-    // ## Colonies are stretched along the flow, not square
+    // ## The grid is not warped, and that was tried
     //
-    // A square cell makes a round mass, and **a round mass has no direction**.
-    // That does not matter at a close-up, where the eye reads direction from the
-    // blades themselves. It is the whole problem at an overview: at fifty-odd
-    // pixels to the metre a blade is a fifth of a pixel, every blade-scale
-    // gradient averages to noise, and the only directional signal left is the
-    // shape of the masses. Measured, that gap is a coherence of 0.26 at the game
-    // camera against 0.38 at the close-up — from the same field.
+    // Stretching the cells along the flow to make elongated colonies is the
+    // obvious way to carry direction at a distance, and it fails twice.
     //
-    // So the grid is warped into the flow's own frame and stretched along it.
-    // Colonies become elongated streaks lying with the flow, which reads as
-    // direction at any distance because it is carried by *area* rather than by
-    // edges. The warp is position-dependent, since the flow is, so the cells are
-    // not a rigid lattice — which is fine and slightly better than fine: the
-    // boundaries curve with the field instead of ruling straight lines across
-    // it, and the four-cell blend hides what is left.
-    let flow = Vec2::from_angle(ground.flow);
-    let along = root.dot(flow);
-    let across = root.dot(Vec2::new(-flow.y, flow.x));
-    let grid = Vec2::new(
-        along / (COLONY_METRES * COLONY_ELONGATION),
-        across / COLONY_METRES,
-    );
+    // It does not work: four-to-one elongation took overview coherence *down*
+    // from 0.183 to 0.153, because a longer cell means fewer boundaries in
+    // frame and it is the boundaries between differing masses that a gradient
+    // actually sees.
+    //
+    // And it introduces a defect. The warp reads `ground.flow`, which varies
+    // with position, so two neighbouring points can land in genuinely different
+    // cells — the blend cannot smooth over a discontinuity in *which cells it is
+    // blending*. What that draws is short straight or L-shaped breaks in density
+    // and direction, which read as chunk boundaries rather than as anything a
+    // meadow does, and are exactly the kind of artefact that gets hunted for in
+    // the compositing.
+    //
+    // So the grid stays axis-aligned and the blend does its job.
+    let grid = root / COLONY_METRES;
     let base = grid.floor();
     let fraction = grid - base;
     // Smoothstep, so the weights meet flat at both ends.
@@ -680,16 +675,28 @@ fn colony_of(seed: u64, root: Vec2, ground: &Ground) -> Colony {
         sum += Vec2::from_angle(heading) * weight;
     }
 
-    // Vigour is blended over the same four cells as the heading, and for the
-    // same reason: a hard cell edge in how tall the grass is would draw a line
-    // across the field far more visibly than a hard edge in which way it leans.
-    let mut vigour = 0.0f32;
-    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-        let cell = base + Vec2::new(dx as f32, dy as f32);
-        let mut draw = Draw::at(seed, Stream::Colony, cell.x as i32 ^ 0x5bd1, cell.y as i32);
-        let weight = (if dx == 0 { 1.0 - fx } else { fx }) * (if dy == 0 { 1.0 - fy } else { fy });
-        vigour += draw.range(COLONY_VIGOUR.0, COLONY_VIGOUR.1) * weight;
-    }
+    // ## Vigour comes from continuous noise, not from cells
+    //
+    // The heading can live on a cell grid because a four-cell blend genuinely
+    // smooths it. Vigour cannot, and the difference is worth understanding: to
+    // make the masses *directional* — which is the only thing that carries
+    // direction to an overview, where every blade is a fifth of a pixel — the
+    // sampling frame has to be stretched along the flow. Stretch a *cell grid*
+    // that way and the cell coordinate stops being monotonic in position
+    // wherever the flow turns quickly, so neighbouring points land in cells that
+    // are not neighbours. A blend cannot smooth a discontinuity in *which cells
+    // it is blending*, and what it draws instead is short straight and L-shaped
+    // breaks in density that read as chunk boundaries.
+    //
+    // Noise has no cell identity to fold, so the same stretch applied to it is
+    // simply an elongated field: continuous everywhere, directional, and with no
+    // grid to leak through. Two octaves, because a third puts detail back at the
+    // blade scale where it cannot survive the minification anyway.
+    let flow = Vec2::from_angle(ground.flow);
+    let along = root.dot(flow) / (COLONY_METRES * COLONY_ELONGATION);
+    let across = root.dot(Vec2::new(-flow.y, flow.x)) / COLONY_METRES;
+    let drift = crate::rng::fbm(seed, Stream::Colony, along, across, 2);
+    let vigour = COLONY_VIGOUR.0 + drift * (COLONY_VIGOUR.1 - COLONY_VIGOUR.0);
 
     Colony {
         heading: sum.normalize_or(Vec2::from_angle(ground.flow)).to_angle(),
