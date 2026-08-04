@@ -1,0 +1,16 @@
+[package]
+name = "terrain_core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "World coordinates, stable keys, seed derivation and canonical digests"
+
+# No Bevy, and that is a load-bearing absence rather than an omission. Everything
+# here is the vocabulary the terrain is described in, and a vocabulary that
+# cannot be spoken without a renderer in the graph is not a vocabulary.
+[dependencies]
+serde = { workspace = true, optional = true }
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]

@@ -5056,6 +5056,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrain_core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "terrain_preview"
 version = "0.1.0"
 dependencies = [
