@@ -91,3 +91,7 @@ benchmarks/*.ron
 # Captured frames for the texture-match benchmark. The reference plate under
 # benchmarks/reference/ is committed; captures are per-run output.
 benchmarks/capture/
+
+# Render output from the grass examples, if one is run without --out.
+/grass_plate.png
+/grass-render.png
