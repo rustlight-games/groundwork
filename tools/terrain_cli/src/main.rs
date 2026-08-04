@@ -876,7 +876,6 @@ fn preview_export(args: &PreviewArgs) -> ExitCode {
     // is actually there rather than whatever part of it fell inside the
     // rectangle. See `bake_padded`.
     let plate = terrain_bake::bake::bake_padded_image(page, &params);
-    let colours = plate.colour.clone();
     if let Err(error) = save_rgba(&args.out, &plate) {
         eprintln!("cannot write {}: {error}", args.out.display());
         return ExitCode::FAILURE;
@@ -889,7 +888,7 @@ fn preview_export(args: &PreviewArgs) -> ExitCode {
 
     if let (Some(sample), false) = (&framing.sample, args.no_sidecars) {
         let manifest = sample.manifest("preview-export", framing.preset, framing.fill);
-        match write_sidecars(&args.out, &colours, sample, &manifest) {
+        match write_sidecars(&args.out, &plate.colour, sample, &manifest) {
             Ok(paths) => {
                 for path in paths {
                     println!("wrote {}", path.display());
