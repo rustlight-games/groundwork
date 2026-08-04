@@ -66,12 +66,10 @@ fn main() {
     // to a fifth of the reference's.
     //
     // So a wide view is bought with time rather than with the picture.
-    let detail_ratio = (shown_px_per_metre / TUNED_PX_PER_METRE).clamp(0.0, 1.0);
     // Never thinned. Tiling bounds memory directly and far better, and thinning
     // was never free: holding *coverage* is not holding *structure*, so fewer
     // fatter blades stopped forming legible tufts and took coherence from 0.46
     // to 0.22. A wide view is bought with time, not with the picture.
-    let _ = detail_ratio;
     let crowding = 1.0f32;
     // ## The width compensation is 1/c, not 1/√c
     //
@@ -299,9 +297,6 @@ fn main() {
     }
 }
 
-/// The framing the look was tuned at, in pixels per metre.
-const TUNED_PX_PER_METRE: f32 = 192.0;
-
 /// The detail every trace runs at, whatever scale the picture is shown at.
 ///
 /// **The single number that decides whether a wide view works**, and it took
@@ -347,16 +342,6 @@ const MAX_SUPERSAMPLE: usize = 3;
 /// A quarter of [`VERTEX_CEILING`], so a tile has room for the guard band and
 /// for Blender's own overhead without the estimate having to be exact.
 const TILE_VERTEX_BUDGET: usize = VERTEX_CEILING / 4;
-
-/// The least the canopy may be thinned however far the camera pulls back.
-///
-/// A third, and it started at a sixth. The mistake was treating the thinning as
-/// purely a cost measure: individual blades really are invisible at a wide view,
-/// so dropping five of every six looks free — and it is not, because what
-/// survives at that distance is **coverage**, and coverage is what says the
-/// ground is alive rather than mown. At a sixth the field went to bare soil with
-/// tufts on it and the highlight share collapsed to a fifth of the reference's.
-const MIN_CROWDING: f32 = 0.22;
 
 /// The most geometry one scene may ask Blender to hold.
 ///
