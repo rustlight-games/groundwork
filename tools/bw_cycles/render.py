@@ -221,11 +221,11 @@ def blade_material(settings):
     ramp.location = (-700, -100)
     ramp.color_ramp.interpolation = "EASE"
     stops = [
-        (0.00, (0.0040, 0.0330, 0.0022, 1.0)),
-        (0.22, (0.0085, 0.0800, 0.0034, 1.0)),
-        (0.55, (0.0165, 0.1680, 0.0046, 1.0)),
-        (0.82, (0.0260, 0.2560, 0.0058, 1.0)),
-        (1.00, (0.0470, 0.3450, 0.0078, 1.0)),
+        (0.00, (0.0030, 0.0345, 0.0014, 1.0)),
+        (0.22, (0.0064, 0.0840, 0.0022, 1.0)),
+        (0.55, (0.0112, 0.1820, 0.0026, 1.0)),
+        (0.82, (0.0178, 0.2760, 0.0032, 1.0)),
+        (1.00, (0.0325, 0.3720, 0.0044, 1.0)),
     ]
     first = ramp.color_ramp.elements[0]
     first.position, first.color = stops[0][0], stops[0][1]
@@ -239,7 +239,7 @@ def blade_material(settings):
     mix = nodes.new("ShaderNodeMix")
     mix.data_type = "RGBA"
     mix.location = (-500, 0)
-    mix.inputs["B"].default_value = (0.034, 0.138, 0.006, 1.0)
+    mix.inputs["B"].default_value = (0.026, 0.145, 0.004, 1.0)
 
     links.new(along.outputs["Result"], ramp.inputs["Fac"])
     links.new(ramp.outputs["Color"], mix.inputs["A"])
@@ -277,11 +277,19 @@ def blade_material(settings):
 
 
 def ground_material():
-    """Soil under the canopy: dark, matte and barely saturated.
+    """What is at the bottom of a gap: moss and dead thatch, not bare earth.
 
-    Deliberately darker than any exposed earth would be in isolation. The ground
-    is seen almost entirely through gaps in the canopy, and a soil bright enough
-    to look right on its own reads as a hole punched through the grass.
+    Deliberately darker than exposed soil would be in isolation, because the
+    ground is seen almost entirely through gaps and a soil bright enough to look
+    right on its own reads as a hole punched through the grass.
+    
+    But *too* dark is the opposite failure and the one this had. A canopy gap
+    with near-black at the bottom does not read as depth, it reads as missing
+    geometry — the eye needs some returned light to understand a recess as a
+    recess. Real turf almost never shows clean earth either: what is down there
+    is moss, dead thatch and stained soil, all of it green-shifted. So this ramp
+    runs from a mossy shadow to a dry olive rather than from black to brown, and
+    the green in it is what lets a gap read as deep rather than as punched.
     """
     material = bpy.data.materials.new("ground")
     material.use_nodes = True
@@ -300,8 +308,8 @@ def ground_material():
 
     ramp = nodes.new("ShaderNodeValToRGB")
     ramp.location = (-600, 0)
-    ramp.color_ramp.elements[0].color = (0.022, 0.036, 0.009, 1.0)
-    ramp.color_ramp.elements[1].color = (0.070, 0.086, 0.024, 1.0)
+    ramp.color_ramp.elements[0].color = (0.026, 0.052, 0.014, 1.0)
+    ramp.color_ramp.elements[1].color = (0.090, 0.104, 0.036, 1.0)
 
     links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
     links.new(ramp.outputs["Color"], principled.inputs["Base Color"])

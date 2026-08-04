@@ -192,7 +192,7 @@ pub fn plant(marks: &mut Vec<Stroke>, bed: &Bed) {
         // *smoother* canopy rather than a balder one.
         |ground| (1.15 - ground.resolution * 0.30) * (1.0 - ground.bare * 0.75),
         |marks, page, draw, root, ground, params| {
-            let stroke = fine_stroke(draw, root, ground, params);
+            let stroke = fine_stroke(draw, root, ground, params, params.seed);
             emit(marks, page, stroke);
         },
     );
@@ -470,10 +470,18 @@ fn mat_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &BakeParams)
 /// be buried. This stands up, takes the grass ramp, and closes the surface.
 /// Between them they are the two things under a tuft that the old renderer
 /// collapsed into one.
-fn fine_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &BakeParams) -> Stroke {
-    // Half a radian of scatter around the flow rather than the tuft's full one
-    // and a half. Grain, not plants.
-    let azimuth = ground.flow + draw.normal() * 0.42;
+fn fine_stroke(
+    draw: &mut Draw,
+    root: Vec2,
+    ground: &Ground,
+    params: &BakeParams,
+    seed: u64,
+) -> Stroke {
+    // Around the colony's heading, not the world's flow. This is the largest
+    // population in the field by an order of magnitude, so it is the layer that
+    // decides what the middle scale looks like from any distance — grain that
+    // ignores its colony averages the colonies away.
+    let azimuth = colony_of(seed, root, ground).heading + draw.normal() * 0.34;
     let width = draw.range(0.30, 0.72);
     Stroke {
         root: root.extend(0.0),
@@ -513,6 +521,48 @@ fn fine_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &BakeParams
         // mesh — every blade outlined, which is exactly the fur reading.
         under: params.under * 0.45 * (1.0 - ground.bare * 0.85),
         ..default()
+    }
+}
+
+/// How far one tuft may stray from its colony's heading, radians.
+///
+/// About seven degrees. Deliberately small: the reference art's colonies hold a
+/// shared direction across dozens of blades, and the eye reads that agreement as
+/// a single flowing mass. Widen this and the colonies dissolve back into
+/// independent clumps long before the individual tufts start looking regimented.
+const COLONY_SPREAD: f32 = 0.13;
+
+/// How wide a colony is, in world metres.
+///
+/// Two and a quarter metres, which at the scale the art is judged at puts a
+/// colony somewhere between a hundred and three hundred pixels across — the band
+/// the reference organises itself in, and the one this renderer had nothing at.
+const COLONY_METRES: f32 = 2.25;
+
+/// A group of tufts that grow as one mass.
+#[derive(Clone, Copy)]
+struct Colony {
+    /// The direction every tuft in it leans, world radians.
+    heading: f32,
+}
+
+/// Which colony a point belongs to, and which way it runs.
+///
+/// A pure function of world position, like everything else in this module, so
+/// two pages that have never met put the same tuft in the same colony and agree
+/// about its heading. Deriving this from anything page-local would put a visible
+/// join wherever two pages met — and it would be a *change of texture* rather
+/// than a step, which is the kind that survives every seam test.
+///
+/// The cell is hard-edged, and that is fine because only the *heading* comes
+/// from it: two adjacent colonies differ by a turn rather than by a boundary,
+/// and the tufts either side of the line interleave exactly as they did before.
+fn colony_of(seed: u64, root: Vec2, ground: &Ground) -> Colony {
+    let cell = (root / COLONY_METRES).floor();
+    let mut draw = Draw::at(seed, Stream::Colony, cell.x as i32, cell.y as i32);
+    Colony {
+        // The colony scatters around the flow as widely as a tuft used to.
+        heading: ground.flow + draw.signed() * 0.75,
     }
 }
 
@@ -674,15 +724,28 @@ fn grow_tuft(
         reach = reach.max(draw.range(1.12, 1.3));
     }
 
-    // Along the local flow, loosely. A uniform heading over the whole circle is
-    // isotropic, and isotropic grass has no direction for the eye to travel
-    // along — so the only structure left at the middle scale is the outline of
-    // each clump, which is precisely the round-blob reading. One tuft in six
-    // ignores the flow entirely.
-    let heading = if draw.chance(0.17) {
-        draw.range(0.0, std::f32::consts::TAU)
+    // Along the colony's heading, tightly — and the colony along the flow,
+    // loosely. That two-step is the whole of the middle scale.
+    //
+    // A uniform heading over the whole circle is isotropic, and isotropic grass
+    // has no direction for the eye to travel along. But scattering every tuft
+    // *independently* around the flow is barely better: at ±0.7 radians two
+    // neighbours can disagree by eighty degrees, so agreement never survives
+    // more than one plant and the middle scale has nothing to say but the
+    // outline of each clump. Measured, that is a directional coherence of 0.44
+    // against reference art's 0.51, and it is what reads as mottle.
+    //
+    // So the wide scatter moves up a level, to the colony, and what is left at
+    // the tuft is a tenth of it. Tufts sharing a colony now agree closely enough
+    // for the eye to group them into one mass with a direction; colonies still
+    // differ from each other as much as tufts used to.
+    let colony = colony_of(params.seed, centre, ground);
+    let heading = if draw.chance(0.09) {
+        // A few plants ignore their colony. Total agreement is a comb, and the
+        // stragglers are what keep a colony's edge from reading as a boundary.
+        colony.heading + draw.signed() * 1.4
     } else {
-        ground.flow + draw.signed() * 0.7
+        colony.heading + draw.signed() * COLONY_SPREAD
     };
     let flow = Vec2::from_angle(heading);
     let shade = plant_light(draw, ground, params) - params.base_light;

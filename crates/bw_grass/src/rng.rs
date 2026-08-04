@@ -72,6 +72,15 @@ pub enum Stream {
     Fine = 0x19,
     /// Shoot bundles within a tuft — several related blades from one root.
     Tiller = 0x1a,
+    /// Which colony a tuft belongs to, and which way that colony runs.
+    ///
+    /// The level between the world's flow and one plant's heading. Without it
+    /// every tuft scatters around the flow independently, so two neighbours can
+    /// disagree by eighty degrees and no colony ever forms — which is exactly
+    /// what left the middle scale reading as mottle.
+    Colony = 0x1b,
+    /// The stream-function whose curl bends the flow into arcs and eddies.
+    Curl = 0x1c,
 }
 
 /// Mix a 64-bit value until its bits are independent.

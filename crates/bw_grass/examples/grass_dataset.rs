@@ -118,8 +118,10 @@ fn main() {
             }
             for (name, channel) in passes.vectors() {
                 let cropped = crop_vector(channel, options.page, margin);
-                let encoded: Vec<Vec3> =
-                    cropped.iter().map(|n| *n * 0.5 + Vec3::splat(0.5)).collect();
+                let encoded: Vec<Vec3> = cropped
+                    .iter()
+                    .map(|n| *n * 0.5 + Vec3::splat(0.5))
+                    .collect();
                 wrote += write_rgb(&stem, name, &encoded, w, h);
             }
         }
@@ -216,8 +218,8 @@ fn crop_png_in_place(path: &Path, margin: usize) -> usize {
     if margin * 2 >= w.min(h) {
         return 1;
     }
-    let cropped =
-        image::imageops::crop_imm(&image, margin, margin, w - margin * 2, h - margin * 2).to_image();
+    let cropped = image::imageops::crop_imm(&image, margin, margin, w - margin * 2, h - margin * 2)
+        .to_image();
     match cropped.save(path) {
         Ok(()) => 1,
         Err(error) => {

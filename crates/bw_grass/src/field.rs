@@ -149,6 +149,16 @@ pub struct GroundCache<'a> {
 /// anyway, so its miss rate is the cost it was always paying.
 const GROUND_SLOTS: usize = 8192;
 
+/// How hard the curl bends the prevailing flow.
+///
+/// The curl arrives as a raw gradient difference, so its magnitude is arbitrary;
+/// this is what turns it into a fraction of a unit vector. At this strength the
+/// flow keeps a recognisable prevailing direction over a few metres while
+/// developing arcs and eddies inside that — push it much past one and the
+/// prevailing direction disappears into swirl, which reads as turbulence rather
+/// than as a meadow.
+const CURL_STRENGTH: f32 = 0.85;
+
 /// How wide a lattice cell is, in the page's own pixels.
 const LATTICE_PIXELS: f32 = 2.0;
 
@@ -822,17 +832,45 @@ impl WorldField {
 
     /// Which way the ground runs at a point: a world azimuth, radians.
     ///
-    /// One octave, not four, and at a very low frequency: about five and a half
-    /// metres per cycle, which is roughly a third of the width of a 1080p view.
-    /// That scale is chosen against the eye rather than against anything
-    /// physical — a flow that turns faster than the eye can follow is just
-    /// another kind of noise, and one that turns slower is a comb.
+    /// Two terms, and they do different jobs.
+    ///
+    /// The first is one octave of value noise at about five and a half metres
+    /// per cycle — roughly a third of the width of a 1080p view. That scale is
+    /// chosen against the eye rather than against anything physical: a flow that
+    /// turns faster than the eye can follow is just another kind of noise, and
+    /// one that turns slower is a comb.
+    ///
+    /// The second is the **curl of a scalar potential**, and it is what makes
+    /// the flow read as growth rather than as drift. A direction field sampled
+    /// straight from noise wanders; it has no arcs, no eddies and no centres,
+    /// because nothing constrains it to conserve anything. The curl of a
+    /// potential is divergence-free by construction, so it *must* circulate —
+    /// which is where fans, curls and the occasional vortex come from, and those
+    /// are precisely the shapes the reference art organises its colonies around.
+    ///
+    /// ```text
+    ///   F = ( ∂ψ/∂y , −∂ψ/∂x )
+    /// ```
     ///
     /// Cheap on purpose. It is read once per contributing mound rather than once
     /// per sample, so it sits inside the hottest loop in the crate.
     #[inline]
     fn flow_at(&self, p: Vec2) -> f32 {
-        value_noise(self.seed, Stream::Flow, p.x * 0.18, p.y * 0.18) * std::f32::consts::TAU
+        let drift = value_noise(self.seed, Stream::Flow, p.x * 0.18, p.y * 0.18);
+        // A finite difference wide enough to stay smooth and narrow enough that
+        // the eddies are colony-sized rather than regional.
+        const STEP: f32 = 0.35;
+        const FREQUENCY: f32 = 0.11;
+        let potential = |q: Vec2| fbm(self.seed, Stream::Curl, q.x * FREQUENCY, q.y * FREQUENCY, 3);
+        let dy = potential(p + Vec2::Y * STEP) - potential(p - Vec2::Y * STEP);
+        let dx = potential(p + Vec2::X * STEP) - potential(p - Vec2::X * STEP);
+        let curl = Vec2::new(dy, -dx);
+        // The drift sets the prevailing direction and the curl bends it. Adding
+        // the curl as a *vector* to the drift's own unit vector rather than as
+        // an angle keeps the turn rate bounded — an angular sum can spin a full
+        // turn inside a metre and read as a defect.
+        let base = Vec2::from_angle(drift * std::f32::consts::TAU);
+        (base + curl * CURL_STRENGTH).normalize_or(base).to_angle()
     }
 
     /// Everything at once, which is how the baker wants it.
