@@ -57,7 +57,19 @@ fn main() {
     // the difference at a scale where no single blade is visible.
     let detail_ratio = (shown_px_per_metre / TUNED_PX_PER_METRE).clamp(0.0, 1.0);
     let crowding = detail_ratio.max(MIN_CROWDING);
-    let width_relief = 1.0 / crowding.sqrt();
+    // ## The width compensation is 1/c, not 1/√c
+    //
+    // Coverage is `count × width × length`, so thinning the population by `c`
+    // and widening by `1/c` holds it. The square root is the instinctive choice
+    // — it is what you use for *spacing* — and it is wrong here by exactly the
+    // amount that matters: at a fifth the count it widens by 2.1 where 4.5 is
+    // needed, so the canopy loses more than half its coverage and the wide view
+    // opens into patchy scrub over dirt however dense the close-up was.
+    //
+    // Capped, because a blade widened past a few times life size stops being a
+    // blade. Past that cap the coverage genuinely cannot be held by width alone
+    // and `MIN_CROWDING` is what has to give.
+    let width_relief = (1.0 / crowding).min(4.5);
     // The *tufts* thin. The short grass barely does, and the mat not at all.
     //
     // Thinning everything equally is what turned the wide view into soil with
@@ -97,6 +109,11 @@ fn main() {
         samples: options.samples,
         device: options.device.clone(),
         view_transform: options.view_transform.clone(),
+        // From the scale the blade is *shown* at, not the scale it is traced at.
+        // Supersampling samples a blade more finely; it does not make the blade
+        // any bigger in the finished picture, so letting it raise the rib count
+        // spends geometry on detail nobody will ever see.
+        ribs: cycles::ribs_for(shown_px_per_metre),
         // Thinned-out grass is widened to compensate, so the canopy keeps the
         // same coverage rather than opening up as the camera pulls back.
         blade_width: options.blade_width * width_relief,
@@ -117,13 +134,26 @@ fn main() {
         "  traced {}x{} at {:.0} px/m, {}x supersample, crowding {:.2}",
         traced_width, traced_height, traced_px_per_metre, supersample, crowding,
     );
+    let vertices = scene.blades() * scene.ribs() * bw_grass::cycles::VERTICES_PER_RIB;
     println!(
-        "  {} marks, {} blades, {}x{} ground",
+        "  {} marks, {} blades × {} ribs = {:.0}M vertices, {}x{} ground",
         grown.len(),
         scene.blades(),
+        scene.ribs(),
+        vertices as f64 / 1.0e6,
         scene.ground_rows,
         scene.ground_columns,
     );
+    if vertices > VERTEX_CEILING {
+        eprintln!(
+            "\n{:.0}M vertices is past the {:.0}M ceiling — Blender will run out of\n\
+             memory and take a segmentation fault rather than report anything.\n\
+             Widen the view less, or lower --supersample or --density.",
+            vertices as f64 / 1.0e6,
+            VERTEX_CEILING as f64 / 1.0e6,
+        );
+        std::process::exit(1);
+    }
     println!(
         "camera: ortho {:.4} m, pixel aspect {:.5}, from {:?}",
         scene.camera.ortho_scale, scene.camera.pixel_aspect_y, scene.camera.basis[2],
@@ -196,7 +226,20 @@ const TUNED_PX_PER_METRE: f32 = 192.0;
 /// survives at that distance is **coverage**, and coverage is what says the
 /// ground is alive rather than mown. At a sixth the field went to bare soil with
 /// tufts on it and the highlight share collapsed to a fifth of the reference's.
-const MIN_CROWDING: f32 = 0.34;
+const MIN_CROWDING: f32 = 0.22;
+
+/// The most geometry one scene may ask Blender to hold.
+///
+/// A backstop, and it exists because the failure without it is not a slow render
+/// — it is Blender taking a segmentation fault inside `Session::wait()`, several
+/// minutes in, with a crash log instead of a picture. Twenty-three million
+/// blades at seven ribs is half a billion vertices, and there is no message that
+/// says so.
+///
+/// The number is measured rather than reasoned: a wide view at a hundred and
+/// ninety million vertices renders in about two and a half minutes and one at
+/// half a billion dies. This sits below the first with room to spare.
+const VERTEX_CEILING: usize = 260_000_000;
 
 struct Options {
     width: usize,

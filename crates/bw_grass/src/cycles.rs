@@ -76,6 +76,32 @@ use crate::stroke::{BladeSample, walk_blade};
 /// saves in bytes.
 pub const RIBS_PER_BLADE: usize = 7;
 
+/// The fewest cross-sections a blade may be described with.
+///
+/// Three — a root, a middle and a tip, which is the least that can still bend.
+/// Below that a blade is a straight quad and the silhouette that makes grass
+/// read as grass is gone.
+pub const MIN_RIBS_PER_BLADE: usize = 3;
+
+/// How finely to describe a blade that will be shown at `px_per_metre`.
+///
+/// The second half of the wide-view mip, and the half that decides whether the
+/// scene fits in memory at all. Thinning the *population* is the obvious lever
+/// and it is not enough on its own: at the game's own framing the field still
+/// holds twenty-three million blades, and at seven ribs each that is half a
+/// billion vertices — which is not a slow render, it is an allocation failure.
+///
+/// A blade five pixels long does not need seven cross-sections. It needs enough
+/// to bend once. So the rib count follows the scale the blade will be seen at,
+/// the same way the count does, and for the same reason: describing detail finer
+/// than a pixel is not detail.
+pub fn ribs_for(px_per_metre: f32) -> usize {
+    // The authoring scale gets the full count; halve the scale, lose a rib.
+    let ratio = (px_per_metre / iso::PX_PER_METRE).clamp(0.0, 1.0);
+    let ribs = (RIBS_PER_BLADE as f32 * ratio.sqrt()).round() as usize;
+    ribs.clamp(MIN_RIBS_PER_BLADE, RIBS_PER_BLADE)
+}
+
 /// Vertices across one rib: left edge, raised centre, right edge.
 ///
 /// Three, and this is the whole reason blades are exported as a mesh rather than
@@ -97,7 +123,7 @@ pub const RIBS_PER_BLADE: usize = 7;
 /// everywhere.
 pub const VERTICES_PER_RIB: usize = 3;
 
-/// Vertices one exported blade occupies.
+/// Vertices one exported blade occupies at the full rib count.
 pub const VERTICES_PER_BLADE: usize = RIBS_PER_BLADE * VERTICES_PER_RIB;
 
 /// Per-blade attributes carried alongside the geometry.
@@ -122,6 +148,8 @@ pub struct CyclesScene {
     pub footprint: (Vec2, Vec2),
     pub camera: Camera,
     pub settings: RenderSettings,
+    /// Cross-sections each blade was described with.
+    ribs: usize,
 }
 
 /// The orthographic camera that reproduces [`crate::iso`] exactly.
@@ -275,6 +303,10 @@ pub struct RenderSettings {
     pub sky_colour: [f32; 3],
     /// Which AOVs to write beside the beauty pass.
     pub passes: bool,
+    /// How many cross-sections each blade is described with.
+    ///
+    /// Zero means "choose from the page's scale" — see [`ribs_for`].
+    pub ribs: usize,
     /// Multiplies every exported curve radius.
     ///
     /// The one honest fudge in the file. Blade half-widths are authored in cache
@@ -305,6 +337,7 @@ impl Default for RenderSettings {
             sky_strength: 1.15,
             sky_colour: [0.30, 0.44, 0.72],
             passes: false,
+            ribs: 0,
             blade_width: 0.35,
         }
     }
@@ -314,7 +347,12 @@ impl CyclesScene {
     /// Turn a grown scene into curves a path tracer can trace.
     pub fn build(scene: &GrassScene, field: &WorldField, settings: RenderSettings) -> Self {
         let page = scene.page;
-        let mut points = Vec::with_capacity(scene.marks.len() * VERTICES_PER_BLADE);
+        let ribs = if settings.ribs == 0 {
+            ribs_for(page.px_per_metre)
+        } else {
+            settings.ribs.clamp(MIN_RIBS_PER_BLADE, RIBS_PER_BLADE)
+        };
+        let mut points = Vec::with_capacity(scene.marks.len() * ribs * VERTICES_PER_RIB);
         let mut attributes = Vec::with_capacity(scene.marks.len());
 
         // How finely to walk a centreline. The rasteriser asks for ribs per
@@ -337,7 +375,7 @@ impl CyclesScene {
             if walked.len() < 2 {
                 continue;
             }
-            resample_into(&walked, settings.blade_width, &mut points);
+            resample_into(&walked, settings.blade_width, ribs, &mut points);
             attributes.push([
                 mark.maturity,
                 mark.base_light,
@@ -359,12 +397,18 @@ impl CyclesScene {
             footprint,
             camera,
             settings,
+            ribs,
         }
     }
 
     /// How many blades this scene holds.
     pub fn blades(&self) -> usize {
-        self.points.len() / VERTICES_PER_BLADE
+        self.points.len() / (self.ribs * VERTICES_PER_RIB)
+    }
+
+    /// Cross-sections per blade in this export.
+    pub fn ribs(&self) -> usize {
+        self.ribs
     }
 
     /// Write the scene to a directory, returning the header's path.
@@ -474,7 +518,7 @@ impl CyclesScene {
             settings.view_transform,
             settings.passes,
             self.blades(),
-            RIBS_PER_BLADE,
+            self.ribs,
             VERTICES_PER_RIB,
             ATTRIBUTES_PER_BLADE,
             self.ground_rows,
@@ -522,7 +566,7 @@ pub fn bearing_to_blender(azimuth: f32) -> f32 {
 /// millimetres of silhouette at the tip, and splitting it into three meshes
 /// would triple the vertex count of the most numerous object in the scene to
 /// describe something the sun's own penumbra is wider than.
-fn resample_into(walked: &[BladeSample], width_scale: f32, out: &mut Vec<[f32; 3]>) {
+fn resample_into(walked: &[BladeSample], width_scale: f32, ribs: usize, out: &mut Vec<[f32; 3]>) {
     let mut lengths = Vec::with_capacity(walked.len());
     let mut total = 0.0f32;
     lengths.push(0.0);
@@ -532,14 +576,14 @@ fn resample_into(walked: &[BladeSample], width_scale: f32, out: &mut Vec<[f32; 3
     }
 
     let mut cursor = 0usize;
-    for i in 0..RIBS_PER_BLADE {
+    for i in 0..ribs {
         let (position, frame, half) = if total <= 1.0e-6 {
             // A degenerate blade still has to contribute its vertices, or every
             // blade after it in the buffer shifts and the whole page shears.
             let sample = walked[0];
             (sample.position, sample.frame, sample.half_reference)
         } else {
-            let wanted = total * i as f32 / (RIBS_PER_BLADE - 1) as f32;
+            let wanted = total * i as f32 / (ribs - 1) as f32;
             while cursor + 2 < walked.len() && lengths[cursor + 1] < wanted {
                 cursor += 1;
             }
@@ -801,7 +845,7 @@ mod tests {
         assert!(walked.len() > 2, "the fixture blade produced no walk");
 
         let mut points = Vec::new();
-        resample_into(&walked, 1.0, &mut points);
+        resample_into(&walked, 1.0, RIBS_PER_BLADE, &mut points);
         assert_eq!(points.len(), VERTICES_PER_BLADE);
 
         // The ends have to be the ends: a resample that drifts off the root
@@ -962,7 +1006,7 @@ mod tests {
             })
             .collect();
         let mut points = Vec::new();
-        resample_into(&walk, 1.0, &mut points);
+        resample_into(&walk, 1.0, RIBS_PER_BLADE, &mut points);
 
         let at = |i: usize| Vec3::new(points[i][0], points[i][1], points[i][2]);
         let (left, centre, right) = (at(0), at(1), at(2));
@@ -1004,7 +1048,7 @@ mod tests {
             })
             .collect();
         let mut points = Vec::new();
-        resample_into(&bunched, 1.0, &mut points);
+        resample_into(&bunched, 1.0, RIBS_PER_BLADE, &mut points);
 
         // Read the centre vertex of each rib; the edges are offset sideways by
         // construction and would not sit on the centreline.
