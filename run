@@ -1,0 +1,50 @@
+#!/usr/bin/env sh
+# Nine isometric tiles, somewhere new, through the cheap rasteriser.
+#
+#   ./run                            a fresh world, in a few seconds
+#   TERRAIN_SEED=5a17e33b ./run      that world again, exactly
+#   TERRAIN_TILE=563,124 ./run       that tile as the subject
+#   TERRAIN_TILE_M=4 ./run           bigger tiles, less detail per metre
+#   TERRAIN_SIZE=3840x2160 ./run     bigger
+#   TERRAIN_QUALITY=reference ./run  the slow raster tier
+#
+# The fast half of the pair. `./render` traces the same nine tiles through
+# Cycles and takes minutes; this takes seconds and is what the neural renderer
+# will eventually be given as its *input*, so it is worth looking at on its own
+# terms rather than only as a preview of the expensive one.
+#
+# Both scripts frame through the same resolver, so a seed rendered by each
+# produces two photographs of one meadow, in register pixel for pixel. That is
+# the whole reason the framing lives in `terrain_scene::frame` rather than in
+# either renderer.
+#
+# ## What comes out
+#
+#   target/terrain-run.png                the picture, RGBA, diamond on nothing
+#   target/terrain-run-tiles.png          the nine tiles outlined and labelled
+#   target/terrain-run-subject-mask.png   white inside the centre tile
+#   target/terrain-run.ron                the seed, the tile, the framing
+#
+# Random, and reproducible: the last line printed is the command that produces
+# this exact picture again.
+set -e
+
+cd "$(dirname "$0")"
+
+SIZE="${TERRAIN_SIZE:-1920x1080}"
+WIDTH="${SIZE%x*}"
+HEIGHT="${SIZE#*x}"
+OUT="${TERRAIN_OUT:-target/terrain-run.png}"
+QUALITY="${TERRAIN_QUALITY:-dataset}"
+
+set -- --width "$WIDTH" --height "$HEIGHT" --quality "$QUALITY" --out "$OUT"
+[ -n "$TERRAIN_SEED" ] && set -- "$@" --seed "$TERRAIN_SEED"
+[ -n "$TERRAIN_TILE" ] && set -- "$@" --centre-tile="$TERRAIN_TILE"
+[ -n "$TERRAIN_TILE_M" ] && set -- "$@" --tile-size-m "$TERRAIN_TILE_M"
+[ -n "$TERRAIN_FILL" ] && set -- "$@" --layout-fill "$TERRAIN_FILL"
+
+cargo run --release -q -p terrain_cli -- preview-export "$@"
+
+if [ "$(uname)" = "Darwin" ]; then
+	open "$OUT"
+fi

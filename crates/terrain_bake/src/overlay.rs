@@ -58,30 +58,53 @@ impl Default for GridStyle {
     }
 }
 
+/// A plate being drawn on.
+///
+/// Three values that always travel together, and never separately: passing them
+/// one at a time made every function here take eight arguments, half of which
+/// were the same three.
+pub struct Canvas<'a> {
+    pub pixels: &'a mut [Vec3],
+    pub width: usize,
+    pub height: usize,
+}
+
+impl<'a> Canvas<'a> {
+    pub fn new(pixels: &'a mut [Vec3], width: usize, height: usize) -> Self {
+        Self {
+            pixels,
+            width,
+            height,
+        }
+    }
+
+    /// Mix a colour into a pixel, clipping at the edges.
+    #[inline]
+    fn blend(&mut self, x: i64, y: i64, colour: Vec3, coverage: f32) {
+        if x < 0 || y < 0 || x >= self.width as i64 || y >= self.height as i64 {
+            return;
+        }
+        let index = y as usize * self.width + x as usize;
+        self.pixels[index] = self.pixels[index].lerp(colour, coverage.clamp(0.0, 1.0));
+    }
+}
+
 /// Draw the layout's tiles over a plate, in place.
 ///
 /// Context tiles first and the subject last, so the heavier outline wins where
 /// they meet rather than being drawn over by its own neighbours.
-pub fn draw_tile_grid(
-    pixels: &mut [Vec3],
-    width: usize,
-    height: usize,
-    frame: &ResolvedIsoFrame,
-    style: &GridStyle,
-) {
+pub fn draw_tile_grid(canvas: &mut Canvas<'_>, frame: &ResolvedIsoFrame, style: &GridStyle) {
     for role in [TileRole::Context, TileRole::Subject] {
         for tile in frame.tile_polygons_px.iter().filter(|t| t.role == role) {
             let (weight, colour) = match role {
                 TileRole::Subject => (style.subject_px, style.subject_colour),
                 TileRole::Context => (style.context_px, style.context_colour),
             };
-            outline(pixels, width, height, tile, weight, colour);
+            outline(canvas, tile, weight, colour);
             let centre = polygon_centre(tile);
             let label = format!("{},{}", tile.coord.u, tile.coord.v);
             draw_text(
-                pixels,
-                width,
-                height,
+                canvas,
                 centre[0] - text_width(&label, style.text_scale) as f32 * 0.5,
                 centre[1] - (GLYPH_ROWS * style.text_scale) as f32 * 0.5,
                 &label,
@@ -93,19 +116,11 @@ pub fn draw_tile_grid(
 }
 
 /// Write the lines of a caption into the top-left corner.
-pub fn draw_caption(
-    pixels: &mut [Vec3],
-    width: usize,
-    height: usize,
-    lines: &[String],
-    style: &GridStyle,
-) {
+pub fn draw_caption(canvas: &mut Canvas<'_>, lines: &[String], style: &GridStyle) {
     let step = ((GLYPH_ROWS + 2) * style.text_scale) as f32;
     for (index, line) in lines.iter().enumerate() {
         draw_text(
-            pixels,
-            width,
-            height,
+            canvas,
             8.0,
             8.0 + index as f32 * step,
             line,
@@ -185,19 +200,10 @@ fn polygon_centre(tile: &TilePolygon) -> [f32; 2] {
 }
 
 /// Draw a closed polygon's edges.
-fn outline(
-    pixels: &mut [Vec3],
-    width: usize,
-    height: usize,
-    tile: &TilePolygon,
-    weight: f32,
-    colour: Vec3,
-) {
+fn outline(canvas: &mut Canvas<'_>, tile: &TilePolygon, weight: f32, colour: Vec3) {
     for index in 0..4 {
         line(
-            pixels,
-            width,
-            height,
+            canvas,
             tile.corners_px[index],
             tile.corners_px[(index + 1) % 4],
             weight,
@@ -211,23 +217,15 @@ fn outline(
 /// Distance to the segment rather than Bresenham, because the diamond's edges
 /// run at two-to-one and a stepped line on a plate whose whole subject is a
 /// two-to-one diamond is a way to mistake the overlay for the geometry.
-fn line(
-    pixels: &mut [Vec3],
-    width: usize,
-    height: usize,
-    a: [f32; 2],
-    b: [f32; 2],
-    weight: f32,
-    colour: Vec3,
-) {
+fn line(canvas: &mut Canvas<'_>, a: [f32; 2], b: [f32; 2], weight: f32, colour: Vec3) {
     let half = weight * 0.5;
     let low = [
         (a[0].min(b[0]) - half - 1.0).floor().max(0.0) as usize,
         (a[1].min(b[1]) - half - 1.0).floor().max(0.0) as usize,
     ];
     let high = [
-        ((a[0].max(b[0]) + half + 1.0).ceil().max(0.0) as usize).min(width),
-        ((a[1].max(b[1]) + half + 1.0).ceil().max(0.0) as usize).min(height),
+        ((a[0].max(b[0]) + half + 1.0).ceil().max(0.0) as usize).min(canvas.width),
+        ((a[1].max(b[1]) + half + 1.0).ceil().max(0.0) as usize).min(canvas.height),
     ];
 
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
@@ -246,8 +244,7 @@ fn line(
             // aliased against ground that is not.
             let coverage = (half + 0.5 - distance).clamp(0.0, 1.0);
             if coverage > 0.0 {
-                let index = y * width + x;
-                pixels[index] = pixels[index].lerp(colour, coverage);
+                canvas.blend(x as i64, y as i64, colour, coverage);
             }
         }
     }
@@ -269,16 +266,7 @@ pub fn text_width(text: &str, scale: usize) -> usize {
 /// not need a typeface; it needs to be readable at a glance on top of grass,
 /// which a 5×7 bitmap at two or three times scale is and a hinted font at eight
 /// pixels is not.
-pub fn draw_text(
-    pixels: &mut [Vec3],
-    width: usize,
-    height: usize,
-    x: f32,
-    y: f32,
-    text: &str,
-    scale: usize,
-    colour: Vec3,
-) {
+pub fn draw_text(canvas: &mut Canvas<'_>, x: f32, y: f32, text: &str, scale: usize, colour: Vec3) {
     let scale = scale.max(1);
     for (index, character) in text.chars().enumerate() {
         let glyph = glyph_for(character);
@@ -292,11 +280,7 @@ pub fn draw_text(
                 let py0 = y as i64 + (row * scale) as i64;
                 for dy in 0..scale as i64 {
                     for dx in 0..scale as i64 {
-                        let (px, py) = (px0 + dx, py0 + dy);
-                        if px < 0 || py < 0 || px >= width as i64 || py >= height as i64 {
-                            continue;
-                        }
-                        pixels[py as usize * width + px as usize] = colour;
+                        canvas.blend(px0 + dx, py0 + dy, colour, 1.0);
                     }
                 }
             }
@@ -436,7 +420,11 @@ mod tests {
     fn the_grid_draws_over_the_plate_and_leaves_most_of_it_alone() {
         let frame = frame(480, 270);
         let mut pixels = vec![Vec3::ZERO; 480 * 270];
-        draw_tile_grid(&mut pixels, 480, 270, &frame, &GridStyle::default());
+        draw_tile_grid(
+            &mut Canvas::new(&mut pixels, 480, 270),
+            &frame,
+            &GridStyle::default(),
+        );
         let touched = pixels.iter().filter(|p| **p != Vec3::ZERO).count();
         assert!(touched > 500, "the grid drew almost nothing: {touched}");
         assert!(
@@ -451,7 +439,7 @@ mod tests {
         let frame = frame(480, 270);
         let style = GridStyle::default();
         let mut pixels = vec![Vec3::ZERO; 480 * 270];
-        draw_tile_grid(&mut pixels, 480, 270, &frame, &style);
+        draw_tile_grid(&mut Canvas::new(&mut pixels, 480, 270), &frame, &style);
         let subject = pixels
             .iter()
             .filter(|p| p.distance(style.subject_colour) < 0.2)
@@ -474,8 +462,9 @@ mod tests {
         // Captions are drawn near an edge by definition, so clipping is the
         // normal case rather than the exception.
         let mut pixels = vec![Vec3::ZERO; 32 * 16];
-        draw_text(&mut pixels, 32, 16, -20.0, -5.0, "SEED", 3, Vec3::ONE);
-        draw_text(&mut pixels, 32, 16, 28.0, 12.0, "SEED", 3, Vec3::ONE);
+        let mut canvas = Canvas::new(&mut pixels, 32, 16);
+        draw_text(&mut canvas, -20.0, -5.0, "SEED", 3, Vec3::ONE);
+        draw_text(&mut canvas, 28.0, 12.0, "SEED", 3, Vec3::ONE);
         // Nothing panicked, and something landed.
         assert!(pixels.iter().any(|p| *p != Vec3::ZERO));
     }

@@ -286,10 +286,33 @@ impl Framing {
 
 /// The tile side a layout uses when none is given, in metres.
 ///
-/// Four, which at the default framing puts the subject tile at 576×288 pixels —
-/// large enough to judge and small enough that its eight neighbours are all in
-/// frame.
-const DEFAULT_TILE_SIDE_M: f64 = 4.0;
+/// Two, and the number is chosen rather than round. Three things agree on it:
+///
+/// **Precedent.** Diablo II's floor tile is 160×80 pixels at 2:1 dimetric, cut
+/// into 5×5 collision subtiles. Work back from a character at roughly 80 pixels
+/// for 1.8 metres and a tile is a shade under two metres, with 0.4-metre pathing
+/// cells. Dota 2 is coarser — Source units are inches, its terrain grid is 128
+/// of them, so 3.25 metres — but its heroes are heroically oversized and its
+/// camera sits much further out.
+///
+/// **Gameplay.** A tower occupies a tile, a keep occupies two by two, and a hero
+/// with a 0.6-metre collision radius moves continuously across tiles rather than
+/// snapping between them.
+///
+/// **The renderer**, and this is the one that settles it. The subject diamond is
+/// 576×288 pixels at the default framing *whatever* the tile side, because the
+/// layout always fills the same nine-ninths of the frame. What the tile side
+/// actually changes is how many metres those pixels cover: two metres resolves
+/// to 144 pixels per metre, four to 72.
+///
+/// That matters because a grass blade is about three millimetres across, so it
+/// is one pixel wide at roughly 330 pixels to the metre, and below that it is a
+/// *partially covered* pixel that averages to a flat wash. The path tracer
+/// supersamples up to three times — see `terrain_cycles::plate` — so 144 px/m
+/// traces at 432 and resolves a blade, while 72 px/m clamps at 216 and does not.
+/// Two metres is the largest tile at which the expensive renderer can actually
+/// see the grass it is rendering.
+const DEFAULT_TILE_SIDE_M: f64 = 2.0;
 
 /// A fresh seed, from the operating system.
 ///
@@ -746,11 +769,10 @@ fn write_sidecars(
     let mut written = Vec::new();
 
     let mut annotated = colours.to_vec();
-    terrain_bake::overlay::draw_tile_grid(&mut annotated, width, height, frame, &style);
+    let mut canvas = terrain_bake::overlay::Canvas::new(&mut annotated, width, height);
+    terrain_bake::overlay::draw_tile_grid(&mut canvas, frame, &style);
     terrain_bake::overlay::draw_caption(
-        &mut annotated,
-        width,
-        height,
+        &mut canvas,
         &[
             format!("SEED {}", sample.identity.seed_hex().to_uppercase()),
             format!("SUBJECT {}", sample.identity.centre_tile),
@@ -1126,7 +1148,47 @@ mod tests {
         let sample = resolved.sample.expect("the default is layout-framed");
         assert_eq!(sample.layout().len(), 9);
         assert_eq!(sample.layout().tile_side_m(), DEFAULT_TILE_SIDE_M);
-        assert!((resolved.px_per_metre - 72.0).abs() < 1.0e-3);
+        // Two-metre tiles in a 1920×1080 frame at ninety percent: six metres of
+        // ground across, twelve of projected screen, 144 pixels to the metre.
+        assert!(
+            (resolved.px_per_metre - 144.0).abs() < 1.0e-3,
+            "{}",
+            resolved.px_per_metre
+        );
+        // And the subject diamond is 576×288 pixels — which it would be at any
+        // tile side, because the layout always fills the same fraction of the
+        // frame. The tile side decides how many *metres* those pixels cover, and
+        // that is the whole of what it decides.
+        let subject = sample.frame.subject_polygon().corners_px;
+        let span = |axis: usize| {
+            subject
+                .iter()
+                .map(|c| c[axis])
+                .fold(f32::NEG_INFINITY, f32::max)
+                - subject
+                    .iter()
+                    .map(|c| c[axis])
+                    .fold(f32::INFINITY, f32::min)
+        };
+        assert!((span(0) - 576.0).abs() < 0.01, "{}", span(0));
+        assert!((span(1) - 288.0).abs() < 0.01, "{}", span(1));
+    }
+
+    #[test]
+    fn the_default_tile_is_the_largest_the_path_tracer_can_resolve_a_blade_at() {
+        // A blade is one pixel wide at about 330 px/m and a partially covered
+        // pixel below that, which averages to a flat wash however many samples
+        // it gets. The tracer may supersample by three, so the framing has to
+        // arrive at 110 px/m or better — and the tile side is what decides that.
+        // At four-metre tiles this framing traces at 216 px/m and the canopy
+        // washes out; at two it traces at 432 and a blade is a blade.
+        let resolved = framing().resolve().expect("resolves");
+        let traced = resolved.px_per_metre * terrain_cycles::plate::MAX_SUPERSAMPLE as f32;
+        assert!(
+            traced >= terrain_cycles::plate::TRACE_PX_PER_METRE,
+            "{DEFAULT_TILE_SIDE_M} m tiles trace at {traced:.0} px/m, under the {} a blade needs",
+            terrain_cycles::plate::TRACE_PX_PER_METRE
+        );
     }
 
     #[test]
