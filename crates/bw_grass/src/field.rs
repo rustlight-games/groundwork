@@ -363,7 +363,7 @@ impl Ground {
 /// Where the key light is, projected onto the screen plane and normalised.
 ///
 /// Up and to the left, in image space where +Y is down. Kept here as well as in
-/// [`crate::bake::BakeParams`] because the mound field shades its own domes and
+/// [`crate::style::GrassParams`] because the mound field shades its own domes and
 /// needs to know which way the sun is; the two are checked against each other by
 /// a test rather than by hope.
 pub const LIGHT_PLANE: Vec2 = Vec2::new(-0.724_1, -0.689_7);

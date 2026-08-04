@@ -36,7 +36,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::bake::{BakeParams, Page};
+use crate::bake::BakeParams;
+use crate::page::Page;
 
 /// Where traced pages live, unless [`TERRAIN_GRASS_CACHE`] says otherwise.
 pub const DEFAULT_DIRECTORY: &str = "target/grass-pages";

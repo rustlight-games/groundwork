@@ -25,9 +25,10 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite_render::Material2dPlugin;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 
-use crate::bake::{BakeParams, Page, bake};
+use crate::bake::{BakeParams, bake};
 use crate::iso;
 use crate::material::{GrassSurfaceMaterial, SurfaceSettings};
+use crate::page::Page;
 
 /// Side of a page, in cache pixels.
 ///
@@ -118,7 +119,7 @@ pub fn grass_camera(view_height: f32) -> impl Bundle {
     // baking is a slightly flat patch of the right green rather than a black
     // hole. It will still be visible if you look for it, and that is the point:
     // hiding it entirely would hide the streaming falling behind as well.
-    let waiting = crate::palette::shade(crate::palette::Tone::Grass, 0.45);
+    let waiting = crate::palette::shade(crate::tone::Tone::Grass, 0.45);
     (
         Camera2d,
         Camera {

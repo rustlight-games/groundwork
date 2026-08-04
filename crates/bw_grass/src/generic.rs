@@ -41,12 +41,12 @@ use terrain_scene::mark::{
 use terrain_scene::projection::ScenePoint;
 use terrain_scene::scene::{SceneBuilder, SceneRequest, TerrainScene};
 
-use crate::bake::Page;
 use crate::geometry::{Profile, TipProfile};
 use crate::iso;
-use crate::palette::Tone;
+use crate::page::Page;
 use crate::scene::GrassScene;
 use crate::stroke::Stroke;
+use crate::tone::Tone;
 
 /// The version this bridge stamps on the scenes it builds.
 ///
@@ -264,7 +264,7 @@ mod tests {
         let params = BakeParams::default();
         let field = WorldField::lit_by(params.seed, params.light);
         let page = Page::new(Vec2::new(-64.0, -64.0), 64, 64);
-        let scene = GrassScene::build(page, &field, &params);
+        let scene = GrassScene::build(page, &field, &params.grass());
         (scene, field, params)
     }
 
@@ -324,7 +324,8 @@ mod tests {
             &BakeParams {
                 seed: params.seed ^ 1,
                 ..params
-            },
+            }
+            .grass(),
         );
         assert_ne!(
             scene_from_grass(&grass, digest()).fingerprint(),

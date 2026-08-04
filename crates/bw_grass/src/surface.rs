@@ -31,7 +31,8 @@
 
 use glam::Vec3;
 
-use crate::palette::{self, Tone};
+use crate::palette;
+use crate::tone::Tone;
 
 /// The supersampling factor the look was tuned at, and what
 /// [`crate::quality::GrassRenderQuality::Preview`] still uses.

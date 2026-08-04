@@ -54,7 +54,7 @@
 //! all. So width responds to the viewing angle but never all the way to zero —
 //! see [`foreshorten`].
 
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 
 use crate::fastmath;
 use crate::iso;
@@ -323,6 +323,18 @@ pub fn foreshorten(normal: Vec3) -> f32 {
     // the range instead of concentrating all of it at the grazing angles where
     // the blade is already hard to see.
     (1.0 - FORESHORTEN) + FORESHORTEN * smoothstep(0.0, 0.62, facing)
+}
+
+/// How far a blade's shadow reaches along the ground, per unit of its height.
+///
+/// The number the guard band is sized from, and it is a function of the sun
+/// alone: `|L.xy| / L.z`, which is one over the tangent of the elevation. At
+/// 35° it is 1.43; at 20° it would be 2.75, and the band — and the cost of every
+/// page — would nearly double with it.
+#[inline]
+pub fn reach_per_height(sun: Vec3) -> f32 {
+    let plane = Vec2::new(sun.x, sun.y).length();
+    plane / sun.z.abs().max(1.0e-3)
 }
 
 #[cfg(test)]

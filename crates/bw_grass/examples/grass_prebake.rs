@@ -19,10 +19,11 @@
 
 use glam::IVec2;
 
-use bw_grass::bake::{BakeParams, Page};
+use bw_grass::bake::BakeParams;
 use bw_grass::cache;
 use bw_grass::cycles::{self, RenderSettings};
 use bw_grass::field::WorldField;
+use bw_grass::page::Page;
 use bw_grass::plugin::PAGE_PIXELS;
 use bw_grass::scene::GrassScene;
 
@@ -103,7 +104,7 @@ fn main() {
                 samples: options.samples,
                 ..Default::default()
             };
-            let grown = GrassScene::build(fine, &field, &params);
+            let grown = GrassScene::build(fine, &field, &params.grass());
             let scene = cycles::CyclesScene::build(&grown, &field, settings);
             let png = scratch.join("page.png");
             let _ = std::fs::remove_file(&png);

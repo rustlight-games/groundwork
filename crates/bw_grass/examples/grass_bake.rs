@@ -39,8 +39,9 @@
 //! given camera height, bakes exactly that, and resamples it to the pixels the
 //! window actually has.
 
-use bw_grass::bake::{BakeParams, Page, bake, bake_grid};
+use bw_grass::bake::{BakeParams, bake, bake_grid};
 use bw_grass::iso;
+use bw_grass::page::Page;
 use bw_grass::surface::resample;
 use glam::{Vec2, Vec3};
 

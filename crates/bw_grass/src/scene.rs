@@ -30,12 +30,11 @@
 //! is thirty. Holding geometry is not what costs; holding *vertices* would be,
 //! which is why a mark stays a description and is tessellated at raster time.
 
-use glam::{Vec2, Vec3};
-
-use crate::bake::{BakeParams, Page};
 use crate::field::WorldField;
+use crate::page::Page;
 use crate::placement::{self, Bed};
-use crate::stroke::{Painter, Stroke};
+use crate::stroke::Stroke;
+use crate::style::GrassParams;
 
 /// Every mark that can touch one page, in draw order.
 pub struct GrassScene {
@@ -52,7 +51,7 @@ pub struct GrassScene {
 
 impl GrassScene {
     /// Grow everything this page can show.
-    pub fn build(page: Page, field: &WorldField, params: &BakeParams) -> Self {
+    pub fn build(page: Page, field: &WorldField, params: &GrassParams) -> Self {
         let mut marks = Vec::new();
         placement::plant(
             &mut marks,
@@ -63,13 +62,6 @@ impl GrassScene {
             },
         );
         Self { page, marks }
-    }
-
-    /// Rasterise the scene into a surface through `painter`.
-    pub fn draw(&self, painter: &mut Painter) {
-        for mark in &self.marks {
-            painter.draw(mark);
-        }
     }
 
     /// How many marks the page holds.
@@ -103,110 +95,16 @@ impl GrassScene {
     }
 }
 
-/// Several output pages baked as one piece of ground.
-///
-/// The runtime still consumes 256-pixel pages, and nothing about that changes.
-/// What changes is that the offline renderer stops baking them one at a time.
-///
-/// Three things want a region rather than a page. A cast shadow crosses page
-/// boundaries, and a shadow map built per page has to guard for casters it will
-/// then throw away — build it once over four pages and the guard is paid for
-/// once instead of four times. Patch and tuft structure spans page edges, so a
-/// training crop taken from a region carries genuine neighbourhood context
-/// rather than context that stops at a border. And the fixed per-page costs —
-/// the field, the lattice, the guard band's own area — amortise.
-///
-/// The region is baked as one large [`Page`] and cut afterwards, which is what
-/// makes the output identical to a page bake wherever it can be: the world is
-/// sampled on the same world-anchored lattice either way, and the only remaining
-/// difference is that a neighbourhood read near a page edge is cropped in one
-/// path and complete in the other.
-#[derive(Clone, Copy, Debug)]
-pub struct BakeRegion {
-    /// Cache-pixel corner of the region's first page.
-    pub origin: Vec2,
-    /// Output pages across and down.
-    pub pages: (usize, usize),
-    /// Side of one output page, in cache pixels.
-    pub page_pixels: usize,
-    /// Cache pixels per world metre.
-    pub px_per_metre: f32,
-}
-
-impl BakeRegion {
-    /// A square region of `side × side` pages at the authoring scale.
-    pub fn square(origin: Vec2, side: usize, page_pixels: usize) -> Self {
-        Self {
-            origin,
-            pages: (side.max(1), side.max(1)),
-            page_pixels,
-            px_per_metre: crate::iso::PX_PER_METRE,
-        }
-    }
-
-    /// The whole region as one page.
-    pub fn whole(&self) -> Page {
-        Page {
-            origin: self.origin,
-            width: self.pages.0 * self.page_pixels,
-            height: self.pages.1 * self.page_pixels,
-            px_per_metre: self.px_per_metre,
-        }
-    }
-
-    /// One output page of the region.
-    pub fn tile(&self, x: usize, y: usize) -> Page {
-        Page {
-            origin: self.origin
-                + Vec2::new((x * self.page_pixels) as f32, (y * self.page_pixels) as f32),
-            width: self.page_pixels,
-            height: self.page_pixels,
-            px_per_metre: self.px_per_metre,
-        }
-    }
-
-    /// How many output pages the region holds.
-    pub fn count(&self) -> usize {
-        self.pages.0 * self.pages.1
-    }
-
-    /// Bake the whole region, correctly, and hand back the finished plate.
-    ///
-    /// Goes through [`crate::bake::bake_padded`], so every neighbourhood-reading
-    /// shading term sees the ground that is actually there rather than whatever
-    /// part of it fell inside the rectangle. The pad is a perimeter cost against
-    /// an area of pages, which is the whole reason to bake a region rather than
-    /// a page: one 256-pixel page padded for correctness costs three and a half
-    /// times itself, a four-by-four region costs half again.
-    ///
-    /// Crop the result with [`BakeRegion::crop`] to get pages the runtime cache
-    /// can hold.
-    pub fn bake(&self, params: &crate::bake::BakeParams) -> Vec<Vec3> {
-        crate::bake::bake_padded(self.whole(), params)
-    }
-
-    /// Cut one output page out of a finished region plate.
-    pub fn crop(&self, plate: &[Vec3], x: usize, y: usize) -> Vec<Vec3> {
-        let whole = self.whole();
-        let side = self.page_pixels;
-        let mut page = Vec::with_capacity(side * side);
-        for row in 0..side {
-            let start = (y * side + row) * whole.width + x * side;
-            page.extend_from_slice(&plate[start..start + side]);
-        }
-        page
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec2;
 
     #[test]
     fn a_scene_grows_something() {
         let page = Page::new(Vec2::new(-64.0, -64.0), 96, 96);
-        let field = WorldField::lit_by(7, BakeParams::default().light);
-        let scene = GrassScene::build(page, &field, &BakeParams::default());
+        let field = WorldField::lit_by(7, GrassParams::default().light);
+        let scene = GrassScene::build(page, &field, &GrassParams::default());
         assert!(!scene.is_empty(), "a page grew nothing at all");
         // The mat alone is nearly four hundred marks to the square metre, and a
         // 96-pixel page at the authoring scale is a square metre of ground.
@@ -219,7 +117,7 @@ mod tests {
         // camera pass see one scene because a scene is built once, and the
         // paired low and high renders are two photographs of the same meadow.
         let page = Page::new(Vec2::new(128.0, -32.0), 64, 64);
-        let params = BakeParams::default();
+        let params = GrassParams::default();
         let field = WorldField::lit_by(params.seed, params.light);
         let first = GrassScene::build(page, &field, &params);
         let second = GrassScene::build(page, &field, &params);
@@ -234,7 +132,7 @@ mod tests {
     #[test]
     fn the_canopy_ceiling_bounds_every_mark() {
         let page = Page::new(Vec2::ZERO, 96, 96);
-        let params = BakeParams::default();
+        let params = GrassParams::default();
         let field = WorldField::lit_by(params.seed, params.light);
         let scene = GrassScene::build(page, &field, &params);
         let ceiling = scene.canopy_ceiling();
@@ -244,52 +142,6 @@ mod tests {
                 mark.root.z + mark.length.abs() <= ceiling + 1.0e-6,
                 "a mark reaches past the ceiling the shadow volume is sized from"
             );
-        }
-    }
-
-    #[test]
-    fn a_region_tiles_its_own_pages_exactly() {
-        let region = BakeRegion::square(Vec2::new(-256.0, -256.0), 2, 128);
-        let whole = region.whole();
-        assert_eq!(whole.width, 256);
-        assert_eq!(whole.height, 256);
-        assert_eq!(region.count(), 4);
-        // Every tile's corner has to land on the region grid, or a crop takes
-        // the wrong pixels.
-        for y in 0..region.pages.1 {
-            for x in 0..region.pages.0 {
-                let tile = region.tile(x, y);
-                let offset = tile.origin - region.origin;
-                assert_eq!(offset.x, (x * region.page_pixels) as f32);
-                assert_eq!(offset.y, (y * region.page_pixels) as f32);
-            }
-        }
-    }
-
-    #[test]
-    fn cropping_a_region_takes_the_right_pixels() {
-        // A plate whose every pixel encodes its own coordinate, so a crop that
-        // is off by a row or a column cannot pass.
-        let region = BakeRegion::square(Vec2::ZERO, 2, 4);
-        let whole = region.whole();
-        let plate: Vec<Vec3> = (0..whole.width * whole.height)
-            .map(|i| {
-                let (x, y) = (i % whole.width, i / whole.width);
-                Vec3::new(x as f32, y as f32, 0.0)
-            })
-            .collect();
-        for ty in 0..2 {
-            for tx in 0..2 {
-                let page = region.crop(&plate, tx, ty);
-                assert_eq!(page.len(), 16);
-                for row in 0..4 {
-                    for column in 0..4 {
-                        let pixel = page[row * 4 + column];
-                        assert_eq!(pixel.x, (tx * 4 + column) as f32);
-                        assert_eq!(pixel.y, (ty * 4 + row) as f32);
-                    }
-                }
-            }
         }
     }
 }

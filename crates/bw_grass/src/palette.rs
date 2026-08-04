@@ -35,24 +35,7 @@
 
 use glam::Vec3;
 
-/// Which ramp a pixel is shaded through.
-///
-/// A small closed set on purpose: every material in the field is one of these,
-/// and a pixel that cannot say which one it is has no business being drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Tone {
-    /// Bare earth: olive-brown, never reddish.
-    Soil = 0,
-    /// The dark mat under the canopy.
-    Thatch = 1,
-    /// Ordinary blades — most of the field.
-    Grass = 2,
-    /// Broadleaf clusters, a shade cooler and flatter than blades.
-    Leaf = 3,
-    /// Dry stems and the odd bleached tuft.
-    Dry = 4,
-}
+pub use crate::tone::Tone;
 
 impl Tone {
     /// The ramp this tone shades through.

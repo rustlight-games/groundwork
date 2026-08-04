@@ -46,13 +46,14 @@ use std::path::{Path, PathBuf};
 use glam::{Vec2, Vec3};
 use rayon::prelude::*;
 
-use crate::bake::{BakeParams, Macro, Page, Passes, cast_shadows, lay_floor, resolve_passes};
+use crate::bake::{BakeParams, Macro, Passes, cast_shadows, lay_floor, resolve_passes};
 use crate::cycles::{self, CyclesScene, RenderSettings};
 use crate::field::WorldField;
 use crate::iso;
+use crate::page::Page;
+use crate::painter::Painter;
 use crate::quality::GrassRenderQuality;
 use crate::scene::GrassScene;
-use crate::stroke::Painter;
 use crate::surface::Surface;
 
 /// One rendering of a scene, at one budget.
@@ -80,7 +81,7 @@ impl Pair {
         let field = WorldField::lit_by(params.seed, params.light);
         let lattice = Macro::build(&page, &field);
         // Once. See the module note for why this is the whole point.
-        let scene = GrassScene::build(page, &field, params);
+        let scene = GrassScene::build(page, &field, &params.grass());
 
         let render = |quality: GrassRenderQuality| {
             let params = BakeParams { quality, ..*params };
@@ -91,7 +92,7 @@ impl Pair {
                 let mut painter =
                     Painter::at_scale(&mut surface, page.origin, params.light, page.px_per_metre)
                         .with_ribs_per_pixel(quality.ribs_per_pixel());
-                scene.draw(&mut painter);
+                painter.draw_scene(&scene);
             }
             let shadows = cast_shadows(&scene, &params);
             let mut passes = Passes::default();
@@ -184,7 +185,7 @@ impl TracedPair {
         let field = WorldField::lit_by(params.seed, params.light);
         let lattice = Macro::build(&page, &field);
         // Once. Both renderers read this and nothing regenerates it.
-        let grown = GrassScene::build(page, &field, params);
+        let grown = GrassScene::build(page, &field, &params.grass());
 
         let cheap = BakeParams {
             quality: input,
@@ -196,7 +197,7 @@ impl TracedPair {
             let mut painter =
                 Painter::at_scale(&mut surface, page.origin, cheap.light, page.px_per_metre)
                     .with_ribs_per_pixel(input.ribs_per_pixel());
-            grown.draw(&mut painter);
+            painter.draw_scene(&grown);
         }
         let shadows = cast_shadows(&grown, &cheap);
         let mut passes = Passes::default();
@@ -774,7 +775,7 @@ mod tests {
         let params = BakeParams::default();
         let meta = ShardMetadata::of(&page, &params, GrassRenderQuality::Preview, 1234);
         assert!(
-            (meta.sun_elevation_degrees - crate::lab::DEFAULT_ELEVATION.to_degrees()).abs() < 0.5,
+            (meta.sun_elevation_degrees - crate::sun::DEFAULT_ELEVATION.to_degrees()).abs() < 0.5,
             "metadata says {}°",
             meta.sun_elevation_degrees
         );

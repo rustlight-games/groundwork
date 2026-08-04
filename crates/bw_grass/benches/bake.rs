@@ -63,12 +63,14 @@ use std::hint::black_box;
 
 use bw_bench::SEEDS;
 use bw_grass::bake::{
-    BakeParams, Macro, Page, TILE_PIXELS, bake, bake_grid, lay_floor, plant_strokes, resolve,
+    BakeParams, Macro, TILE_PIXELS, bake, bake_grid, lay_floor, plant_strokes, resolve,
 };
 use bw_grass::field::WorldField;
 use bw_grass::fixtures::{PLACES, place_name};
 use bw_grass::iso;
-use bw_grass::stroke::{Painter, Stroke};
+use bw_grass::page::Page;
+use bw_grass::painter::Painter;
+use bw_grass::stroke::Stroke;
 use bw_grass::surface::{Surface, blur, resample};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use glam::{Vec2, Vec3};

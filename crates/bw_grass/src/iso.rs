@@ -24,7 +24,7 @@
 //! authoring scale did twenty-four pixels of work for every pixel anyone saw.
 //!
 //! So the authoring scale and the bake scale are now two different things. See
-//! [`crate::bake::Page::detail`] for what has to be carried through to move
+//! [`crate::page::Page::detail`] for what has to be carried through to move
 //! between them — the short version is that a length in metres scales itself and
 //! a length in cache pixels does not.
 
@@ -129,7 +129,7 @@ pub fn from_cache_ground(cache: Vec2) -> Vec2 {
 /// filter.
 ///
 /// Baking at the scale the page will be *shown* at is therefore not a quality
-/// setting, it is the removal of a mistake. See [`crate::bake::Page::detail`]
+/// setting, it is the removal of a mistake. See [`crate::page::Page::detail`]
 /// for what has to travel with it: every length the art expresses in cache
 /// pixels has to shrink by the same factor, or the blades keep their pixel width
 /// while the field shrinks around them and the grass turns to bristles.

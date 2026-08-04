@@ -55,10 +55,11 @@
 use std::path::{Path, PathBuf};
 
 use bw_bench::{Measurement, Report, SEEDS, Unit};
-use bw_grass::bake::{BakeParams, Page, TILE_PIXELS, bake, bake_grid};
+use bw_grass::bake::{BakeParams, TILE_PIXELS, bake, bake_grid};
 use bw_grass::compare::{self, Similarity, Verdict};
 use bw_grass::fixtures::{PLACES, SCREEN, ZOOMS, place_name};
 use bw_grass::iso;
+use bw_grass::page::Page;
 use bw_grass::surface::resample;
 use glam::Vec3;
 

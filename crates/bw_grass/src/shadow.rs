@@ -43,6 +43,7 @@
 
 use glam::{Vec2, Vec3};
 
+use crate::geometry::reach_per_height;
 use crate::iso;
 use crate::quality::GrassRenderQuality;
 use crate::scene::GrassScene;
@@ -64,18 +65,6 @@ pub struct ShadowMap {
     origin: Vec2,
     /// Distance along the sun of the nearest thing over each texel.
     depth: Vec<f32>,
-}
-
-/// How far a blade's shadow reaches along the ground, per unit of its height.
-///
-/// The number the guard band is sized from, and it is a function of the sun
-/// alone: `|L.xy| / L.z`, which is one over the tangent of the elevation. At
-/// 35° it is 1.43; at 20° it would be 2.75, and the band — and the cost of every
-/// page — would nearly double with it.
-#[inline]
-pub fn reach_per_height(sun: Vec3) -> f32 {
-    let plane = Vec2::new(sun.x, sun.y).length();
-    plane / sun.z.abs().max(1.0e-3)
 }
 
 impl ShadowMap {
@@ -374,8 +363,9 @@ pub fn nudge(sun: Vec3, offset: Vec2, radius: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bake::{BakeParams, Page};
+    use crate::bake::BakeParams;
     use crate::field::WorldField;
+    use crate::page::Page;
 
     fn sun_at(elevation: f32) -> Vec3 {
         Vec3::new(0.0, elevation.cos(), elevation.sin())
@@ -406,7 +396,7 @@ mod tests {
         let params = BakeParams::default();
         let page = Page::new(Vec2::new(-64.0, -64.0), 96, 96);
         let field = WorldField::lit_by(params.seed, params.light);
-        let mut scene = GrassScene::build(page, &field, &params);
+        let mut scene = GrassScene::build(page, &field, &params.grass());
         scene.marks.clear();
         // Turned so its flat face is across the sun's bearing rather than
         // along it. A blade edge-on to the sun casts almost nothing, correctly,
@@ -449,7 +439,7 @@ mod tests {
         let params = BakeParams::default();
         let page = Page::new(Vec2::new(-96.0, -96.0), 128, 128);
         let field = WorldField::lit_by(params.seed, params.light);
-        let mut scene = GrassScene::build(page, &field, &params);
+        let mut scene = GrassScene::build(page, &field, &params.grass());
         scene.marks.clear();
         scene.marks.push(Stroke {
             root: page.ground_at(Vec2::splat(64.0)).extend(0.0),
@@ -524,7 +514,7 @@ mod tests {
         let params = BakeParams::default();
         let page = Page::new(Vec2::ZERO, 32, 32);
         let field = WorldField::lit_by(params.seed, params.light);
-        let scene = GrassScene::build(page, &field, &params);
+        let scene = GrassScene::build(page, &field, &params.grass());
 
         let mut previous = f32::INFINITY;
         for tier in [

@@ -29,13 +29,16 @@ use rayon::prelude::*;
 use crate::field::WorldField;
 use crate::iso;
 use crate::lighting::{self, FormWeights};
-use crate::palette::{self, Tone};
+use crate::page::Page;
+use crate::painter::Painter;
+use crate::palette;
 use crate::quality::GrassRenderQuality;
 use crate::rng::Stream;
 use crate::scene::GrassScene;
 use crate::shadow::{self, ShadowMap};
-use crate::stroke::Painter;
+use crate::style::{GrassParams, GrassStyle};
 use crate::surface::{Surface, blur};
+use crate::tone::Tone;
 
 /// Hermite ramp between two edges.
 #[inline]
@@ -62,134 +65,6 @@ fn shoulder(q: f32) -> f32 {
     }
 }
 
-/// A rectangle of already-projected screen, in cache pixels.
-#[derive(Clone, Copy, Debug)]
-pub struct Page {
-    /// Cache-pixel position of the top-left corner.
-    pub origin: Vec2,
-    pub width: usize,
-    pub height: usize,
-    /// How many of this page's pixels one world metre spans.
-    ///
-    /// [`iso::PX_PER_METRE`] for a page baked at the authoring scale, and less
-    /// for one baked for a camera that will not show that much. See
-    /// [`Page::detail`].
-    pub px_per_metre: f32,
-}
-
-impl Page {
-    /// A page at the scale the art is authored at.
-    pub const fn new(origin: Vec2, width: usize, height: usize) -> Self {
-        Self {
-            origin,
-            width,
-            height,
-            px_per_metre: iso::PX_PER_METRE,
-        }
-    }
-
-    /// A page baked at a fraction of the authoring scale.
-    ///
-    /// `detail` is that fraction: one is the full authoring scale, a quarter
-    /// bakes a page that covers sixteen times the ground for the same number of
-    /// pixels. **The origin is in this page's own cache pixels**, not in
-    /// reference ones, so a page and its neighbour at the same detail tile the
-    /// same way they always did.
-    pub fn at_detail(origin: Vec2, width: usize, height: usize, detail: f32) -> Self {
-        Self {
-            origin,
-            width,
-            height,
-            px_per_metre: iso::PX_PER_METRE * detail.max(1.0e-3),
-        }
-    }
-
-    /// This page's scale as a fraction of the authoring scale.
-    ///
-    /// The number every length in the art has to be multiplied by. The art is
-    /// authored in cache pixels — a blade is 1.6 of them wide, a mound's relief
-    /// reaches 17 of them, the guard band is 140 — and every one of those is a
-    /// statement about how large a thing is *relative to a metre of ground*. Bake
-    /// at a quarter scale without carrying this through and the field shrinks
-    /// while its brush marks do not, which is the difference between distant
-    /// grass and a page of bristles.
-    ///
-    /// Two families of number are deliberately **not** scaled by it. Lengths
-    /// already expressed in metres — blade length, tuft radius, mound spacing —
-    /// scale themselves, because the projection does it for them. And canopy
-    /// *height* is kept in reference pixels throughout, so that every shading
-    /// term keyed on how tall the grass stands means the same thing at every
-    /// detail level; only the distances those terms reach *across* the page are
-    /// scaled.
-    #[inline]
-    pub fn detail(&self) -> f32 {
-        self.px_per_metre / iso::PX_PER_METRE
-    }
-
-    /// A length authored in reference cache pixels, at this page's scale.
-    #[inline]
-    pub fn px(&self, reference: f32) -> f32 {
-        reference * self.detail()
-    }
-
-    /// A blur or search radius authored in reference cache pixels, at this
-    /// page's scale — never below one, since a radius of nought is the identity
-    /// and would silently delete the shading term rather than coarsen it.
-    #[inline]
-    pub fn radius(&self, reference: usize) -> usize {
-        ((reference as f32 * self.detail()).round() as usize).max(1)
-    }
-
-    /// This page's ground, as a world point.
-    #[inline]
-    pub fn ground_at(&self, pixel: Vec2) -> Vec2 {
-        iso::from_cache_ground_at(self.origin + pixel, self.px_per_metre)
-    }
-
-    /// A world point as a page pixel, at final resolution.
-    ///
-    /// The inverse of [`Page::ground_at`] for points on the ground plane, and
-    /// the projection for points above it. Placement needs this and used to
-    /// reach through a [`Painter`] for it, which meant deciding *where* a blade
-    /// goes required a mutable borrow of the surface it would eventually be
-    /// drawn on — the coupling that made a scene impossible to build without
-    /// also drawing it.
-    #[inline]
-    pub fn to_pixel(&self, world: Vec3) -> Vec2 {
-        iso::to_cache_at(world, self.px_per_metre) - self.origin
-    }
-
-    /// A page baked at exactly the scale a camera will show it at.
-    ///
-    /// The whole point of [`Page::at_detail`], expressed as the call a renderer
-    /// actually wants to make. `view_height` is world metres visible
-    /// vertically — `bw_render::BattleCamera::view_height` — and `screen` is the
-    /// window; [`iso::view_pixels`] turns the pair into the scale the ground is
-    /// presented at, and this bakes there instead of baking at the authoring
-    /// scale and throwing the difference away.
-    ///
-    /// `origin` is in this page's own pixels, so a streaming grid steps by whole
-    /// page widths exactly as it does at full detail. What changes is how much
-    /// world one page covers: at the fifty-five-metre camera this game ships at,
-    /// a page holds about twenty-four times the ground it used to, which is
-    /// twenty-four times fewer pages and twenty-four times fewer draw calls for
-    /// the same screen.
-    ///
-    /// Clamped at one: a camera close enough to magnify the ground past the
-    /// authoring scale should bake at the authoring scale and be filtered up,
-    /// never invent detail the art does not contain.
-    pub fn for_view(
-        origin: Vec2,
-        width: usize,
-        height: usize,
-        view_height: f32,
-        screen: (usize, usize),
-    ) -> Self {
-        let (_, _, scale) = iso::view_pixels(view_height, screen);
-        Self::at_detail(origin, width, height, scale.min(1.0))
-    }
-}
-
 /// Every number the look depends on, in one place.
 ///
 /// Deliberately a plain struct of tunables rather than constants scattered
@@ -212,70 +87,16 @@ pub struct BakeParams {
     pub raster: PreviewRasterStyle,
 }
 
-/// What the meadow is made of.
-///
-/// Everything the *generator* reads: how many of each kind of mark grow per
-/// square metre, how long and wide and bent they are, and the intrinsic colour
-/// family each carries. Change any of it and the meadow is a different meadow,
-/// so every scene fingerprint moves.
-///
-/// The four dimensions the rasteriser also reads — blade length, width, bend and
-/// the under-stroke — are here rather than in [`PreviewRasterStyle`] because the
-/// generator *decides* them and writes them onto each mark. A renderer reading a
-/// style is fine; a renderer that could change one would not be.
-#[derive(Clone, Copy, Debug)]
-pub struct GrassStyle {
-    /// Tufts per square metre of ground at full density.
-    ///
-    /// Blades grow in tufts rather than independently, which is the difference
-    /// between grass and fur. A tuft shares a lean, a length and a brightness
-    /// with its neighbours, and that shared-ness is most of what the eye reads
-    /// as vegetation; scatter the same number of blades uniformly and the field
-    /// turns into a doormat.
-    pub tufts: f32,
-    /// Blades in one tuft.
-    pub blades_per_tuft: (usize, usize),
-    /// Short dark strokes per square metre, under everything.
-    pub thatch: f32,
-    /// Fine blades per square metre — the closed canopy the tufts stand in.
-    ///
-    /// The largest single count in the field, and it should be. The reference
-    /// art gives most of its *area* to short combed grass and its accents to
-    /// everything else; a renderer that grows only accents produces marks
-    /// scattered on a floor.
-    pub fine: f32,
-    /// Broadleaf clusters per square metre.
-    pub leaves: f32,
-
-    /// Blade arc length, metres.
-    pub blade_length: (f32, f32),
-    /// Blade half-width at the root, cache pixels.
-    pub blade_width: (f32, f32),
-    /// Bend from vertical at the tip, radians.
-    pub blade_bend: (f32, f32),
-
-    /// Base light index a blade starts from.
-    pub base_light: f32,
-    /// A gentle lift toward the tip, spread over the whole blade.
-    pub tip_light: f32,
-    /// The sharp catch of light on the third of marks that get one.
-    pub glint: f32,
-    /// Strength of the one-sided lateral shading, applied at the rib.
-    pub side_light: f32,
-    /// Width of the dark under-stroke, cache pixels.
-    ///
-    /// **Cut to a third.** It used to be the field's only shadow, and it was a
-    /// good one — a dark band offset away from the light, which is what a shadow
-    /// looks like from a distance. Now that blades cast real shadows onto each
-    /// other it is double-counting, and two shadows on one blade read as an
-    /// outline rather than as depth.
-    ///
-    /// It keeps the job the geometry shadows cannot do at this resolution:
-    /// separating two overlapping blades of nearly the same colour, at a width
-    /// of about a pixel, where a cast shadow has no room to form.
-    pub under: f32,
-    /// Per-tuft brightness scatter.
-    pub scatter: f32,
+impl BakeParams {
+    /// The half of these parameters the generator reads.
+    pub fn grass(&self) -> GrassParams {
+        GrassParams {
+            seed: self.seed,
+            quality: self.quality,
+            light: self.light,
+            style: self.style,
+        }
+    }
 }
 
 /// How the cheap rasteriser draws a meadow.
@@ -517,131 +338,13 @@ pub struct PreviewRasterStyle {
 
 impl Default for BakeParams {
     fn default() -> Self {
+        let grass = GrassParams::default();
         Self {
-            seed: 0x5eed_1234,
-            quality: GrassRenderQuality::Preview,
-            // Up and to the left on screen, and well in front of the ground
-            // plane. Image space, so +Y is *down*: negative X is leftward and
-            // negative Y is up the screen. Every mound in the field is therefore
-            // lit on its upper-left face and falls away toward the lower-right,
-            // and every mark's under-stroke sits on its lower-right side. One
-            // direction, stated once, obeyed everywhere — a field where the
-            // macro light and the marks disagree about where the sun is reads as
-            // wrong long before anyone can say why.
-            light: crate::lab::Key::default().direction(),
-            style: GrassStyle::default(),
+            seed: grass.seed,
+            quality: grass.quality,
+            light: grass.light,
+            style: grass.style,
             raster: PreviewRasterStyle::default(),
-        }
-    }
-}
-
-impl Default for GrassStyle {
-    fn default() -> Self {
-        Self {
-            // Half as many tufts as there were, of roughly twice the reach.
-            //
-            // The pair moves together: ink laid per square metre goes as count
-            // times length, so halving one while doubling the other keeps the
-            // canopy as closed as it was. What changes is the *scale* the field
-            // is organised at. Short marks at high density are a mat — every
-            // square inch gets its share, nothing is a plant, and the only
-            // structure above a centimetre is whatever the lighting invents.
-            // Longer marks in fewer bunches leave gaps between the bunches, and
-            // those gaps are where a fifth of a metre of structure comes from:
-            // the scale the reference has most of its variance at, and the one
-            // this field was flattest at.
-            //
-            // Down again by a quarter, with the blade count up by a third and
-            // the tuft radius up by nearly half, and the arithmetic is the same
-            // arithmetic: total ink held while the unit it is organised into
-            // grows. Fewer, larger, fuller bunches is the whole of the change,
-            // and it is the one the eye asks for as "broad masses of grass
-            // breaking into blades, rather than thousands of small tufts
-            // assembling into a surface". The two readings differ only in the
-            // size of the repeating unit, which is why this is a count and not a
-            // shape.
-            tufts: 50.0,
-            // Blades per tuft rises faster than the tuft count falls, and it has
-            // to. Ink per square metre is count times blades and would be held
-            // by matching them; *closure* is not ink, it is overlap, and overlap
-            // falls with the square of the radius the blades are spread over. A
-            // bunch half again as wide with the same blades in it is a looser
-            // bunch, and the floor comes through — measured, the exposed-earth
-            // share doubled on the first attempt at this while every other
-            // number improved. So the count carries the extra.
-            blades_per_tuft: (10, 30),
-            // And the mat carries the rest. It is the layer that actually roofs
-            // a canopy — three hundred and eighty short strokes to a square
-            // metre, nearly all of them buried — and it is far cheaper per unit
-            // of closure than a blade, because it is drawn to be lost.
-            thatch: 395.0,
-            // About one every sixteen millimetres. Dense enough that the layer
-            // is a surface rather than a scatter, which is the whole distinction
-            // it exists to draw — coverage is not closure, and closure is what
-            // makes the floor stop showing between the marks.
-            fine: 3800.0,
-            leaves: 4.0,
-
-            // The short end is lifted rather than the whole range scaled, and
-            // that distinction is what keeps the guard band affordable. A tuft
-            // has to stand clear of the fine layer to read as a plant at all —
-            // there is seventy times as much fine grass as there is tuft, so a
-            // tuft whose blades are the same height simply joins it and the
-            // plate reads as a carpet with denser patches. But clearance is a
-            // statement about the *shortest* blade in a tuft, and multiplying
-            // the whole distribution to get it stacks onto four other
-            // multipliers and puts metre-and-a-half blades in a meadow.
-            blade_length: (0.14, 0.38),
-            blade_width: (0.42, 1.95),
-            // Well off vertical even at the low end. Grass drawn standing up is
-            // grass drawn as objects; this art draws it as strokes lying along
-            // the ground, and the difference survives being shrunk to gameplay
-            // size when almost nothing else does. Pulled back a little from
-            // where it was, because a mark twice as long at the same bend lies
-            // over twice as far and the bunch stops having a top.
-            blade_bend: (0.35, 1.40),
-
-            base_light: 0.556,
-            // Down by a fifth while `TIP_CURVE` went up by two thirds, which is
-            // one instruction rather than two: the same light, gathered onto the
-            // last few pixels of a mark instead of spread along its upper half.
-            tip_light: 0.34,
-            // Up, while the *number* of marks carrying one came down by a third.
-            // The two moves are the same instruction: a highlight should be a
-            // reward on a chosen tip rather than a property of the surface. Peak
-            // brightness was never what made this field read as lime — the
-            // reference reaches the same peak — it was how much of the plate was
-            // up there with it, and taking area out and putting amplitude back
-            // widens the gap between a lit tip and its surround in both
-            // directions at once.
-            glint: 0.85,
-            side_light: 0.118,
-            // Barely pulled back, and the restraint is the lesson. The obvious
-            // reading of "too visually active" is to take contrast out of the
-            // marks, and it is wrong: measured against the art, the contrast at
-            // two and four pixels was already right, and cutting it produced a
-            // plate that was flatter everywhere and grouped no better. Activity
-            // is not the same quantity as contrast. What makes a surface read as
-            // busy is contrast that is *evenly distributed*, and the repair for
-            // that is at the bunch scale, not this one.
-            //
-            // Then raised, once the highlight population came down by a third.
-            // Local contrast is not one quantity, and the critique that asks for
-            // fewer glossy strands and the one that asks for deeper cavities are
-            // asking for opposite halves of the same number. Spending on the
-            // dark side is the better half here: the plate carries barely two
-            // thirds of the reference's share of genuinely dark pixels, the dark
-            // it is missing is exactly the narrow separation between one blade
-            // and the next, and narrow dark is the kind [`BROAD_DARK`] has no
-            // quarrel with.
-            under: 0.24,
-            // The one term that raises mid-scale organisation without touching
-            // a single pixel of high-frequency contrast, because it varies from
-            // tuft to tuft and a tuft is a fifth of a metre — exactly the radius
-            // the plate measures flattest at. Variation *between* bunches groups
-            // the field; variation *within* one only makes it noisy. They cost
-            // the same and this is the one worth having.
-            scatter: 0.50,
         }
     }
 }
@@ -902,7 +605,7 @@ pub fn bake(page: Page, params: &BakeParams) -> Vec<Vec3> {
     // pass is the whole reason `GrassScene` exists — regenerating the blades for
     // the shadow pass would nearly work, and "nearly" is what produces shadows
     // that do not quite belong to the blades casting them.
-    let scene = GrassScene::build(page, &field, params);
+    let scene = GrassScene::build(page, &field, &params.grass());
     let mut surface =
         Surface::at_supersample(page.width, page.height, params.quality.supersample());
 
@@ -911,7 +614,7 @@ pub fn bake(page: Page, params: &BakeParams) -> Vec<Vec3> {
         let mut painter =
             Painter::at_scale(&mut surface, page.origin, params.light, page.px_per_metre)
                 .with_ribs_per_pixel(params.quality.ribs_per_pixel());
-        scene.draw(&mut painter);
+        painter.draw_scene(&scene);
     }
     let shadows = cast_shadows(&scene, params);
     resolve_lit(&surface, &page, &lattice, params, shadows.as_deref())
@@ -963,9 +666,9 @@ pub fn cast_shadows(scene: &GrassScene, params: &BakeParams) -> Option<Vec<Shado
 /// anything reads it back, which is the only reason this is a function rather
 /// than three lines inside [`bake`].
 pub fn plant_strokes(surface: &mut Surface, page: &Page, field: &WorldField, params: &BakeParams) {
-    let scene = GrassScene::build(*page, field, params);
+    let scene = GrassScene::build(*page, field, &params.grass());
     let mut painter = Painter::at_scale(surface, page.origin, params.light, page.px_per_metre);
-    scene.draw(&mut painter);
+    painter.draw_scene(&scene);
 }
 
 /// How far outside itself a page's shading terms read, in reference pixels.
@@ -1020,7 +723,7 @@ fn shading_reach(params: &BakeParams) -> usize {
 /// not need it — a page popping in with a slightly different relief term at its
 /// left edge is not what anybody notices about grass appearing.
 ///
-/// [`BakeRegion`]: crate::scene::BakeRegion
+/// [`BakeRegion`]: BakeRegion
 pub fn bake_padded(page: Page, params: &BakeParams) -> Vec<Vec3> {
     let pad = page.radius(shading_reach(params));
     let grown = Page {
@@ -2185,6 +1888,52 @@ fn directional_shadow(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_region_tiles_its_own_pages_exactly() {
+        let region = BakeRegion::square(Vec2::new(-256.0, -256.0), 2, 128);
+        let whole = region.whole();
+        assert_eq!(whole.width, 256);
+        assert_eq!(whole.height, 256);
+        assert_eq!(region.count(), 4);
+        // Every tile's corner has to land on the region grid, or a crop takes
+        // the wrong pixels.
+        for y in 0..region.pages.1 {
+            for x in 0..region.pages.0 {
+                let tile = region.tile(x, y);
+                let offset = tile.origin - region.origin;
+                assert_eq!(offset.x, (x * region.page_pixels) as f32);
+                assert_eq!(offset.y, (y * region.page_pixels) as f32);
+            }
+        }
+    }
+
+    #[test]
+    fn cropping_a_region_takes_the_right_pixels() {
+        // A plate whose every pixel encodes its own coordinate, so a crop that
+        // is off by a row or a column cannot pass.
+        let region = BakeRegion::square(Vec2::ZERO, 2, 4);
+        let whole = region.whole();
+        let plate: Vec<Vec3> = (0..whole.width * whole.height)
+            .map(|i| {
+                let (x, y) = (i % whole.width, i / whole.width);
+                Vec3::new(x as f32, y as f32, 0.0)
+            })
+            .collect();
+        for ty in 0..2 {
+            for tx in 0..2 {
+                let page = region.crop(&plate, tx, ty);
+                assert_eq!(page.len(), 16);
+                for row in 0..4 {
+                    for column in 0..4 {
+                        let pixel = page[row * 4 + column];
+                        assert_eq!(pixel.x, (tx * 4 + column) as f32);
+                        assert_eq!(pixel.y, (ty * 4 + row) as f32);
+                    }
+                }
+            }
+        }
+    }
     use super::*;
     // The guard-band tests live here rather than beside `MARGIN` because they
     // measure the whole path: placement decides which cells are visited, and
@@ -2236,7 +1985,7 @@ mod tests {
         // that made the global test unstable.
         const WIDTH: usize = 512;
         const HEIGHT: usize = 256;
-        let region = crate::scene::BakeRegion {
+        let region = BakeRegion {
             origin: Vec2::new(-256.0, -128.0),
             pages: (2, 1),
             page_pixels: 256,
@@ -2389,7 +2138,7 @@ mod tests {
         // So this measures the interior and the join band separately. The
         // interior is the claim; the join band is reported for scale.
         let params = BakeParams::default();
-        let region = crate::scene::BakeRegion {
+        let region = BakeRegion {
             origin: Vec2::new(-256.0, -128.0),
             pages: (2, 1),
             page_pixels: 256,
@@ -2473,7 +2222,7 @@ mod tests {
             };
             let page = Page::new(*origin, 192, 192);
             let field = WorldField::lit_by(params.seed, params.light);
-            let scene = GrassScene::build(page, &field, &params);
+            let scene = GrassScene::build(page, &field, &params.grass());
             tallest = tallest.max(scene.canopy_ceiling());
         }
         assert!(
@@ -2507,7 +2256,7 @@ mod tests {
             let elevation = degrees.to_radians();
             let params = BakeParams {
                 quality: GrassRenderQuality::Reference,
-                light: crate::lab::Key {
+                light: crate::sun::Key {
                     azimuth: 0.0,
                     elevation,
                 }
@@ -2519,7 +2268,7 @@ mod tests {
                 let bed = Bed {
                     page: &page,
                     field: &field,
-                    params: &params,
+                    params: &params.grass(),
                 };
                 let (low, high) = footprint(&page, bed.caster_reach());
                 // Where the page itself is, without any band at all.
@@ -2562,7 +2311,7 @@ mod tests {
                 ..Default::default()
             };
             let field = WorldField::lit_by(params.seed, params.light);
-            let scene = GrassScene::build(page, &field, &params);
+            let scene = GrassScene::build(page, &field, &params.grass());
             let colours = bake(page, &params);
             (scene, colours)
         };
@@ -3109,5 +2858,100 @@ mod tests {
             assert!(luma > 0.04, "a pixel went black: {colour:?}");
             assert!(luma < 0.95, "a pixel blew out: {colour:?}");
         }
+    }
+}
+
+/// Several output pages baked as one piece of ground.
+///
+/// The runtime still consumes 256-pixel pages, and nothing about that changes.
+/// What changes is that the offline renderer stops baking them one at a time.
+///
+/// Three things want a region rather than a page. A cast shadow crosses page
+/// boundaries, and a shadow map built per page has to guard for casters it will
+/// then throw away — build it once over four pages and the guard is paid for
+/// once instead of four times. Patch and tuft structure spans page edges, so a
+/// training crop taken from a region carries genuine neighbourhood context
+/// rather than context that stops at a border. And the fixed per-page costs —
+/// the field, the lattice, the guard band's own area — amortise.
+///
+/// The region is baked as one large [`Page`] and cut afterwards, which is what
+/// makes the output identical to a page bake wherever it can be: the world is
+/// sampled on the same world-anchored lattice either way, and the only remaining
+/// difference is that a neighbourhood read near a page edge is cropped in one
+/// path and complete in the other.
+#[derive(Clone, Copy, Debug)]
+pub struct BakeRegion {
+    /// Cache-pixel corner of the region's first page.
+    pub origin: Vec2,
+    /// Output pages across and down.
+    pub pages: (usize, usize),
+    /// Side of one output page, in cache pixels.
+    pub page_pixels: usize,
+    /// Cache pixels per world metre.
+    pub px_per_metre: f32,
+}
+
+impl BakeRegion {
+    /// A square region of `side × side` pages at the authoring scale.
+    pub fn square(origin: Vec2, side: usize, page_pixels: usize) -> Self {
+        Self {
+            origin,
+            pages: (side.max(1), side.max(1)),
+            page_pixels,
+            px_per_metre: crate::iso::PX_PER_METRE,
+        }
+    }
+
+    /// The whole region as one page.
+    pub fn whole(&self) -> Page {
+        Page {
+            origin: self.origin,
+            width: self.pages.0 * self.page_pixels,
+            height: self.pages.1 * self.page_pixels,
+            px_per_metre: self.px_per_metre,
+        }
+    }
+
+    /// One output page of the region.
+    pub fn tile(&self, x: usize, y: usize) -> Page {
+        Page {
+            origin: self.origin
+                + Vec2::new((x * self.page_pixels) as f32, (y * self.page_pixels) as f32),
+            width: self.page_pixels,
+            height: self.page_pixels,
+            px_per_metre: self.px_per_metre,
+        }
+    }
+
+    /// How many output pages the region holds.
+    pub fn count(&self) -> usize {
+        self.pages.0 * self.pages.1
+    }
+
+    /// Bake the whole region, correctly, and hand back the finished plate.
+    ///
+    /// Goes through [`crate::bake::bake_padded`], so every neighbourhood-reading
+    /// shading term sees the ground that is actually there rather than whatever
+    /// part of it fell inside the rectangle. The pad is a perimeter cost against
+    /// an area of pages, which is the whole reason to bake a region rather than
+    /// a page: one 256-pixel page padded for correctness costs three and a half
+    /// times itself, a four-by-four region costs half again.
+    ///
+    /// Crop the result with [`BakeRegion::crop`] to get pages the runtime cache
+    /// can hold.
+    pub fn bake(&self, params: &crate::bake::BakeParams) -> Vec<Vec3> {
+        crate::bake::bake_padded(self.whole(), params)
+    }
+
+    /// Cut one output page out of a finished region plate.
+    pub fn crop(&self, plate: &[Vec3], x: usize, y: usize) -> Vec<Vec3> {
+        let whole = self.whole();
+        let side = self.page_pixels;
+        let mut page = Vec::with_capacity(side * side);
+        for row in 0..side {
+            let start = (y * side + row) * whole.width + x * side;
+            page.extend_from_slice(&plate[start..start + side]);
+        }
+        page
     }
 }

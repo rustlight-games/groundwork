@@ -33,10 +33,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use bevy::math::Vec2;
-use bw_grass::bake::{BakeParams, Page};
+use bw_grass::bake::BakeParams;
 use bw_grass::cycles::RenderSettings;
 use bw_grass::dataset::{self, CorpusRequest};
 use bw_grass::field::WorldField;
+use bw_grass::page::Page;
 use bw_grass::plate::{self, PlatePlan, PlateRequest, Progress};
 use bw_grass::quality::GrassRenderQuality;
 use bw_grass::scene::GrassScene;
@@ -628,7 +629,7 @@ fn run_dataset(args: &DatasetArgs) -> ExitCode {
 #[allow(dead_code)]
 fn describe(page: Page, params: &BakeParams) -> String {
     let field = WorldField::lit_by(params.seed, params.light);
-    let scene = GrassScene::build(page, &field, params);
+    let scene = GrassScene::build(page, &field, &params.grass());
     format!(
         "{} marks, canopy ceiling {:.3} m, fingerprint {}",
         scene.len(),

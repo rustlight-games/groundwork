@@ -9,7 +9,7 @@
 //!   implementation detail of getting the plate traced, and nothing outside this
 //!   module should have to know how many there were.
 //! - A **page** is a unit of *storage* in the runtime cache, and is unrelated to
-//!   either. See [`crate::bake::Page`].
+//!   either. See [`crate::page::Page`].
 //!
 //! This module owns the first two. It used to live inside the `grass_cycles`
 //! example, which was the wrong place for it the moment a second caller wanted a
@@ -37,10 +37,11 @@ use std::path::{Path, PathBuf};
 
 use glam::Vec2;
 
-use crate::bake::{BakeParams, Page};
+use crate::bake::BakeParams;
 use crate::cycles::{self, CyclesScene, RenderSettings};
 use crate::field::WorldField;
 use crate::iso;
+use crate::page::Page;
 use crate::scene::GrassScene;
 
 /// The framing blade width is authored against, in pixels per metre.
@@ -388,7 +389,7 @@ pub fn trace(
                 traced_h,
                 plan.trace_px_per_metre / iso::PX_PER_METRE,
             );
-            let grown = GrassScene::build(page, field, params);
+            let grown = GrassScene::build(page, field, &params.grass());
             let settings = RenderSettings {
                 ribs: plan.ribs,
                 blade_width: plan.blade_width,

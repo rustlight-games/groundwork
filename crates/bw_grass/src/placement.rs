@@ -31,12 +31,13 @@
 
 use glam::{Vec2, Vec3};
 
-use crate::bake::{BakeParams, Page};
 use crate::field::{Ground, GroundCache, WorldField};
 use crate::geometry::TipProfile;
-use crate::palette::Tone;
+use crate::page::Page;
 use crate::rng::{Draw, Stream};
 use crate::stroke::{Profile, Stroke};
+use crate::style::GrassParams;
+use crate::tone::Tone;
 
 /// Hermite ramp between two edges.
 #[inline]
@@ -237,7 +238,7 @@ pub fn plant(marks: &mut Vec<Stroke>, bed: &Bed) {
 pub struct Bed<'a> {
     pub page: &'a Page,
     pub field: &'a WorldField,
-    pub params: &'a BakeParams,
+    pub params: &'a GrassParams,
 }
 
 impl Bed<'_> {
@@ -256,7 +257,7 @@ impl Bed<'_> {
         // A sixteenth over, so that a later nudge to the sun or the canopy does
         // not need this recalculated on the same day. The band costs area and
         // the area is worth less than the defect.
-        CANOPY_METRES * crate::shadow::reach_per_height(sun) * 1.0625
+        CANOPY_METRES * crate::geometry::reach_per_height(sun) * 1.0625
     }
 }
 
@@ -273,7 +274,7 @@ impl Bed<'_> {
 /// walks on every page — so a metre added here is paid for a few hundred
 /// thousand times.
 ///
-/// [`crate::bake::tests::the_canopy_bound_is_never_beaten`] sweeps the
+/// [`the baker's tests::the_canopy_bound_is_never_beaten`] sweeps the
 /// vocabulary against it rather than trusting this paragraph.
 pub const CANOPY_METRES: f32 = 1.20;
 
@@ -294,7 +295,7 @@ fn scatter(
     stream: Stream,
     per_square_metre: f32,
     weight: impl Fn(&Ground) -> f32,
-    mut place: impl FnMut(&mut Vec<Stroke>, &Page, &mut Draw, Vec2, &Ground, &BakeParams),
+    mut place: impl FnMut(&mut Vec<Stroke>, &Page, &mut Draw, Vec2, &Ground, &GrassParams),
 ) {
     let Bed { page, params, .. } = *bed;
     let spacing = (1.0 / per_square_metre.max(0.01)).sqrt();
@@ -421,7 +422,7 @@ pub const MARGIN: f32 = 140.0;
 
 /// Per-plant brightness, gathering the terms that vary plant to plant rather
 /// than pixel to pixel.
-fn plant_light(draw: &mut Draw, ground: &Ground, params: &BakeParams) -> f32 {
+fn plant_light(draw: &mut Draw, ground: &Ground, params: &GrassParams) -> f32 {
     params.style.base_light
         + draw.normal() * params.style.scatter
         + ground.crown * 0.02
@@ -434,7 +435,7 @@ fn plant_light(draw: &mut Draw, ground: &Ground, params: &BakeParams) -> f32 {
 }
 
 /// The dark mat: short, hooked, and almost entirely buried.
-fn mat_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &BakeParams) -> Stroke {
+fn mat_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &GrassParams) -> Stroke {
     Stroke {
         root: root.extend(0.0),
         // Loosely along the flow, and much more loosely than a blade: the mat is
@@ -485,7 +486,7 @@ fn fine_stroke(
     draw: &mut Draw,
     root: Vec2,
     ground: &Ground,
-    params: &BakeParams,
+    params: &GrassParams,
     seed: u64,
 ) -> Stroke {
     // Around the colony's heading, not the world's flow. This is the largest
@@ -757,7 +758,7 @@ pub const SKIRT_BEND: f32 = 0.75;
 /// The two stack. A perimeter blade that is *also* turned down-screen takes both,
 /// so the vocabulary's true bend ceiling is a family's own maximum plus
 /// `ROLE_LEAN + SKIRT_BEND`, and that is what
-/// [`crate::bake::tests::the_placement_rectangle_covers_every_direction_a_mark_reaches`]
+/// [`the baker's tests::the_placement_rectangle_covers_every_direction_a_mark_reaches`]
 /// has to sweep to. Getting this wrong does not clip a blade — it puts a
 /// straight line down every page join.
 pub const ROLE_LEAN: f32 = 0.85;
@@ -826,7 +827,7 @@ fn grow_tuft(
     draw: &mut Draw,
     centre: Vec2,
     ground: &Ground,
-    params: &BakeParams,
+    params: &GrassParams,
 ) {
     // Height follows the mound. A mound whose blades are the same length as the
     // hollow beside it is not a mound, it is a stain. Weighted away from the
@@ -1509,7 +1510,7 @@ impl Mark {
         Mark::Buried
     }
 
-    fn shape(self, draw: &mut Draw, params: &BakeParams, ground: &Ground) -> Stroke {
+    fn shape(self, draw: &mut Draw, params: &GrassParams, ground: &Ground) -> Stroke {
         let (short, tall) = params.style.blade_length;
         let (thin, thick) = params.style.blade_width;
         let (low, high) = params.style.blade_bend;
@@ -1803,7 +1804,7 @@ fn leaf_cluster(
     draw: &mut Draw,
     root: Vec2,
     ground: &Ground,
-    params: &BakeParams,
+    params: &GrassParams,
 ) {
     let leaves = 3 + draw.index(5);
     let spread = draw.range(0.65, 1.15);

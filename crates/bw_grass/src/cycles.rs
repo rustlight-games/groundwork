@@ -56,9 +56,9 @@ use std::path::{Path, PathBuf};
 
 use glam::{Vec2, Vec3};
 
-use crate::bake::Page;
 use crate::field::WorldField;
 use crate::iso;
+use crate::page::Page;
 use crate::quality::GrassRenderQuality;
 use crate::scene::GrassScene;
 use crate::stroke::{BladeSample, walk_blade};
@@ -920,7 +920,7 @@ mod tests {
         let field = WorldField::lit_by(params.seed, params.light);
 
         let build = || {
-            let grown = GrassScene::build(page, &field, &params);
+            let grown = GrassScene::build(page, &field, &params.grass());
             CyclesScene::build(&grown, &field, RenderSettings::default())
         };
         let (first, second) = (build(), build());
@@ -951,7 +951,7 @@ mod tests {
         let there = Page::new(Vec2::new(64.0, 0.0), 128, 128);
 
         let sample = |page: Page| {
-            let grown = GrassScene::build(page, &field, &params);
+            let grown = GrassScene::build(page, &field, &params.grass());
             CyclesScene::build(&grown, &field, RenderSettings::default())
         };
         let (a, b) = (sample(here), sample(there));

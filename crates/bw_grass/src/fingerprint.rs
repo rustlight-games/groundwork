@@ -40,9 +40,9 @@ use std::fmt;
 
 use glam::Vec2;
 
-use crate::bake::Page;
 use crate::field::WorldField;
 use crate::geometry::TipProfile;
+use crate::page::Page;
 use crate::scene::GrassScene;
 use crate::stroke::Stroke;
 
@@ -340,7 +340,7 @@ mod tests {
         };
         let field = WorldField::lit_by(params.seed, params.light);
         let page = Page::new(origin, side, side);
-        let scene = GrassScene::build(page, &field, &params);
+        let scene = GrassScene::build(page, &field, &params.grass());
         (scene, field, params.seed)
     }
 
@@ -443,7 +443,7 @@ mod tests {
             ("ridge", |s| s.ridge += 1.0),
             ("tip", |s| s.tip = TipProfile::Notched { depth: 0.2 }),
             ("maturity", |s| s.maturity += 1.0),
-            ("tone", |s| s.tone = crate::palette::Tone::Dry),
+            ("tone", |s| s.tone = crate::tone::Tone::Dry),
             ("base_light", |s| s.base_light += 1.0),
             ("tip_light", |s| s.tip_light += 1.0),
             ("glint", |s| s.glint += 1.0),
@@ -536,7 +536,8 @@ mod tests {
         let base = BakeParams::default();
         let field = WorldField::lit_by(base.seed, base.light);
         let page = Page::new(Vec2::new(-48.0, -48.0), 48, 48);
-        let reference = GrassScene::build(page, &field, &base).fingerprint(base.seed, &field);
+        let reference =
+            GrassScene::build(page, &field, &base.grass()).fingerprint(base.seed, &field);
 
         type Nudge = (&'static str, fn(&mut crate::bake::PreviewRasterStyle));
         let nudges: [Nudge; 12] = [
@@ -556,7 +557,8 @@ mod tests {
         for (name, nudge) in nudges {
             let mut params = base;
             nudge(&mut params.raster);
-            let moved = GrassScene::build(page, &field, &params).fingerprint(params.seed, &field);
+            let moved =
+                GrassScene::build(page, &field, &params.grass()).fingerprint(params.seed, &field);
             assert_eq!(
                 reference, moved,
                 "changing `{name}` moved the meadow — it belongs in GrassStyle, \
@@ -575,11 +577,12 @@ mod tests {
         // grow on half a square metre, so a smaller one would pass this test by
         // never reaching the code it is checking.
         let page = Page::new(Vec2::new(-48.0, -48.0), 96, 96);
-        let reference = GrassScene::build(page, &field, &base).fingerprint(base.seed, &field);
+        let reference =
+            GrassScene::build(page, &field, &base.grass()).fingerprint(base.seed, &field);
 
         // `blade_bend` is deliberately absent, and the reason is a finding
         // rather than an omission — see `blade_bend_reaches_nothing` below.
-        type Nudge = (&'static str, fn(&mut crate::bake::GrassStyle));
+        type Nudge = (&'static str, fn(&mut crate::style::GrassStyle));
         let nudges: [Nudge; 5] = [
             ("tufts", |s| s.tufts *= 1.5),
             ("fine", |s| s.fine *= 1.5),
@@ -590,7 +593,8 @@ mod tests {
         for (name, nudge) in nudges {
             let mut params = base;
             nudge(&mut params.style);
-            let moved = GrassScene::build(page, &field, &params).fingerprint(params.seed, &field);
+            let moved =
+                GrassScene::build(page, &field, &params.grass()).fingerprint(params.seed, &field);
             assert_ne!(
                 reference, moved,
                 "changing `{name}` did not move the meadow"
@@ -620,13 +624,14 @@ mod tests {
         let base = BakeParams::default();
         let field = WorldField::lit_by(base.seed, base.light);
         let page = Page::new(Vec2::new(-48.0, -48.0), 96, 96);
-        let reference = GrassScene::build(page, &field, &base).fingerprint(base.seed, &field);
+        let reference =
+            GrassScene::build(page, &field, &base.grass()).fingerprint(base.seed, &field);
 
         let mut absurd = base;
         absurd.style.blade_bend = (5.0, 9.0);
         assert_eq!(
             reference,
-            GrassScene::build(page, &field, &absurd).fingerprint(absurd.seed, &field),
+            GrassScene::build(page, &field, &absurd.grass()).fingerprint(absurd.seed, &field),
             "blade_bend now reaches the meadow — delete this test and add it to \
              the list in `the_meadow_does_move_when_the_style_changes`"
         );
