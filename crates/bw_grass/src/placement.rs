@@ -580,6 +580,25 @@ const COLONY_METRES: f32 = 2.25;
 struct Colony {
     /// The direction every tuft in it leans, world radians.
     heading: f32,
+    /// How well this colony is doing, about `0.72..1.30`.
+    ///
+    /// Multiplies blade length and, through it, how much light the colony
+    /// catches. **This is the variation that survives being looked at from far
+    /// away**, and that is why it exists.
+    ///
+    /// An overview shows about forty pixels to the metre, where a blade is a
+    /// fifth of a pixel. Everything happening at blade scale — the lit facet,
+    /// the tip highlight, the fold — is averaged out long before it reaches the
+    /// screen: measured, a tenfold minification takes the highlight share from
+    /// eight percent to three tenths of one. Contrast at *colony* scale is
+    /// spread over hundreds of pixels and survives intact.
+    ///
+    /// So the surface reads at distance because whole masses differ from each
+    /// other, not because individual blades do. That is also how the genre draws
+    /// grass, and it is not a cheat — a meadow really does have lush stretches
+    /// and tired ones, and this is the scale at which anyone standing back sees
+    /// them.
+    vigour: f32,
 }
 
 /// Which colony a point belongs to, and which way it runs.
@@ -628,10 +647,31 @@ fn colony_of(seed: u64, root: Vec2, ground: &Ground) -> Colony {
         sum += Vec2::from_angle(heading) * weight;
     }
 
+    // Vigour is blended over the same four cells as the heading, and for the
+    // same reason: a hard cell edge in how tall the grass is would draw a line
+    // across the field far more visibly than a hard edge in which way it leans.
+    let mut vigour = 0.0f32;
+    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+        let cell = base + Vec2::new(dx as f32, dy as f32);
+        let mut draw = Draw::at(seed, Stream::Colony, cell.x as i32 ^ 0x5bd1, cell.y as i32);
+        let weight = (if dx == 0 { 1.0 - fx } else { fx }) * (if dy == 0 { 1.0 - fy } else { fy });
+        vigour += draw.range(COLONY_VIGOUR.0, COLONY_VIGOUR.1) * weight;
+    }
+
     Colony {
         heading: sum.normalize_or(Vec2::from_angle(ground.flow)).to_angle(),
+        vigour,
     }
 }
+
+/// How far a colony's vigour may run from the mean.
+///
+/// Nearly a factor of two between the best and worst stretches. That is a large
+/// range and it is chosen against the *overview* rather than against botany:
+/// blade-scale contrast does not survive minification and colony-scale contrast
+/// does, so this is where the surface has to get its legibility from. Narrow it
+/// and a field seen from the game camera goes uniform.
+const COLONY_VIGOUR: (f32, f32) = (0.72, 1.30);
 
 /// Straight down the screen, as a world azimuth.
 ///
@@ -831,6 +871,10 @@ fn grow_tuft(
     // something upright; with nothing standing straight the whole field looks
     // combed rather than blown.
     let upright = draw.chance(0.13);
+    // The colony's own vigour, on top of everything the mound field already
+    // said. This is the term that makes one stretch of meadow read as lusher
+    // than the next from across the map.
+    reach *= colony.vigour;
     let flow = Vec2::from_angle(heading);
     let shade = plant_light(draw, ground, params) - params.base_light;
     let maturity = (ground.resolution * 0.6 + ground.density * 0.3 + draw.unit() * 0.35).min(1.0);

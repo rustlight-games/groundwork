@@ -67,11 +67,12 @@ fn main() {
     //
     // So a wide view is bought with time rather than with the picture.
     let detail_ratio = (shown_px_per_metre / TUNED_PX_PER_METRE).clamp(0.0, 1.0);
-    let crowding = if options.tiles > 1 {
-        1.0
-    } else {
-        detail_ratio.max(MIN_CROWDING)
-    };
+    // Never thinned. Tiling bounds memory directly and far better, and thinning
+    // was never free: holding *coverage* is not holding *structure*, so fewer
+    // fatter blades stopped forming legible tufts and took coherence from 0.46
+    // to 0.22. A wide view is bought with time, not with the picture.
+    let _ = detail_ratio;
+    let crowding = 1.0f32;
     // ## The width compensation is 1/c, not 1/√c
     //
     // Coverage is `count × width × length`, so thinning the population by `c`
@@ -102,8 +103,13 @@ fn main() {
     // thinner than a pixel does not become a fine blade — it becomes a partly
     // covered pixel, and at canopy density that averages the field into a flat
     // wash. See `grass_prebake`, where the same mistake was made first.
-    let supersample = options.supersample.max(1);
-    let across = options.tiles.max(1);
+    // Supersample is derived from the fixed trace detail rather than chosen, so
+    // that a wide view traces at the same resolution a close-up does and simply
+    // filters down further. Overridable, because a quick look does not need it.
+    let supersample = match options.supersample {
+        0 => ((TRACE_PX_PER_METRE / shown_px_per_metre).ceil() as usize).clamp(1, MAX_SUPERSAMPLE),
+        given => given,
+    };
 
     // ## Why a wide view has to be tiled
     //
@@ -120,6 +126,24 @@ fn main() {
     // property this whole design has been protecting. Each tile is grown with a
     // guard band so blades just outside it still shadow and occlude inward, then
     // the guard is cropped away.
+    // Tiles are derived too. The scene's blade count is known before anything is
+    // traced, so the split that keeps each tile inside its budget is arithmetic
+    // rather than a guess — and guessing it wrong is a Blender segmentation
+    // fault several minutes in, not a slow render.
+    let ribs = cycles::ribs_for(shown_px_per_metre);
+    let ground_metres =
+        (options.width as f32 / shown_px_per_metre) * (options.height as f32 / shown_px_per_metre);
+    let estimated = (params.tufts * params.blades_per_tuft.1 as f32
+        + params.fine
+        + params.thatch
+        + params.leaves)
+        * ground_metres;
+    let vertices = estimated * (ribs * cycles::VERTICES_PER_RIB) as f32;
+    let across = match options.tiles {
+        0 => ((vertices / TILE_VERTEX_BUDGET as f32).sqrt().ceil() as usize).clamp(1, 8),
+        given => given.max(1),
+    };
+
     let tile_width = options.width.div_ceil(across);
     let tile_height = options.height.div_ceil(across);
     let guard = (TILE_GUARD_METRES * shown_px_per_metre * supersample as f32).ceil() as usize;
@@ -139,6 +163,11 @@ fn main() {
         shown_px_per_metre,
         options.width as f32 / shown_px_per_metre,
         options.height as f32 / shown_px_per_metre,
+    );
+    println!(
+        "  tracing at {:.0} px/m ({supersample}x), {ribs} ribs, ~{:.1}M blades",
+        shown_px_per_metre * supersample as f32,
+        estimated / 1.0e6,
     );
     if across > 1 {
         println!(
@@ -273,6 +302,52 @@ fn main() {
 /// The framing the look was tuned at, in pixels per metre.
 const TUNED_PX_PER_METRE: f32 = 192.0;
 
+/// The detail every trace runs at, whatever scale the picture is shown at.
+///
+/// **The single number that decides whether a wide view works**, and it took
+/// three failed approaches to find.
+///
+/// A grass blade is about three millimetres across, so it is one pixel wide at
+/// roughly 330 pixels to the metre. Below that it is a *partially covered*
+/// pixel, and a canopy made of partially covered pixels averages to a flat
+/// wash — no highlights, no silhouettes, no tufts, however many blades are in
+/// it. Density does not argue with this and neither does sample count: the
+/// close-up that measures well was traced at 324, and the wide view that failed
+/// was traced at 155 with four times the samples.
+///
+/// So the trace detail is held *fixed* and the supersample is derived from it.
+/// A wide view is not a coarser render, it is the same render over more ground,
+/// filtered down further. That costs time, which tiling makes payable, and it
+/// is the only thing that buys the picture.
+const TRACE_PX_PER_METRE: f32 = 330.0;
+
+/// The most the trace may be filtered down by.
+///
+/// Three, and the ceiling exists because supersampling cuts both ways. It has to
+/// be high enough that a blade is at least a pixel wide *in the trace* — below
+/// that the canopy averages into a wash. It must not be higher than that,
+/// because the filter that brings it back down averages away the very thing the
+/// detail was for: highlights are sparse and small, so a bright blade shared
+/// among nine output pixels survives and one shared among twenty-five does not.
+///
+/// Measured, at the close-up framing three gives an 8.5% highlight share and
+/// five gives 2.6% — from the *same scene* at a *higher* trace resolution. More
+/// detail, less picture.
+///
+/// The consequence for a very wide view is real and is not a defect: the
+/// overview cannot reach the trace detail a close-up does, so its highlights are
+/// genuinely fewer. Distance does that to grass. What carries the surface at
+/// that scale is colony-level contrast, which is why [`Colony::vigour`] exists.
+///
+/// [`Colony::vigour`]: bw_grass::placement
+const MAX_SUPERSAMPLE: usize = 3;
+
+/// The most vertices one tile may hold.
+///
+/// A quarter of [`VERTEX_CEILING`], so a tile has room for the guard band and
+/// for Blender's own overhead without the estimate having to be exact.
+const TILE_VERTEX_BUDGET: usize = VERTEX_CEILING / 4;
+
 /// The least the canopy may be thinned however far the camera pulls back.
 ///
 /// A third, and it started at a sixth. The mistake was treating the thinning as
@@ -386,8 +461,10 @@ impl Options {
             width: 512,
             height: 512,
             view: None,
-            supersample: 1,
-            tiles: 1,
+            // Zero means derive: supersample from the trace detail, tiles from
+            // the vertex budget.
+            supersample: 0,
+            tiles: 0,
             origin: Vec2::ZERO,
             // Higher than the 96 the art is authored at, and on purpose. Cycles
             // draws real geometry, and a blade a third of a pixel wide does not
@@ -429,10 +506,10 @@ impl Options {
                     options.height = side;
                 }
                 "--view" => options.view = value().parse().ok(),
-                "--tiles" => options.tiles = value().parse().unwrap_or(options.tiles).clamp(1, 8),
+                "--tiles" => options.tiles = value().parse().unwrap_or(options.tiles).clamp(0, 8),
                 "--supersample" => {
                     options.supersample =
-                        value().parse().unwrap_or(options.supersample).clamp(1, 6);
+                        value().parse().unwrap_or(options.supersample).clamp(0, 10);
                 }
                 "--width" => options.width = value().parse().unwrap_or(options.width),
                 "--height" => options.height = value().parse().unwrap_or(options.height),
