@@ -155,7 +155,7 @@ pub fn plant(marks: &mut Vec<Stroke>, bed: &Bed) {
         bed,
         &mut ground,
         Stream::Thatch,
-        bed.params.thatch,
+        bed.params.style.thatch,
         // Thinned hard over bare ground, on top of the coverage every pass
         // gets. The mat is the layer that actually closes a clearing: it is
         // short, there are three hundred of them to a square metre, and the
@@ -187,7 +187,7 @@ pub fn plant(marks: &mut Vec<Stroke>, bed: &Bed) {
         bed,
         &mut ground,
         Stream::Fine,
-        bed.params.fine,
+        bed.params.style.fine,
         // Thickest where the tufts are thinnest, so a quiet passage is a
         // *smoother* canopy rather than a balder one.
         //
@@ -212,7 +212,7 @@ pub fn plant(marks: &mut Vec<Stroke>, bed: &Bed) {
         bed,
         &mut ground,
         Stream::Blade,
-        bed.params.tufts,
+        bed.params.style.tufts,
         // Wider than it was, now that this field runs mostly at the broad scale
         // rather than the mound scale. Thinning the tufts inside a single mound
         // does read as that patch being out of focus; thinning them across a
@@ -226,7 +226,7 @@ pub fn plant(marks: &mut Vec<Stroke>, bed: &Bed) {
         bed,
         &mut ground,
         Stream::Leaf,
-        bed.params.leaves,
+        bed.params.style.leaves,
         |ground| (0.35 + ground.resolution * 0.35) * ground.colony,
         leaf_cluster,
     );
@@ -422,8 +422,8 @@ pub const MARGIN: f32 = 140.0;
 /// Per-plant brightness, gathering the terms that vary plant to plant rather
 /// than pixel to pixel.
 fn plant_light(draw: &mut Draw, ground: &Ground, params: &BakeParams) -> f32 {
-    params.base_light
-        + draw.normal() * params.scatter
+    params.style.base_light
+        + draw.normal() * params.style.scatter
         + ground.crown * 0.02
         // Roots that overhang bare ground darken. Placement alone does not make
         // a patch read as a depression; this does.
@@ -468,8 +468,8 @@ fn mat_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &BakeParams)
             + ground.bare * 0.18)
             .clamp(0.1, 0.9),
         tip_light: 0.14,
-        side_light: params.side_light * 0.6,
-        under: params.under * 0.5 * (1.0 - ground.bare * 0.85),
+        side_light: params.style.side_light * 0.6,
+        under: params.style.under * 0.5 * (1.0 - ground.bare * 0.85),
         ..Default::default()
     }
 }
@@ -512,25 +512,25 @@ fn fine_stroke(
         tip: TipProfile::Pointed,
         maturity: draw.range(0.15, 0.55),
         tone: Tone::Grass,
-        base_light: (params.base_light - 0.05
+        base_light: (params.style.base_light - 0.05
             + draw.normal() * 0.07
             + ground.crown * 0.02
             + ground.bare * 0.10)
             .clamp(0.05, 0.95),
-        tip_light: params.tip_light * draw.range(0.5, 0.9),
+        tip_light: params.style.tip_light * draw.range(0.5, 0.9),
         // A tenth of the rate the statement blades get. This layer is area, and
         // a highlight that appears on a tenth of the area is a texture rather
         // than an accent.
         glint: if draw.chance(0.012 * ground.resolution) {
-            params.glint * draw.range(0.5, 0.9)
+            params.style.glint * draw.range(0.5, 0.9)
         } else {
             0.0
         },
-        side_light: params.side_light,
+        side_light: params.style.side_light,
         // Halved. The under-stroke separates one blade from the next, and at
         // this density full-strength separation turns the layer into a woven
         // mesh — every blade outlined, which is exactly the fur reading.
-        under: params.under * 0.45 * (1.0 - ground.bare * 0.85),
+        under: params.style.under * 0.45 * (1.0 - ground.bare * 0.85),
         ..Default::default()
     }
 }
@@ -916,7 +916,7 @@ fn grow_tuft(
     // than the next from across the map.
     reach *= colony.vigour;
     let flow = Vec2::from_angle(heading);
-    let shade = plant_light(draw, ground, params) - params.base_light;
+    let shade = plant_light(draw, ground, params) - params.style.base_light;
     let maturity = (ground.resolution * 0.6 + ground.density * 0.3 + draw.unit() * 0.35).min(1.0);
 
     // Everything below draws from its own sequence rather than continuing the
@@ -955,11 +955,11 @@ fn grow_tuft(
                 tip_width: 0.24,
                 profile: Profile::Tapered,
                 tone: Tone::Thatch,
-                base_light: (params.base_light - inner.range(0.10, 0.22)).max(0.05),
+                base_light: (params.style.base_light - inner.range(0.10, 0.22)).max(0.05),
                 tip_light: 0.06,
                 glint: 0.0,
-                side_light: params.side_light * 0.5,
-                under: params.under * 0.4,
+                side_light: params.style.side_light * 0.5,
+                under: params.style.under * 0.4,
                 twist: inner.signed() * 0.4,
                 ..Default::default()
             },
@@ -1103,7 +1103,9 @@ fn grow_tuft(
                 // catch the light whether or not this particular mark drew a
                 // glint.
                 stroke.base_light = (stroke.base_light + 0.03).min(0.95);
-                stroke.glint = stroke.glint.max(params.glint * inner.range(0.75, 1.15));
+                stroke.glint = stroke
+                    .glint
+                    .max(params.style.glint * inner.range(0.75, 1.15));
                 stroke.tip_light *= 1.45;
             }
             emit(marks, page, stroke);
@@ -1508,9 +1510,9 @@ impl Mark {
     }
 
     fn shape(self, draw: &mut Draw, params: &BakeParams, ground: &Ground) -> Stroke {
-        let (short, tall) = params.blade_length;
-        let (thin, thick) = params.blade_width;
-        let (low, high) = params.blade_bend;
+        let (short, tall) = params.style.blade_length;
+        let (thin, thick) = params.style.blade_width;
+        let (low, high) = params.style.blade_bend;
         // Roughly a seventh of marks catch the light sharply, and fewer where the
         // ground is loosely described. Give every blade a glint and the field
         // turns to wet plastic; give none and it is felt.
@@ -1538,7 +1540,7 @@ impl Mark {
             // Well-described ground gets brighter accents as well as more of
             // them, which is what keeps its local contrast up while the loosely
             // described ground beside it is being glazed flat.
-            params.glint * draw.range(0.7, 1.4) * (0.65 + ground.resolution * 0.7)
+            params.style.glint * draw.range(0.7, 1.4) * (0.65 + ground.resolution * 0.7)
         } else {
             0.0
         };
@@ -1651,17 +1653,17 @@ impl Mark {
             } else {
                 Tone::Grass
             },
-            base_light: params.base_light - recessive,
-            tip_light: params.tip_light * draw.range(0.7, 1.3),
+            base_light: params.style.base_light - recessive,
+            tip_light: params.style.tip_light * draw.range(0.7, 1.3),
             glint: if recessive > 0.0 { 0.0 } else { glint },
-            side_light: params.side_light,
+            side_light: params.style.side_light,
             // The third thing the intensity classes move, after length and
             // blade-to-blade scatter. The under-stroke is what separates one
             // blade from the next, so draining it is precisely "let these merge
             // into a softer canopy" — and it is the term that carries the most
             // local contrast per pixel of anything in the field, which makes it
             // the most effective one to spend on the distinction.
-            under: params.under * outlined * (0.77 + ground.resolution * 0.46),
+            under: params.style.under * outlined * (0.77 + ground.resolution * 0.46),
             ..Default::default()
         };
 
@@ -1744,8 +1746,8 @@ impl Mark {
                 // be a mass of colour, and a highlight would make it a leaf.
                 glint: 0.0,
                 tip_light: base.tip_light * 0.55,
-                side_light: params.side_light * 0.5,
-                under: params.under * 0.6,
+                side_light: params.style.side_light * 0.5,
+                under: params.style.under * 0.6,
                 ..base
             },
             Mark::Fleck => Stroke {
@@ -1834,12 +1836,12 @@ fn leaf_cluster(
                 base_light: light + draw.normal() * 0.05,
                 tip_light: 0.10,
                 glint: if draw.chance(0.3) {
-                    params.glint * 0.5
+                    params.style.glint * 0.5
                 } else {
                     0.0
                 },
-                side_light: params.side_light * 1.4,
-                under: params.under * 0.8,
+                side_light: params.style.side_light * 1.4,
+                under: params.style.under * 0.8,
                 ..Default::default()
             },
         );

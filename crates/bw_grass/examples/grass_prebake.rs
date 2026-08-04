@@ -40,12 +40,12 @@ fn main() {
     };
     // The same canopy the look was tuned to. See `grass_cycles` for why the
     // rasteriser's own counts are the wrong quantity for a path tracer.
-    params.tufts *= options.density;
-    params.fine *= options.density;
-    params.thatch *= options.density;
-    params.leaves *= options.density;
-    params.blade_length.0 *= options.length;
-    params.blade_length.1 *= options.length;
+    params.style.tufts *= options.density;
+    params.style.fine *= options.density;
+    params.style.thatch *= options.density;
+    params.style.leaves *= options.density;
+    params.style.blade_length.0 *= options.length;
+    params.style.blade_length.1 *= options.length;
 
     let side = options.radius * 2 + 1;
     let total = side * side;

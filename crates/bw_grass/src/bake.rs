@@ -205,6 +205,26 @@ pub struct BakeParams {
     /// +Z toward the viewer.
     pub light: Vec3,
 
+    /// What the meadow is made of. See [`GrassStyle`].
+    pub style: GrassStyle,
+
+    /// How the cheap rasteriser draws it. See [`PreviewRasterStyle`].
+    pub raster: PreviewRasterStyle,
+}
+
+/// What the meadow is made of.
+///
+/// Everything the *generator* reads: how many of each kind of mark grow per
+/// square metre, how long and wide and bent they are, and the intrinsic colour
+/// family each carries. Change any of it and the meadow is a different meadow,
+/// so every scene fingerprint moves.
+///
+/// The four dimensions the rasteriser also reads — blade length, width, bend and
+/// the under-stroke — are here rather than in [`PreviewRasterStyle`] because the
+/// generator *decides* them and writes them onto each mark. A renderer reading a
+/// style is fine; a renderer that could change one would not be.
+#[derive(Clone, Copy, Debug)]
+pub struct GrassStyle {
     /// Tufts per square metre of ground at full density.
     ///
     /// Blades grow in tufts rather than independently, which is the difference
@@ -242,7 +262,39 @@ pub struct BakeParams {
     pub glint: f32,
     /// Strength of the one-sided lateral shading, applied at the rib.
     pub side_light: f32,
+    /// Width of the dark under-stroke, cache pixels.
+    ///
+    /// **Cut to a third.** It used to be the field's only shadow, and it was a
+    /// good one — a dark band offset away from the light, which is what a shadow
+    /// looks like from a distance. Now that blades cast real shadows onto each
+    /// other it is double-counting, and two shadows on one blade read as an
+    /// outline rather than as depth.
+    ///
+    /// It keeps the job the geometry shadows cannot do at this resolution:
+    /// separating two overlapping blades of nearly the same colour, at a width
+    /// of about a pixel, where a cast shadow has no room to form.
+    pub under: f32,
+    /// Per-tuft brightness scatter.
+    pub scatter: f32,
+}
 
+/// How the cheap rasteriser draws a meadow.
+///
+/// Twenty-three parameters, and **not one of them changes where a blade goes**.
+/// They are the fake occlusion, the macro lighting, the under-strokes and the
+/// colour grade — everything that decides the *picture* rather than the meadow.
+///
+/// That is the whole reason this is a separate struct. A scene built from a
+/// [`GrassStyle`] survives any change to these: the marks are the same marks,
+/// so the fingerprint holds, and a plate can be re-shaded without regenerating a
+/// thing. When the two were one struct that property was true and invisible, and
+/// an invisible property is one somebody breaks.
+///
+/// Nothing here reaches the Cycles path either. The path tracer integrates a
+/// hemisphere and has no use for a term that approximates one — see
+/// `RenderSettings`, which is this tier's counterpart on that side.
+#[derive(Clone, Copy, Debug)]
+pub struct PreviewRasterStyle {
     /// Weight of the three-scale form term — how much a surface's own facing
     /// moves its light index.
     ///
@@ -267,18 +319,6 @@ pub struct BakeParams {
     /// mature broad blades a lustre that says "surface" rather than "paint", and
     /// past about a twentieth it starts reading as plastic.
     pub gloss: f32,
-    /// Width of the dark under-stroke, cache pixels.
-    ///
-    /// **Cut to a third.** It used to be the field's only shadow, and it was a
-    /// good one — a dark band offset away from the light, which is what a shadow
-    /// looks like from a distance. Now that blades cast real shadows onto each
-    /// other it is double-counting, and two shadows on one blade read as an
-    /// outline rather than as depth.
-    ///
-    /// It keeps the job the geometry shadows cannot do at this resolution:
-    /// separating two overlapping blades of nearly the same colour, at a width
-    /// of about a pixel, where a cast shadow has no room to form.
-    pub under: f32,
 
     /// Weight of the mound's lit-face-to-dark-back separation.
     ///
@@ -418,8 +458,6 @@ pub struct BakeParams {
     /// exposure. Brightness is the one axis of regional variation that costs
     /// something and says least.
     pub region: f32,
-    /// Per-tuft brightness scatter.
-    pub scatter: f32,
     /// How much of the canopy is glazed back into its own local colour.
     ///
     /// The painterly half of the look, and the one thing no amount of stroke
@@ -491,7 +529,15 @@ impl Default for BakeParams {
             // macro light and the marks disagree about where the sun is reads as
             // wrong long before anyone can say why.
             light: crate::lab::Key::default().direction(),
+            style: GrassStyle::default(),
+            raster: PreviewRasterStyle::default(),
+        }
+    }
+}
 
+impl Default for GrassStyle {
+    fn default() -> Self {
+        Self {
             // Half as many tufts as there were, of roughly twice the reach.
             //
             // The pair moves together: ink laid per square metre goes as count
@@ -570,11 +616,6 @@ impl Default for BakeParams {
             // directions at once.
             glint: 0.85,
             side_light: 0.118,
-            // Large, and the largest single lighting term in the field. Nothing
-            // else here says which way the sun is.
-            form_light: 0.46,
-            leaf_transmission: 0.20,
-            gloss: 0.045,
             // Barely pulled back, and the restraint is the lesson. The obvious
             // reading of "too visually active" is to take contrast out of the
             // marks, and it is wrong: measured against the art, the contrast at
@@ -594,6 +635,25 @@ impl Default for BakeParams {
             // and the next, and narrow dark is the kind [`BROAD_DARK`] has no
             // quarrel with.
             under: 0.24,
+            // The one term that raises mid-scale organisation without touching
+            // a single pixel of high-frequency contrast, because it varies from
+            // tuft to tuft and a tuft is a fifth of a metre — exactly the radius
+            // the plate measures flattest at. Variation *between* bunches groups
+            // the field; variation *within* one only makes it noisy. They cost
+            // the same and this is the one worth having.
+            scatter: 0.50,
+        }
+    }
+}
+
+impl Default for PreviewRasterStyle {
+    fn default() -> Self {
+        Self {
+            // Large, and the largest single lighting term in the field. Nothing
+            // else here says which way the sun is.
+            form_light: 0.46,
+            leaf_transmission: 0.20,
+            gloss: 0.045,
 
             // Down by a seventh rather than the third the eye asked for, and the
             // difference is what the structure ladder costs. This term is the
@@ -663,13 +723,6 @@ impl Default for BakeParams {
             transmission: 0.205,
             light_blur: 4,
             region: 0.20,
-            // The one term that raises mid-scale organisation without touching
-            // a single pixel of high-frequency contrast, because it varies from
-            // tuft to tuft and a tuft is a fifth of a metre — exactly the radius
-            // the plate measures flattest at. Variation *between* bunches groups
-            // the field; variation *within* one only makes it noisy. They cost
-            // the same and this is the one worth having.
-            scatter: 0.50,
             glaze: 0.128,
             cool: 0.155,
             temper: 0.165,
@@ -889,7 +942,7 @@ pub fn cast_shadows(scene: &GrassScene, params: &BakeParams) -> Option<Vec<Shado
         .filter_map(|offset| {
             ShadowMap::cast(
                 scene,
-                shadow::nudge(sun, offset, params.sun_radius),
+                shadow::nudge(sun, offset, params.raster.sun_radius),
                 ceiling,
                 params.quality,
                 // Half a texel of stagger between the maps, so the several
@@ -942,7 +995,7 @@ fn shading_reach(params: &BakeParams) -> usize {
 
     let far = FAR_BLUR * PASSES;
     let relief = RELIEF_REACH.ceil() as usize;
-    let macro_blur = params.light_blur * PASSES;
+    let macro_blur = params.raster.light_blur * PASSES;
     let painterly = GLAZE_REACH + 1;
     // An eighth over, so that adding a term does not silently need this
     // recalculated on the same day.
@@ -1678,14 +1731,14 @@ pub fn resolve_passes(
             // subject to [`BROAD_LIGHT`] as well as [`BROAD_DARK`]. The fast
             // terms — the tip lift, the glint, the blade's own form — are
             // applied per supersample below and keep both halves in full.
-            let slow = params.mound_light * broad(wrapped) * stated
-                + params.transmission * through
-                + params.elevation_light * broad(rise - 0.45)
-                + params.crown_light * broad(crown - 0.4)
-                - params.micro_occlusion * micro
-                + params.canopy_relief * broad(relief)
-                - params.shadow * shadow[index]
-                + params.region * broad(tint);
+            let slow = params.raster.mound_light * broad(wrapped) * stated
+                + params.raster.transmission * through
+                + params.raster.elevation_light * broad(rise - 0.45)
+                + params.raster.crown_light * broad(crown - 0.4)
+                - params.raster.micro_occlusion * micro
+                + params.raster.canopy_relief * broad(relief)
+                - params.raster.shadow * shadow[index]
+                + params.raster.region * broad(tint);
             // And a soft ceiling on their sum, which is a different failure from
             // any one of them being too strong. Six terms that each behave
             // perfectly can still agree, and where they do the light index runs
@@ -1699,7 +1752,12 @@ pub fn resolve_passes(
         }
     }
 
-    let macro_light = blur(&macro_light, width, height, page.radius(params.light_blur));
+    let macro_light = blur(
+        &macro_light,
+        width,
+        height,
+        page.radius(params.raster.light_blur),
+    );
 
     for y in 0..height {
         for x in 0..width {
@@ -1772,10 +1830,12 @@ pub fn resolve_passes(
                 // attenuations of the same light — a point deep inside a tuft in
                 // a hollow is darker than either would make it, which is what
                 // the reference art's cavities look like.
-                let stacked =
-                    lighting::optical_occlusion(surface.optical_at(i), params.interior_density);
-                let sky = (1.0 - params.ambient_occlusion * horizon[index])
-                    * (1.0 - params.interior * stacked);
+                let stacked = lighting::optical_occlusion(
+                    surface.optical_at(i),
+                    params.raster.interior_density,
+                );
+                let sky = (1.0 - params.raster.ambient_occlusion * horizon[index])
+                    * (1.0 - params.raster.interior * stacked);
                 // How much light of any kind reaches this surface, `0..1`.
                 //
                 // Sky fill and direct sun, separately, because a shadow takes
@@ -1786,19 +1846,20 @@ pub fn resolve_passes(
                 // shadow that has gone too dark is always more of this and never
                 // a weaker sun — grass in shade is dim and saturated, and a
                 // shadow with no fill in it reads as a hole in the plate.
-                let light = params.sky_fill * sky + (1.0 - params.sky_fill) * sunlight;
+                let light =
+                    params.raster.sky_fill * sky + (1.0 - params.raster.sky_fill) * sunlight;
                 let lit = albedo
                     + world
-                    + params.form_light * form * light
-                    + params.leaf_transmission * through
-                    + params.gloss * gloss * sunlight
+                    + params.raster.form_light * form * light
+                    + params.raster.leaf_transmission * through
+                    + params.raster.gloss * gloss * sunlight
                     + lighting::underside_fill(surface.underside_at(i));
                 // And then light carries the surface along the ramp, rather than
                 // a fixed amount being taken off it — see
                 // [`BakeParams::shade_depth`]. This is what lets a bright blade
                 // in deep shade end up darker than a dim one in full sun, which
                 // no additive term can do.
-                let q = shoulder(lit) - (1.0 - light) * params.shade_depth;
+                let q = shoulder(lit) - (1.0 - light) * params.raster.shade_depth;
                 // Through the material axes rather than the bare ramp — see
                 // [`palette::Material`]. One index cannot say *which* kind of
                 // bright a bright pixel is, and the field's whole remaining
@@ -1831,7 +1892,7 @@ pub fn resolve_passes(
             let ground_at = page.ground_at(Vec2::new(fx, fy));
             let dampness = field.jitter(Stream::Tint, ground_at, 0.55);
             let shade_depth = (1.0 - (canopy / CANOPY_CEILING)).clamp(0.0, 1.0);
-            let cool = params.cool * shade_depth * (0.4 + dampness * 0.8);
+            let cool = params.raster.cool * shade_depth * (0.4 + dampness * 0.8);
             // Most of the cooling is red given up rather than blue picked up,
             // and the ratio matters more than the amount. Adding blue to a green
             // this saturated turns it toward teal and the hue rows say so within
@@ -1906,7 +1967,7 @@ pub fn resolve_passes(
             // once and they are the two things the shade wanted: less saturated,
             // and cooler, because the target's red is well below its green.
             let luma = resolved.dot(Vec3::new(0.2126, 0.7152, 0.0722));
-            let calm = params.temper * (1.0 - smoothstep(0.28, 0.62, luma));
+            let calm = params.raster.temper * (1.0 - smoothstep(0.28, 0.62, luma));
             let muted = hue_only(resolved, Vec3::splat(luma) * Vec3::new(0.80, 1.14, 0.84));
             let resolved = resolved.lerp(muted, calm.clamp(0.0, 1.0));
 
@@ -1915,7 +1976,7 @@ pub fn resolve_passes(
             // of the colour already resolved rather than blends toward a named
             // paint, so the ramp's measured relationship between its channels
             // survives the drift and only its balance moves.
-            let drift = lattice.at(&lattice.hue, fx, fy).clamp(-1.0, 1.0) * params.drift;
+            let drift = lattice.at(&lattice.hue, fx, fy).clamp(-1.0, 1.0) * params.raster.drift;
             // Both branches are luminance-preserving — see [`hue_only`]. This is
             // the one that mattered most: `hue` is a *regional* field, so a
             // drift that also darkened made whole regions dim, and whole dim
@@ -1987,7 +2048,8 @@ pub fn resolve_passes(
             // the marks are still drawn, they simply stop being individually
             // legible.
             let loose = 1.0 - lattice.at(&lattice.resolution, fx, fy);
-            glaze_mask[index] = params.glaze * (0.15 + loose * 0.85) * (1.0 - exposure).powf(1.2);
+            glaze_mask[index] =
+                params.raster.glaze * (0.15 + loose * 0.85) * (1.0 - exposure).powf(1.2);
         }
     }
 
@@ -1998,7 +2060,7 @@ pub fn resolve_passes(
         &glaze_mask,
         page.radius(GLAZE_REACH),
     );
-    soften(&mut colours, width, height, params.soften);
+    soften(&mut colours, width, height, params.raster.soften);
     colours
 }
 
@@ -2634,7 +2696,7 @@ mod tests {
         // Every multiplier on the path from `blade_length` to a rasterised
         // stroke, at its maximum: the `Tangle` family's own factor, the vigour
         // clamp in `grow_tuft`, and the tall-accent reach draw.
-        let longest = params.blade_length.1 * 1.25 * VIGOUR_CEILING * 1.35;
+        let longest = params.style.blade_length.1 * 1.25 * VIGOUR_CEILING * 1.35;
         // The tuft's blades are rooted up to this far from the centre that
         // `scatter` tests, so the centre has to cover the offset as well. Must
         // track the radius drawn in [`grow_tuft`]; a stale value here is a test
@@ -2662,8 +2724,8 @@ mod tests {
                     bend,
                     curl: 1.4,
                     sway: 2.4,
-                    width: params.blade_width.1,
-                    under: params.under,
+                    width: params.style.blade_width.1,
+                    under: params.style.under,
                     ..Default::default()
                 });
                 // Density, not height. `top` is a canopy height in whole
@@ -2730,8 +2792,8 @@ mod tests {
                     bend: *bend,
                     curl: 1.4,
                     sway: 2.4,
-                    width: params.blade_width.1,
-                    under: params.under,
+                    width: params.style.blade_width.1,
+                    under: params.style.under,
                     ..Default::default()
                 });
                 // Density, not height. `top` is a canopy height in whole
@@ -2779,9 +2841,9 @@ mod tests {
         let params = BakeParams::default();
         // Every multiplier from `blade_length` to a rasterised stroke, at its
         // maximum: the `Tangle` factor, the vigour clamp, the tall-accent reach.
-        let longest = params.blade_length.1 * 1.25 * VIGOUR_CEILING * 1.35;
+        let longest = params.style.blade_length.1 * 1.25 * VIGOUR_CEILING * 1.35;
         // Up to `Tangle`'s ceiling, plus what the skirt adds on top of it.
-        let bends = [0.9, 1.4, params.blade_bend.1, 2.0, BEND_CEILING];
+        let bends = [0.9, 1.4, params.style.blade_bend.1, 2.0, BEND_CEILING];
         let (left, right, up, down) = reach_by_direction(&params, longest, &bends);
         // A blade is rooted anywhere within its tuft, so the guard has to cover
         // the offset as well as the reach. Projected, a world radius `r` spans
@@ -2826,14 +2888,14 @@ mod tests {
     #[test]
     fn the_stroke_reach_bound_is_never_beaten() {
         let params = BakeParams::default();
-        let longest = params.blade_length.1 * 1.25 * VIGOUR_CEILING * 1.35;
-        let bends = [0.0, 0.9, 1.4, params.blade_bend.1, 2.0, BEND_CEILING];
+        let longest = params.style.blade_length.1 * 1.25 * VIGOUR_CEILING * 1.35;
+        let bends = [0.0, 0.9, 1.4, params.style.blade_bend.1, 2.0, BEND_CEILING];
         let (left, right, up, down) = reach_by_direction(&params, longest, &bends);
 
         let stroke = Stroke {
             length: longest,
-            width: params.blade_width.1,
-            under: params.under,
+            width: params.style.blade_width.1,
+            under: params.style.under,
             ..Default::default()
         };
         let mut surface = Surface::new(8, 8);
@@ -2867,9 +2929,9 @@ mod tests {
     fn the_reach_bound_holds_at_every_page_scale() {
         let params = BakeParams::default();
         let stroke = Stroke {
-            length: params.blade_length.1 * 1.25 * VIGOUR_CEILING * 1.35,
-            width: params.blade_width.1,
-            under: params.under,
+            length: params.style.blade_length.1 * 1.25 * VIGOUR_CEILING * 1.35,
+            width: params.style.blade_width.1,
+            under: params.style.under,
             ..Default::default()
         };
         let mut surface = Surface::new(8, 8);

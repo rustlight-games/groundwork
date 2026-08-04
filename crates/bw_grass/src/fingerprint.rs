@@ -523,6 +523,116 @@ mod tests {
     }
 
     #[test]
+    fn the_meadow_survives_every_change_to_how_it_is_drawn() {
+        // The property the `BakeParams` split exists to make visible, and the
+        // one that was true and invisible while the two halves were one struct.
+        //
+        // Twenty-three of the parameters decide the *picture* — the fake
+        // occlusion, the macro lighting, the colour grade — and not one of them
+        // moves a blade. So a plate can be re-shaded without regenerating a
+        // scene, and a training pair's two halves can be lit differently while
+        // remaining the same meadow. An invisible property is one somebody
+        // breaks; this is the test that notices.
+        let base = BakeParams::default();
+        let field = WorldField::lit_by(base.seed, base.light);
+        let page = Page::new(Vec2::new(-48.0, -48.0), 48, 48);
+        let reference = GrassScene::build(page, &field, &base).fingerprint(base.seed, &field);
+
+        type Nudge = (&'static str, fn(&mut crate::bake::PreviewRasterStyle));
+        let nudges: [Nudge; 12] = [
+            ("form_light", |r| r.form_light += 0.5),
+            ("mound_light", |r| r.mound_light += 0.5),
+            ("elevation_light", |r| r.elevation_light += 0.5),
+            ("crown_light", |r| r.crown_light += 0.5),
+            ("ambient_occlusion", |r| r.ambient_occlusion += 0.5),
+            ("interior", |r| r.interior += 0.5),
+            ("canopy_relief", |r| r.canopy_relief += 0.5),
+            ("shadow", |r| r.shadow += 0.5),
+            ("shade_depth", |r| r.shade_depth += 0.5),
+            ("sky_fill", |r| r.sky_fill += 0.5),
+            ("transmission", |r| r.transmission += 0.5),
+            ("glaze", |r| r.glaze += 0.5),
+        ];
+        for (name, nudge) in nudges {
+            let mut params = base;
+            nudge(&mut params.raster);
+            let moved = GrassScene::build(page, &field, &params).fingerprint(params.seed, &field);
+            assert_eq!(
+                reference, moved,
+                "changing `{name}` moved the meadow — it belongs in GrassStyle, \
+                 not PreviewRasterStyle"
+            );
+        }
+    }
+
+    #[test]
+    fn the_meadow_does_move_when_the_style_changes() {
+        // The other half of the claim. A split that put everything in the raster
+        // half would pass the test above and mean nothing.
+        let base = BakeParams::default();
+        let field = WorldField::lit_by(base.seed, base.light);
+        // A full-size page: the tiller vocabulary that reads blade_bend does not
+        // grow on half a square metre, so a smaller one would pass this test by
+        // never reaching the code it is checking.
+        let page = Page::new(Vec2::new(-48.0, -48.0), 96, 96);
+        let reference = GrassScene::build(page, &field, &base).fingerprint(base.seed, &field);
+
+        // `blade_bend` is deliberately absent, and the reason is a finding
+        // rather than an omission — see `blade_bend_reaches_nothing` below.
+        type Nudge = (&'static str, fn(&mut crate::bake::GrassStyle));
+        let nudges: [Nudge; 5] = [
+            ("tufts", |s| s.tufts *= 1.5),
+            ("fine", |s| s.fine *= 1.5),
+            ("blade_length", |s| s.blade_length.1 *= 1.5),
+            ("blade_width", |s| s.blade_width.1 *= 1.5),
+            ("thatch", |s| s.thatch *= 1.5),
+        ];
+        for (name, nudge) in nudges {
+            let mut params = base;
+            nudge(&mut params.style);
+            let moved = GrassScene::build(page, &field, &params).fingerprint(params.seed, &field);
+            assert_ne!(
+                reference, moved,
+                "changing `{name}` did not move the meadow"
+            );
+        }
+    }
+
+    /// `blade_bend` is a dead parameter, and this asserts the gap rather than
+    /// the fix.
+    ///
+    /// It is read in exactly one place — `Mark::shape`, which builds the base
+    /// stroke for a tiller — and `Mark::shape` is never called. So the authored
+    /// bend range `(0.35, 1.40)` reaches nothing: set it to `(5.0, 9.0)` and not
+    /// one of nine thousand marks moves.
+    ///
+    /// Left alone on purpose. Wiring it up would change the meadow, which is a
+    /// deliberate look change and not something to smuggle into a migration
+    /// whose entire claim is that it moved nothing. This is written down so the
+    /// next person to find it is told it is known, and so that whoever fixes it
+    /// is told to delete a test rather than left wondering whether the
+    /// parameter was meant to be inert.
+    ///
+    /// The same shape of defect as the rock palette's `luminance_spread`, which
+    /// reads the same value for all ten seeds.
+    #[test]
+    fn blade_bend_reaches_nothing() {
+        let base = BakeParams::default();
+        let field = WorldField::lit_by(base.seed, base.light);
+        let page = Page::new(Vec2::new(-48.0, -48.0), 96, 96);
+        let reference = GrassScene::build(page, &field, &base).fingerprint(base.seed, &field);
+
+        let mut absurd = base;
+        absurd.style.blade_bend = (5.0, 9.0);
+        assert_eq!(
+            reference,
+            GrassScene::build(page, &field, &absurd).fingerprint(absurd.seed, &field),
+            "blade_bend now reaches the meadow — delete this test and add it to \
+             the list in `the_meadow_does_move_when_the_style_changes`"
+        );
+    }
+
+    #[test]
     fn a_fingerprint_survives_a_round_trip_through_text() {
         let (scene, field, seed) = scene_at(Vec2::ZERO, 32, 13);
         let printed = scene.fingerprint(seed, &field);

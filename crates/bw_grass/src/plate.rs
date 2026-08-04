@@ -139,12 +139,12 @@ pub const CYCLES_LENGTH: f32 = 1.2;
 /// [`cycles_params`] with the two multipliers chosen by the caller.
 pub fn scaled_params(params: &BakeParams, density: f32, length: f32) -> BakeParams {
     let mut scaled = *params;
-    scaled.tufts *= density;
-    scaled.fine *= density;
-    scaled.thatch *= density;
-    scaled.leaves *= density;
-    scaled.blade_length.0 *= length;
-    scaled.blade_length.1 *= length;
+    scaled.style.tufts *= density;
+    scaled.style.fine *= density;
+    scaled.style.thatch *= density;
+    scaled.style.leaves *= density;
+    scaled.style.blade_length.0 *= length;
+    scaled.style.blade_length.1 *= length;
     scaled
 }
 
@@ -233,10 +233,10 @@ impl PlatePlan {
 
         let ribs = cycles::ribs_for(shown);
         let ground_metres = (request.width as f32 / shown) * (request.height as f32 / shown);
-        let estimated_blades = (params.tufts * params.blades_per_tuft.1 as f32
-            + params.fine
-            + params.thatch
-            + params.leaves)
+        let estimated_blades = (params.style.tufts * params.style.blades_per_tuft.1 as f32
+            + params.style.fine
+            + params.style.thatch
+            + params.style.leaves)
             * ground_metres;
         let vertices = estimated_blades * (ribs * cycles::VERTICES_PER_RIB) as f32;
         let tiles_across = match request.tiles {
@@ -589,9 +589,9 @@ mod tests {
     fn the_tracer_gets_more_grass_than_the_rasteriser() {
         let base = BakeParams::default();
         let traced = cycles_params(&base);
-        assert!(traced.tufts > base.tufts);
-        assert!(traced.fine > base.fine);
-        assert!(traced.blade_length.1 > base.blade_length.1);
+        assert!(traced.style.tufts > base.style.tufts);
+        assert!(traced.style.fine > base.style.fine);
+        assert!(traced.style.blade_length.1 > base.style.blade_length.1);
     }
 
     #[test]
@@ -637,9 +637,9 @@ mod tests {
         let plan = PlatePlan::resolve(&PlateRequest::square(1024, 192.0), &params);
         let guard_metres = plan.guard as f32 / plan.trace_px_per_metre;
         assert!(
-            guard_metres >= params.blade_length.1,
+            guard_metres >= params.style.blade_length.1,
             "a {guard_metres:.2} m guard against blades up to {:.2} m",
-            params.blade_length.1
+            params.style.blade_length.1
         );
     }
 }

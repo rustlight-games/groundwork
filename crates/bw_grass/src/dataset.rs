@@ -301,7 +301,7 @@ impl ShardMetadata {
             px_per_metre: page.px_per_metre,
             sun: (sun.x, sun.y, sun.z),
             sun_elevation_degrees: crate::iso::elevation_of(sun).to_degrees(),
-            sun_radius: params.sun_radius,
+            sun_radius: params.raster.sun_radius,
             marks,
         }
     }
@@ -425,12 +425,12 @@ impl CorpusRequest {
             quality: self.target,
             ..BakeParams::default()
         };
-        params.tufts *= self.density;
-        params.fine *= self.density;
-        params.thatch *= self.density;
-        params.leaves *= self.density;
-        params.blade_length.0 *= self.length;
-        params.blade_length.1 *= self.length;
+        params.style.tufts *= self.density;
+        params.style.fine *= self.density;
+        params.style.thatch *= self.density;
+        params.style.leaves *= self.density;
+        params.style.blade_length.0 *= self.length;
+        params.style.blade_length.1 *= self.length;
         params
     }
 

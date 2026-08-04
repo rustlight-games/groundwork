@@ -54,8 +54,8 @@ fn main() {
         ..Default::default()
     };
     if let Some(scale) = options.density {
-        params.tufts *= scale;
-        params.thatch *= scale;
+        params.style.tufts *= scale;
+        params.style.thatch *= scale;
     }
 
     if !options.views.is_empty() {
