@@ -245,3 +245,8 @@ to different ground. Append only, like `terrain_bench::SCENARIOS`.
 - **Twenty-seven tiles.** Not a number — a shape nobody has chosen yet. When one
   is chosen it is a variant of `TileLayoutPreset` and the rest of the pipeline
   does not change.
+- **`terrain dataset` still frames by page.** It crops square patches at a chosen
+  scale, which was right when a render was a rectangle. Once the neural
+  renderer's unit is a tile, the corpus should be tile-shaped and should carry
+  the subject mask beside each pair. That is a change to the input/target
+  contract, so it waits on the contract rather than being done in passing.

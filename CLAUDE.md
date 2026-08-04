@@ -145,6 +145,11 @@ Real, currently true, and worth knowing before tripping over them.
 - **`TileLayoutPreset` has one variant.** Twenty-seven tiles is not a number, it
   is a shape nobody has chosen; the layout is a coordinate list precisely so
   choosing one later changes `layout.rs` and nothing downstream.
+- **`terrain dataset` still frames by page, not by layout.** It crops square
+  patches at a chosen scale, which was right when a render was a rectangle. Once
+  the neural renderer's unit is a tile, the corpus should be tile-shaped and
+  carry the subject mask — that is a contract change, so it waits on the
+  input/target contract settling rather than being done in passing.
 - **Terrain blending is reserved, not implemented.** The weights compose; the
   shared candidate field that stops a transition doubling its marks does not
   exist yet. See [docs/MATERIAL_BLENDING.md](docs/MATERIAL_BLENDING.md).

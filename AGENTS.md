@@ -16,7 +16,7 @@ The eventual consumer is a neural renderer inside a Bevy game — trained to
 produce the path-traced picture from the cheap one. Everything below follows
 from what that requires.
 
-## The nine invariants
+## The ten invariants
 
 **1. Semantic terrain and candidate placement are deterministic.**
 The same document, seed and world position produce the same answer on any
@@ -50,9 +50,10 @@ today; the point is that nothing can *later* make it disagree, and the failure
 is silent — the loss stops falling and no image in the corpus looks wrong.
 
 **6. Render pages are disposable derivatives, not terrain state.**
-A plate is one logical output; a page is a storage tile within one. Both can be
-deleted and rebuilt from a document and a seed. Nothing about the terrain lives
-only in a cache.
+A plate is one logical output; a page is a storage unit within one; a trace tile
+is a slice of a plate small enough for Blender to hold. None of the three is a
+**world tile** — see invariant 10. All of them can be deleted and rebuilt from a
+document and a seed. Nothing about the terrain lives only in a cache.
 
 **7. Material blending affects procedural ownership before rendering.**
 Never alpha-blend two finished images. Compose *material weights*, then let one
@@ -70,6 +71,17 @@ speed-up bought by generating fewer marks is a quality-tier change.
 **9. Documentation describes the current architecture only.**
 No "this used to be", no aspirational present tense. A doc that describes what
 is planned as though it exists costs more than no doc.
+
+**10. World tiles are a composition, never a generation boundary.**
+A render is nine tiles of *one continuous scene*, framed by one camera, produced
+by one pass. Never nine scenes, never nine images composited, never a lower
+quality or density outside the subject. Generating per tile would put a join at
+every internal edge, stop every shadow at a tile boundary, and — worse for what
+this exists for — make the context systematically different from the subject one
+tile from the middle of every frame, which is precisely the artefact a neural
+renderer learns in preference to learning grass. The tiles decide what the render
+is *about*; they never decide what gets generated. See
+[docs/ISOMETRIC_TILES.md](docs/ISOMETRIC_TILES.md).
 
 ## Rules that follow
 
