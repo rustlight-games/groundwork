@@ -258,14 +258,21 @@ def blade_material(settings):
     ramp.location = (-700, -100)
     ramp.color_ramp.interpolation = "EASE"
     stops = [
-        (0.00, (0.0026, 0.0355, 0.0011, 1.0)),
-        (0.22, (0.0055, 0.0870, 0.0017, 1.0)),
-        (0.55, (0.0105, 0.1930, 0.0020, 1.0)),
-        (0.82, (0.0186, 0.2900, 0.0024, 1.0)),
+        # The root end is lifted well above what a buried blade base physically
+        # reflects, and deliberately. This is where the deep-shadow share lives:
+        # a canopy this dense buries most of its own material, so the darkest
+        # third of the picture is blade *roots* rather than shadow. Left at a
+        # physical value it swallowed a third of the frame, and for a surface
+        # that has to read under units and effects that is not atmosphere — it is
+        # a hole where the gameplay happens.
+        (0.00, (0.0068, 0.0680, 0.0026, 1.0)),
+        (0.22, (0.0105, 0.1300, 0.0034, 1.0)),
+        (0.55, (0.0128, 0.2320, 0.0022, 1.0)),
+        (0.82, (0.0208, 0.3320, 0.0025, 1.0)),
         # The lit tip runs warm on purpose. A sunlit blade is yellow-green, and
         # a tip that stays the same hue as its own root reads as a brighter lamp
         # rather than as sunlight landing on it.
-        (1.00, (0.0415, 0.3880, 0.0030, 1.0)),
+        (1.00, (0.0430, 0.4460, 0.0030, 1.0)),
     ]
     first = ramp.color_ramp.elements[0]
     first.position, first.color = stops[0][0], stops[0][1]
@@ -317,16 +324,30 @@ def blade_material(settings):
     coordinate.location = (-1500, 320)
     drift = nodes.new("ShaderNodeTexNoise")
     drift.location = (-1300, 320)
-    drift.inputs["Scale"].default_value = 0.65
-    drift.inputs["Detail"].default_value = 2.0
+    # One octave and a long wavelength. Detail here is actively harmful: extra
+    # octaves put fast edges into what is meant to be a slow drift, and a hue
+    # boundary with an edge on it stops reading as vegetation and starts reading
+    # as a shadow falling across the field.
+    drift.inputs["Scale"].default_value = 0.34
+    drift.inputs["Detail"].default_value = 0.0
     drift.inputs["Roughness"].default_value = 0.5
 
-    # Pushed to the ends of its range: raw fractal noise spends most of its life
-    # near the middle, which would leave the tints barely used.
+    # ## Why this remap is gentle, and was not
+    #
+    # It first took 0.32–0.68 to the full range **with clamping**, on the
+    # reasoning that fractal noise crowds its middle and the tints would
+    # otherwise go unused. What that actually produces is a *mask*: most of the
+    # field pinned at one extreme or the other with a fast crossing between, and
+    # a fast crossing between two greens is indistinguishable from a shadow edge.
+    #
+    # The whole point of this axis is that it should be impossible to point at
+    # where it changes. So the range is now wider than the noise ever reaches,
+    # which costs some of the tint's authority and buys a transition with no
+    # edge anywhere in it.
     spread = nodes.new("ShaderNodeMapRange")
     spread.location = (-1120, 320)
-    spread.inputs["From Min"].default_value = 0.32
-    spread.inputs["From Max"].default_value = 0.68
+    spread.inputs["From Min"].default_value = 0.06
+    spread.inputs["From Max"].default_value = 0.94
     spread.clamp = True
 
     links.new(coordinate.outputs["Object"], drift.inputs["Vector"])
@@ -340,14 +361,14 @@ def blade_material(settings):
     warm.blend_type = "MULTIPLY"
     warm.location = (-330, 150)
     live(warm.inputs, "Factor").default_value = 1.0
-    live(warm.inputs, "B").default_value = (2.35, 0.96, 1.05, 1.0)
+    live(warm.inputs, "B").default_value = (1.95, 0.99, 0.88, 1.0)
 
     cool = nodes.new("ShaderNodeMix")
     cool.data_type = "RGBA"
     cool.blend_type = "MULTIPLY"
     cool.location = (-330, -70)
     live(cool.inputs, "Factor").default_value = 1.0
-    live(cool.inputs, "B").default_value = (0.50, 1.04, 1.90, 1.0)
+    live(cool.inputs, "B").default_value = (0.62, 1.01, 1.70, 1.0)
 
     graded = nodes.new("ShaderNodeMix")
     graded.data_type = "RGBA"
@@ -497,23 +518,42 @@ def ground_material():
     # Anything that draws the eye at this scale should be a plant.
     damp = nodes.new("ShaderNodeValToRGB")
     damp.location = (-1350, 320)
-    damp.color_ramp.elements[0].color = (0.0125, 0.0135, 0.0070, 1.0)
-    damp.color_ramp.elements[1].color = (0.0330, 0.0290, 0.0150, 1.0)
+    damp.color_ramp.elements[0].position = 0.05
+    damp.color_ramp.elements[1].position = 0.95
+    damp.color_ramp.elements[0].color = (0.0135, 0.0145, 0.0078, 1.0)
+    damp.color_ramp.elements[1].color = (0.0310, 0.0275, 0.0145, 1.0)
     links.new(region.outputs["Fac"], damp.inputs["Fac"])
 
     dry = nodes.new("ShaderNodeValToRGB")
     dry.location = (-1350, 140)
-    dry.color_ramp.elements[0].color = (0.0225, 0.0190, 0.0100, 1.0)
-    dry.color_ramp.elements[1].color = (0.0400, 0.0320, 0.0155, 1.0)
+    dry.color_ramp.elements[0].position = 0.05
+    dry.color_ramp.elements[1].position = 0.95
+    dry.color_ramp.elements[0].color = (0.0240, 0.0205, 0.0110, 1.0)
+    dry.color_ramp.elements[1].color = (0.0385, 0.0310, 0.0150, 1.0)
     links.new(patch.outputs["Fac"], dry.inputs["Fac"])
 
-    # Which of the two, decided at the patch scale.
+    # Which of the two, decided at the *region* scale and eased.
+    #
+    # Driven by `region` rather than `patch`, because `patch` carries three
+    # octaves and using it as a blend factor puts a visible boundary wherever
+    # damp meets dry — earth does not change moisture over four centimetres. The
+    # remap narrows the swing further so neither end is ever fully reached, which
+    # is what keeps the transition from reading as a stain.
+    moisture = nodes.new("ShaderNodeMapRange")
+    moisture.location = (-1200, 220)
+    moisture.inputs["From Min"].default_value = 0.20
+    moisture.inputs["From Max"].default_value = 0.80
+    moisture.inputs["To Min"].default_value = 0.15
+    moisture.inputs["To Max"].default_value = 0.85
+    moisture.clamp = True
+    links.new(region.outputs["Fac"], moisture.inputs["Value"])
+
     earth = nodes.new("ShaderNodeMix")
     earth.data_type = "RGBA"
     earth.location = (-1050, 220)
     links.new(live(damp.outputs, "Color"), live(earth.inputs, "A"))
     links.new(live(dry.outputs, "Color"), live(earth.inputs, "B"))
-    links.new(patch.outputs["Fac"], live(earth.inputs, "Factor"))
+    links.new(moisture.outputs["Result"], live(earth.inputs, "Factor"))
 
     # Grain: a darkening, not a second colour. Multiplying keeps the hue the two
     # ramps already agreed on and only varies how much light comes back.

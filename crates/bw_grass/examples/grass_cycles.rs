@@ -58,9 +58,17 @@ fn main() {
     let detail_ratio = (shown_px_per_metre / TUNED_PX_PER_METRE).clamp(0.0, 1.0);
     let crowding = detail_ratio.max(MIN_CROWDING);
     let width_relief = 1.0 / crowding.sqrt();
+    // The *tufts* thin. The short grass barely does, and the mat not at all.
+    //
+    // Thinning everything equally is what turned the wide view into soil with
+    // tufts standing on it: the tall marks and the layer that closes the surface
+    // between them went together, so the ground opened up exactly as the blades
+    // stopped being resolvable. The fine layer is the cheapest geometry in the
+    // scene and the only thing holding the canopy shut, so it is the last thing
+    // that should be cut.
     params.tufts *= crowding;
-    params.fine *= crowding;
-    params.thatch *= crowding;
+    params.fine *= crowding.sqrt().max(0.62);
+    params.thatch *= crowding.sqrt().max(0.70);
     params.leaves *= crowding;
 
     // Traced above the resolution it is stored at, then filtered down. Geometry
@@ -182,10 +190,13 @@ const TUNED_PX_PER_METRE: f32 = 192.0;
 
 /// The least the canopy may be thinned however far the camera pulls back.
 ///
-/// Below this a wide view stops reading as grass and starts reading as a lawn
-/// that needs watering — the individual blades are invisible either way, but the
-/// *coverage* is not, and coverage is what says the ground is alive.
-const MIN_CROWDING: f32 = 0.16;
+/// A third, and it started at a sixth. The mistake was treating the thinning as
+/// purely a cost measure: individual blades really are invisible at a wide view,
+/// so dropping five of every six looks free — and it is not, because what
+/// survives at that distance is **coverage**, and coverage is what says the
+/// ground is alive rather than mown. At a sixth the field went to bare soil with
+/// tufts on it and the highlight share collapsed to a fifth of the reference's.
+const MIN_CROWDING: f32 = 0.34;
 
 struct Options {
     width: usize,
