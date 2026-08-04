@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Place a whole scene in Rust and path-trace it with Cycles, in one go.
 #
-#   ./render                    what the game shows, path-traced. Opened when done
+#   ./render                    a whole scene, path-traced. Opened when done
 #   TERRAIN_VIEW=10 ./render         closer: world metres visible vertically
 #   TERRAIN_SAMPLES=512 ./render     cleaner, slower
 #   TERRAIN_SIZE=2560x1440 ./render  bigger
@@ -9,19 +9,19 @@
 #   TERRAIN_TILES=4 ./render         override the derived tile split (0 = derive)
 #   TERRAIN_SEED=12 ./render         somewhere else entirely
 #
-# This is not `./run`. The game streams pages and has a frame to draw them in;
-# Cycles takes seconds, so it cannot run in a render loop. What it can do is
-# render the whole thing at once, which is both simpler and better for looking
-# at: no page grid, no seams to reason about, one camera over one scene.
+# This is not `terrain_preview`. The preview streams pages and has a frame to
+# draw them in; Cycles takes seconds, so it cannot run in a render loop. What it
+# can do is render the whole thing at once, which is both simpler and better for
+# looking at: no page grid, no seams to reason about, one camera over one scene.
 #
 # Placement is unchanged either way — every blade is a pure function of its world
-# coordinate, so this is the same meadow the game grows, rendered properly.
+# coordinate, so this is the same meadow the preview shows, rendered properly.
 #
-# ## The framing matches `./run`
+# ## The framing matches the preview
 #
-# `TERRAIN_VIEW` is world metres visible vertically, the same number `./run` takes,
-# and it defaults to the same 28. So this is the picture the game is trying to
-# be, rendered properly, rather than a flattering close-up of it.
+# `TERRAIN_VIEW` is world metres visible vertically, the same number the preview
+# takes. So this is the picture the cheap tier is trying to be, rendered
+# properly, rather than a flattering close-up of it.
 #
 # Everything a wide view needs is derived, and the reasoning is worth knowing
 # because three plausible approaches failed before this one.
@@ -54,13 +54,13 @@ SAMPLES="${TERRAIN_SAMPLES:-256}"
 VIEW="${TERRAIN_VIEW:-28}"
 SUPERSAMPLE="${TERRAIN_SUPERSAMPLE:-0}"
 SEED="${TERRAIN_SEED:-7}"
-OUT="${TERRAIN_OUT:-target/grass-render.png}"
+OUT="${TERRAIN_OUT:-target/terrain-render.png}"
 
 TILES="${TERRAIN_TILES:-0}"
 
 echo "placing and tracing ${WIDTH}x${HEIGHT} at ${VIEW} m view, ${SAMPLES} spp, seed ${SEED}"
 
-cargo run --release -p bw_grass --example grass_cycles -- \
+cargo run --release -p terrain_cli -- render \
 	--width "$WIDTH" \
 	--height "$HEIGHT" \
 	--view "$VIEW" \

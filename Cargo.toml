@@ -1,16 +1,16 @@
-[package]
-name = "backseat_warlord"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-
 [workspace]
-members = ["crates/bw_core", "crates/bw_content", "crates/bw_nav", "crates/bw_sim", "crates/bw_ai", "crates/bw_bench", "crates/bw_render", "crates/bw_grass", "crates/bw_ui", "crates/bw_app", "plugins/*", "tools/*"]
-# `tools/*` is a glob over Rust crates, and `bw_cycles` is not one — it is the
-# Blender-side half of the path-traced renderer, driven as a subprocess. It lives
-# under `tools/` because that is where a thing you run rather than link belongs,
-# and Cargo has to be told it is not a member.
+resolver = "2"
+members = ["crates/*", "tools/terrain_cli", "tools/terrain_preview"]
+# `tools/bw_cycles` is not a Rust crate — it is the Blender-side half of the
+# path-traced renderer, driven as a subprocess. It lives under `tools/` because
+# that is where a thing you run rather than link belongs, and Cargo has to be
+# told it is not a member.
 exclude = ["tools/bw_cycles"]
+
+# Virtual, with no root package. There used to be one — the game binary — and its
+# absence is the point rather than a tidy-up: nothing in this repository is an
+# application any more. The framework compiles terrain and renders it, and the
+# things you run are tools that sit beside it.
 
 [workspace.package]
 version = "0.1.0"
@@ -19,77 +19,33 @@ rust-version = "1.95"
 
 [workspace.dependencies]
 # --- internal ---------------------------------------------------------------
-bw_core = { path = "crates/bw_core" }
-bw_content = { path = "crates/bw_content" }
-bw_nav = { path = "crates/bw_nav" }
-bw_sim = { path = "crates/bw_sim" }
-bw_ai = { path = "crates/bw_ai" }
 bw_bench = { path = "crates/bw_bench" }
-bw_render = { path = "crates/bw_render" }
 bw_grass = { path = "crates/bw_grass" }
-bw_ui = { path = "crates/bw_ui" }
-bw_app = { path = "crates/bw_app" }
-bw_fx_abilities = { path = "plugins/bw_fx_abilities" }
-bw_fx_terrain = { path = "plugins/bw_fx_terrain" }
-bw_fx_rocks = { path = "plugins/bw_fx_rocks" }
 
 # --- bevy -------------------------------------------------------------------
-# The full `bevy` facade is for render-side crates only. Simulation crates take
-# the standalone subcrates so a renderer dependency cannot creep in by accident.
+# Only the preview backend and the tool that opens a window take Bevy. Every
+# headless crate — the document, the sampler, the scene, the Cycles backend —
+# must stay clear of it, because a terrain compiler that cannot run without a
+# renderer in the graph is a renderer with a compiler attached.
 bevy = "0.19.0"
-bevy_app = "0.19.0"
-bevy_ecs = "0.19.0"
-bevy_platform = "0.19.0"
-
-# --- machine learning -------------------------------------------------------
-# burn-flex is the CPU backend used for in-game inference; burn-wgpu + autodiff
-# are training-only and are pulled in by tools/bw_train.
-# default-features lives here rather than in the member crates: Cargo forbids a
-# member overriding it when inheriting a workspace dependency.
-#
-# `ndarray` and `flex` are both CPU backends. NdArray is the long-standing one
-# and is what InferenceBackend currently points at; flex is Burn's newer and
-# generally faster CPU backend. Both are compiled in so the grass-and-inference
-# benchmark suite can measure them against each other before we commit.
-burn = { version = "0.21.0", default-features = false, features = ["std", "ndarray", "flex"] }
-burn-wgpu = "0.21.0"
-
-# --- determinism ------------------------------------------------------------
-# rand 0.9 needs rand_core ^0.9 and rand_chacha 0.10 needs rand_core ^0.10.
-# Mixing those two gives you two rand_core versions and ChaCha8Rng silently
-# stops implementing rand's RngCore. Keep both on the 0.9 line.
-fixed = { version = "1.31", features = ["serde"] }
-cordic = "0.1"
-rand = "0.9"
-rand_chacha = "0.9"
 
 # --- general ----------------------------------------------------------------
 serde = { version = "1.0", features = ["derive"] }
 ron = "0.12"
 thiserror = "2.0"
-smol_str = { version = "0.3", features = ["serde"] }
-indexmap = { version = "2.14", features = ["serde"] }
-bitflags = "2.13"
 clap = { version = "4.6", features = ["derive"] }
 rayon = "1.12"
-bytemuck = "1.25"
-# Reading snapshot plates back for the visual-similarity comparison, and writing
-# the new ones. Bevy already depends on it, so this costs nothing but the line.
+# Reading traced tiles back to crop and filter them, and writing finished
+# plates. Bevy already depends on it, so this costs nothing but the line.
 image = { version = "0.25", default-features = false, features = ["png"] }
 # Performance benchmarks. `html_reports` is off: the suite's durable record is a
 # `bw_bench::Report` under benchmarks/baseline/, and criterion's own HTML wants
 # plotters and a good deal of build time to produce something nothing reads.
-criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+criterion = { version = "0.7", default-features = false, features = [
+    "cargo_bench_support",
+] }
 
-[dependencies]
-bw_app.workspace = true
-
-[features]
-# `cargo run --features dev` links Bevy dynamically, which cuts incremental
-# link time dramatically. Never enable it for a shipped build.
-dev = ["bw_app/dev"]
-
-# Lightly optimise our own code so the game is playable while debugging.
+# Lightly optimise our own code, so a preview window is usable while debugging.
 [profile.dev]
 opt-level = 1
 

@@ -1,16 +1,32 @@
-# Determinism guardrails.
+# Reproducibility guardrails.
 #
-# The battle simulation must produce bit-identical results from the same seed,
-# on any machine, in training and in game. The two classic ways that breaks are
-# iteration order and wall-clock time, so both are denied outright. Sim crates
-# use IndexMap/BTreeMap and the Tick counter instead.
+# These used to be much broader, and the breadth was correct for what this
+# repository was: a battle simulation had to produce bit-identical results from
+# the same seed on any machine, so `HashMap`, `HashSet`, `Instant` and
+# `SystemTime` were all denied outright across the workspace.
 #
-# These fire across the whole workspace. Render-side crates that legitimately
-# need a HashMap should reach for bevy_platform::collections::HashMap, which is
-# seeded deterministically, rather than allowing std's here.
+# An offline terrain framework has a different shape, and keeping the old bans
+# would have been cargo-culting a rule past the reason for it. The property that
+# matters now is narrower and sharper:
+#
+#   **Nothing that decides where something goes may depend on wall-clock time,
+#   and nothing canonical may depend on hash iteration order.**
+#
+# Everything else is fair game. A cache keyed by page address wants a `HashMap`
+# and iterating it decides nothing. A benchmark wants `Instant`, because timing
+# is the whole point. Dataset metadata may record when a shard was produced, so
+# long as the timestamp reaches the manifest and never the generator.
+#
+# So the bans that remain are the two that cannot be argued with, and they are
+# scoped by review rather than by lint:
+#
+#   - Semantic generation and canonical digests must not read the clock. There is
+#     no lint for "must not reach this code path", so this is a review rule, and
+#     `#[allow(clippy::disallowed_types)]` at a call site is the marker that
+#     somebody thought about it.
+#   - Canonical iteration must use a stable order. `IndexMap`, `BTreeMap`, or a
+#     sorted `Vec`; never a `HashMap`'s iteration order.
 disallowed-types = [
-    { path = "std::collections::HashMap", reason = "iteration order is not deterministic; use IndexMap or BTreeMap" },
-    { path = "std::collections::HashSet", reason = "iteration order is not deterministic; use IndexSet or BTreeSet" },
-    { path = "std::time::Instant", reason = "wall-clock time breaks reproducibility; use bw_core::Tick" },
-    { path = "std::time::SystemTime", reason = "wall-clock time breaks reproducibility; use bw_core::Tick" },
+    { path = "std::time::Instant", reason = "generation and digests must not read the clock; allow it explicitly in benchmarks, progress reporting and manifest provenance" },
+    { path = "std::time::SystemTime", reason = "generation and digests must not read the clock; allow it explicitly in benchmarks, progress reporting and manifest provenance" },
 ]

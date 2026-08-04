@@ -9,7 +9,29 @@
 //! Each returns a value in a documented range with a documented direction, so a
 //! baseline comparison can be automatic rather than requiring interpretation.
 
-use bw_core::Vec2Fx;
+/// A point in the plane, in whatever unit the caller measures in.
+///
+/// Plain `f64` where this was fixed point. The fixed-point types existed so a
+/// battle would produce bit-identical results on any machine; there is no battle
+/// and nothing here feeds a simulation, so what is left is a shape-scoring
+/// routine paying a conversion at every arithmetic site for a guarantee nobody
+/// needs. Every function below already computed in `f64` internally — the fixed
+/// point reached the boundary and stopped.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Point {
+    pub const fn new(x: f64, y: f64) -> Self {
+        Self { x, y }
+    }
+
+    pub fn distance(self, other: Self) -> f64 {
+        ((self.x - other.x).powi(2) + (self.y - other.y).powi(2)).sqrt()
+    }
+}
 
 /// Isoperimetric quotient: `4 * pi * area / perimeter^2`.
 ///
@@ -30,7 +52,7 @@ pub fn compactness(area: f64, perimeter: f64) -> f64 {
 /// 1.0 means fully convex. Rocks want a little concavity for interest but not
 /// much: below about 0.85 the silhouette starts reading as broken debris rather
 /// than a solid stone.
-pub fn convexity(outline: &[Vec2Fx]) -> f64 {
+pub fn convexity(outline: &[Point]) -> f64 {
     if outline.len() < 3 {
         return 0.0;
     }
@@ -50,7 +72,7 @@ pub fn convexity(outline: &[Vec2Fx]) -> f64 {
 /// that tells you a forest looks scattered rather than clumped.
 ///
 /// Returns 0 for fewer than two points.
-pub fn blue_noise_score(points: &[Vec2Fx]) -> f64 {
+pub fn blue_noise_score(points: &[Point]) -> f64 {
     if points.len() < 2 {
         return 0.0;
     }
@@ -60,7 +82,7 @@ pub fn blue_noise_score(points: &[Vec2Fx]) -> f64 {
             points
                 .iter()
                 .filter(|&&q| q != p)
-                .map(|&q| p.distance(q).to_num::<f64>())
+                .map(|&q| p.distance(q))
                 .fold(f64::MAX, f64::min)
         })
         .collect();
@@ -108,7 +130,7 @@ pub fn silhouette_variety(areas: &[f64]) -> f64 {
 }
 
 /// Shoelace area; positive when counter-clockwise.
-fn polygon_area(points: &[Vec2Fx]) -> f64 {
+fn polygon_area(points: &[Point]) -> f64 {
     let n = points.len();
     if n < 3 {
         return 0.0;
@@ -117,34 +139,31 @@ fn polygon_area(points: &[Vec2Fx]) -> f64 {
     for i in 0..n {
         let a = points[i];
         let b = points[(i + 1) % n];
-        sum +=
-            a.x.to_num::<f64>() * b.y.to_num::<f64>() - b.x.to_num::<f64>() * a.y.to_num::<f64>();
+        sum += a.x * b.y - b.x * a.y;
     }
     sum / 2.0
 }
 
 /// Andrew's monotone chain.
-fn convex_hull(points: &[Vec2Fx]) -> Vec<Vec2Fx> {
-    let mut sorted: Vec<Vec2Fx> = points.to_vec();
-    sorted.sort_by(|a, b| a.x.cmp(&b.x).then_with(|| a.y.cmp(&b.y)));
+fn convex_hull(points: &[Point]) -> Vec<Point> {
+    let mut sorted: Vec<Point> = points.to_vec();
+    // `total_cmp` rather than `partial_cmp`, so the sort is a total order even
+    // if a NaN reaches it. A hull built from a partial order silently loses
+    // points instead of reporting anything.
+    sorted.sort_by(|a, b| a.x.total_cmp(&b.x).then_with(|| a.y.total_cmp(&b.y)));
     sorted.dedup();
     if sorted.len() < 3 {
         return sorted;
     }
 
-    let cross = |o: Vec2Fx, a: Vec2Fx, b: Vec2Fx| {
-        let ax = a.x.to_num::<f64>() - o.x.to_num::<f64>();
-        let ay = a.y.to_num::<f64>() - o.y.to_num::<f64>();
-        let bx = b.x.to_num::<f64>() - o.x.to_num::<f64>();
-        let by = b.y.to_num::<f64>() - o.y.to_num::<f64>();
-        ax * by - ay * bx
-    };
+    let cross =
+        |o: Point, a: Point, b: Point| (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
 
     // Two separate passes. A single pass over `points ++ reversed(points)`
     // looks tidier but is wrong: the upper chain can pop vertices belonging to
     // the lower one, because nothing stops it unwinding past the join.
-    let build = |sequence: &mut dyn Iterator<Item = Vec2Fx>| -> Vec<Vec2Fx> {
-        let mut chain: Vec<Vec2Fx> = Vec::new();
+    let build = |sequence: &mut dyn Iterator<Item = Point>| -> Vec<Point> {
+        let mut chain: Vec<Point> = Vec::new();
         for p in sequence {
             while chain.len() >= 2
                 && cross(chain[chain.len() - 2], chain[chain.len() - 1], p) <= 0.0
@@ -168,10 +187,10 @@ fn convex_hull(points: &[Vec2Fx]) -> Vec<Vec2Fx> {
 mod tests {
     use super::*;
 
-    fn polygon(points: &[(i32, i32)]) -> Vec<Vec2Fx> {
+    fn polygon(points: &[(i32, i32)]) -> Vec<Point> {
         points
             .iter()
-            .map(|&(x, y)| Vec2Fx::from_ints(x, y))
+            .map(|&(x, y)| Point::new(x as f64, y as f64))
             .collect()
     }
 
@@ -216,15 +235,12 @@ mod tests {
 
     #[test]
     fn evenly_spaced_points_beat_clustered_ones() {
-        let even: Vec<Vec2Fx> = (0..5)
-            .flat_map(|y| (0..5).map(move |x| Vec2Fx::from_ints(x * 3, y * 3)))
+        let even: Vec<Point> = (0..5)
+            .flat_map(|y| (0..5).map(move |x| Point::new((x * 3) as f64, (y * 3) as f64)))
             .collect();
         let mut clustered = even.clone();
         // Drop a point almost on top of an existing one.
-        clustered.push(Vec2Fx::new(
-            bw_core::Real::from_num(0.1),
-            bw_core::Real::ZERO,
-        ));
+        clustered.push(Point::new(0.1, 0.0));
         assert!(
             blue_noise_score(&even) > blue_noise_score(&clustered),
             "even {} should beat clustered {}",

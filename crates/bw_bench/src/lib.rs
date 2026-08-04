@@ -1,22 +1,30 @@
 //! Benchmark fixtures, metrics, and reporting.
 //!
-//! Benchmarking is a first-class activity in this project, not an afterthought,
-//! and it covers two things that are usually kept apart.
+//! Benchmarking is a first-class activity here, not an afterthought, and it
+//! covers two things that are usually kept apart.
 //!
-//! **Performance** is the familiar half: how many ticks per second the
-//! simulation manages, how long a flow-field rebuild takes, how much of a frame
-//! the grass costs. Measured with criterion in each crate's `benches/`.
+//! **Performance** is the familiar half: how long a page takes to bake, what a
+//! Cycles export costs, how fast the sampler answers a batch. Measured with
+//! criterion in each crate's `benches/`.
 //!
-//! **Aesthetics** is the unusual half, and it exists because most of this game
-//! is generated. A rock generator can regress in a way no unit test notices:
-//! the rocks still have valid geometry, they just look worse — spikier, or all
-//! the same, or clumped when scattered. [`metrics`] turns those judgements into
-//! numbers that can be tracked over time. They do not replace looking at the
-//! output, but they catch the drift between the times you look.
+//! **Aesthetics** is the unusual half, and it exists because all of this is
+//! generated. A generator can regress in a way no unit test notices: the
+//! geometry is still valid, the output just looks worse — spikier, or all the
+//! same, or clumped when it should be scattered. [`metrics`] turns those
+//! judgements into numbers that can be tracked over time. They do not replace
+//! looking at the output; they catch the drift between the times you look.
 //!
 //! The rule that makes any of it comparable is in [`fixtures`]: benchmarks run
-//! against fixed seeds and fixed scenarios. A measurement taken against a
-//! random input is not a measurement.
+//! against fixed seeds. A measurement taken against a random input is not a
+//! measurement.
+//!
+//! ## Status
+//!
+//! Mid-migration, and honest about it. The seeds, the metrics and the report
+//! comparison are here and tested. The *fixtures* are not: the three battle
+//! scenarios that used to live here went with the simulation, and the terrain
+//! fixtures that replace them — a page, a grid of pages, a view, a blend
+//! boundary, a path junction — arrive with `terrain_bench`.
 //!
 //! See `docs/BENCHMARKS.md` for when a benchmark is required.
 
@@ -26,6 +34,8 @@ pub mod fixtures;
 pub mod metrics;
 pub mod report;
 
-pub use fixtures::{SEEDS, Scenario};
-pub use metrics::{blue_noise_score, compactness, convexity, luminance_spread, silhouette_variety};
+pub use fixtures::SEEDS;
+pub use metrics::{
+    Point, blue_noise_score, compactness, convexity, luminance_spread, silhouette_variety,
+};
 pub use report::{Measurement, Report, ReportError, Unit};

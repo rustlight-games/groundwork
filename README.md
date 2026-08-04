@@ -1,5 +1,22 @@
 # Backseat Warlord
 
+> **This documentation is stale and is being rewritten.**
+>
+> The game — simulation, DQN, navigation, battle UI, all of its content — has
+> been deleted. What remains is becoming a headless terrain compiler and
+> rendering laboratory: an authored terrain document is parsed, validated and
+> compiled into an immutable sampler; a deterministic scene is built once from
+> it; and that one scene is handed to Cycles, to the cheap rasteriser, and to
+> the dataset exporter.
+>
+> Everything below that mentions battles, units, abilities, ticks, the trainer
+> or content IDs describes code that is gone. It is left in place only until the
+> documentation rewrite lands, so that the migration's commits stay reviewable
+> against what they replaced.
+>
+> What is true today: `cargo run -p terrain_cli -- --help`, and four crates —
+> `bw_grass`, `bw_bench`, `terrain_cli`, `terrain_preview`.
+
 A 2D auto-battler where units learn to fight via a Deep Q-Network, set in a
 heavily procedural world.
 

@@ -6,8 +6,6 @@ rust-version.workspace = true
 description = "Shared benchmark fixtures, metrics, and reporting"
 
 [dependencies]
-bw_core.workspace = true
-bw_content.workspace = true
 serde.workspace = true
 ron.workspace = true
 thiserror.workspace = true
