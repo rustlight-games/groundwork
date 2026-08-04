@@ -253,6 +253,16 @@ fn validate(args: &DocumentArgs) -> ExitCode {
     match terrain_format::load(&args.document) {
         Ok(loaded) => {
             let document = &loaded.document;
+            // Recipe bindings, against what this binary can actually grow. The
+            // loader cannot do this — it has no registry, deliberately, so a
+            // document stays checkable from a CI job with no binary's recipe
+            // list — so it happens here where the registry exists.
+            let registry = terrain_generators::default_registry();
+            let recipes = terrain_core::validate::validate_against(document, &registry.known());
+            if recipes.has_errors() {
+                eprintln!("{recipes}");
+                return ExitCode::FAILURE;
+            }
             if loaded.migration.migrated() {
                 println!(
                     "migrated from format version {} to {}",
@@ -283,6 +293,11 @@ fn validate(args: &DocumentArgs) -> ExitCode {
             );
             println!("  digest {}", document.digest());
             println!("  seed   {}", document.root_seed);
+            println!(
+                "  recipes {} registered: {}",
+                registry.len(),
+                registry.keys().collect::<Vec<_>>().join(", ")
+            );
             ExitCode::SUCCESS
         }
         Err(error) => {

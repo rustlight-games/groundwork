@@ -1,0 +1,262 @@
+// A path through a meadow, and everything that follows from it.
+//
+// The document the whole layer model exists to make possible. One spline says
+// where the path is, and **four separate layers** read it:
+//
+//   - the ground there is compacted dirt rather than grass
+//   - it is six centimetres lower
+//   - vegetation is suppressed across a slightly wider band
+//   - loose material is scattered on it
+//
+// None of those four is derivable from the others, and none of them needed the
+// path geometry to be duplicated. That is the payoff: the author writes the
+// spline once, and adjusting where the path runs moves the dirt, the rut, the
+// bare edge and the grit together, because they are all reading the same source.
+//
+// The suppression band is deliberately wider than the material band — 2.8 m
+// against 2.6 — because grass thins out slightly beyond where the ground stops
+// being grass. A path whose vegetation stops exactly where its dirt starts reads
+// as a decal.
+//
+// ## What this document does not have yet
+//
+// The spline itself. `SplineDistance` sources are declared, validate, and are
+// refused by `prepare` with a message saying so — see `terrain_core::prepare`.
+// A document that named one and silently sampled zero would load, validate, and
+// describe a meadow with no path in it, which is exactly the failure the refusal
+// exists to prevent.
+(
+    format: "terrain-document",
+    format_version: 1,
+    document: (
+        coordinate_system: "PlanarMetres",
+        root_seed: "5a17e33b0c9d2f14",
+
+        metadata: (
+            name: "Blend laboratory",
+            description: "A dirt path through lush grass, with everything that follows from it.",
+        ),
+
+        materials: [
+            (
+                key: "grass_lush",
+                display_name: "Lush Grass",
+                appearance: "surface.grass_lush",
+            ),
+            (
+                key: "dirt_compacted",
+                display_name: "Compacted Dirt",
+                appearance: "surface.dirt_compacted",
+            ),
+        ],
+
+        modifier_channels: [
+            (
+                key: "vegetation_density",
+                display_name: "Vegetation density",
+                range: (0.0, 1.5),
+                default_value: 1.0,
+                // Multiply, so two suppressions compound rather than fighting.
+                composition: "Multiply",
+                unit: "Unitless",
+            ),
+            (
+                key: "flower_abundance",
+                display_name: "Flower abundance",
+                range: (0.0, 1.0),
+                default_value: 0.08,
+                // Max, because a region *grants* flowers rather than modulating
+                // them: two overlapping meadow patches should not double them.
+                composition: "Max",
+                unit: "Unitless",
+            ),
+            (
+                key: "rock_abundance",
+                display_name: "Rock abundance",
+                range: (0.0, 1.0),
+                default_value: 0.0,
+                composition: "Max",
+                unit: "Unitless",
+            ),
+            (
+                key: "grit_abundance",
+                display_name: "Loose material",
+                range: (0.0, 1.0),
+                default_value: 0.0,
+                composition: "Max",
+                unit: "Unitless",
+            ),
+        ],
+
+        sources: [
+            (
+                key: "everywhere",
+                source: Constant((value: 1.0)),
+            ),
+            (
+                // The one geometry every path-related layer reads.
+                key: "main_path",
+                source: SplineDistance((
+                    asset: "features/main_path.spline.ron",
+                    // Bounds the spatial index as well as the value, so it is a
+                    // performance statement as much as a semantic one.
+                    max_distance_m: 6.0,
+                )),
+            ),
+            (
+                key: "meadow_richness",
+                source: Noise((
+                    kind: "Perlin",
+                    // Per metre, not per texel: resampling the output at a
+                    // different resolution must not change what the noise looks
+                    // like on the ground.
+                    frequency_per_m: 0.06,
+                    octaves: 3,
+                    lacunarity: 2.0,
+                    gain: 0.5,
+                    stream: "meadow",
+                )),
+            ),
+        ],
+
+        layers: [
+            (
+                key: "base_grass",
+                mask: Source("everywhere"),
+                operation: Material((
+                    material: "grass_lush",
+                    mode: "Replace",
+                    amount: 1.0,
+                )),
+            ),
+            (
+                key: "path_material",
+                mask: Profile((
+                    source: "main_path",
+                    shape: SmoothBand((inner_m: 1.5, outer_m: 2.6)),
+                )),
+                operation: Material((
+                    material: "dirt_compacted",
+                    // AddScore rather than Replace: the two materials mix across
+                    // the band, which is what makes the boundary a blend rather
+                    // than a cut.
+                    mode: "AddScore",
+                    amount: 1.0,
+                )),
+            ),
+            (
+                key: "path_depression",
+                mask: Profile((
+                    source: "main_path",
+                    shape: SmoothBand((inner_m: 1.4, outer_m: 2.3)),
+                )),
+                // Microrelief rather than Elevation: six centimetres is texture
+                // a renderer displaces with, not terrain the camera sees the
+                // shape of. See `MicroreliefLayer`.
+                operation: Microrelief((mode: "Add", metres: -0.06)),
+            ),
+            (
+                key: "path_vegetation_suppression",
+                mask: Profile((
+                    source: "main_path",
+                    // Wider than the material band. Grass thins slightly beyond
+                    // where the ground stops being grass, and a path whose
+                    // vegetation stops exactly where its dirt starts reads as a
+                    // decal.
+                    shape: SmoothBand((inner_m: 1.4, outer_m: 2.8)),
+                )),
+                operation: Modifier((
+                    channel: "vegetation_density",
+                    mode: "Multiply",
+                    value: 0.15,
+                )),
+            ),
+            (
+                key: "path_grit",
+                mask: Profile((
+                    source: "main_path",
+                    shape: SmoothBand((inner_m: 1.5, outer_m: 2.4)),
+                )),
+                operation: Modifier((
+                    channel: "grit_abundance",
+                    mode: "Max",
+                    value: 0.9,
+                )),
+            ),
+            (
+                key: "rich_meadow_flowers",
+                mask: Profile((
+                    source: "meadow_richness",
+                    shape: Ramp((low: 0.15, high: 0.6)),
+                )),
+                operation: Modifier((
+                    channel: "flower_abundance",
+                    mode: "Max",
+                    value: 0.55,
+                )),
+            ),
+            (
+                key: "rocky_ground",
+                mask: Profile((
+                    source: "meadow_richness",
+                    // Inverted: rocks where the meadow is poor.
+                    shape: Ramp((low: 0.4, high: -0.2)),
+                )),
+                operation: Modifier((
+                    channel: "rock_abundance",
+                    mode: "Max",
+                    value: 0.7,
+                )),
+            ),
+        ],
+
+        populations: [
+            (
+                key: "grass_population",
+                recipe: "population.grass_lush",
+                seed_stream: "grass",
+                material_affinity: [("grass_lush", 1.0)],
+                abundance_channel: Some("vegetation_density"),
+                parameters: [
+                    ("density", Number(400.0)),
+                    ("length_m", Number(0.22)),
+                ],
+            ),
+            (
+                key: "meadow_flowers",
+                recipe: "population.wildflowers_meadow",
+                seed_stream: "flowers",
+                material_affinity: [("grass_lush", 1.0)],
+                abundance_channel: Some("flower_abundance"),
+                parameters: [
+                    ("density", Number(6.0)),
+                    ("stem_length_m", Number(0.30)),
+                    ("head_radius_m", Number(0.012)),
+                ],
+            ),
+            (
+                key: "granite_rocks",
+                recipe: "population.granite_rocks",
+                seed_stream: "rocks",
+                // No affinity: a rock does not care what grows around it.
+                material_affinity: [],
+                abundance_channel: Some("rock_abundance"),
+                parameters: [
+                    ("density", Number(0.15)),
+                    ("radius_m", Number(0.25)),
+                ],
+            ),
+            (
+                key: "path_grit_scatter",
+                recipe: "population.dirt_scatter",
+                seed_stream: "grit",
+                material_affinity: [("dirt_compacted", 1.0)],
+                abundance_channel: Some("grit_abundance"),
+                parameters: [
+                    ("density", Number(40.0)),
+                    ("radius_m", Number(0.012)),
+                ],
+            ),
+        ],
+    ),
+)
