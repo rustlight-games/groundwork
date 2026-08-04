@@ -704,7 +704,7 @@ fn colony_of(seed: u64, root: Vec2, ground: &Ground) -> Colony {
 /// blade-scale contrast does not survive minification and colony-scale contrast
 /// does, so this is where the surface has to get its legibility from. Narrow it
 /// and a field seen from the game camera goes uniform.
-const COLONY_VIGOUR: (f32, f32) = (0.72, 1.30);
+const COLONY_VIGOUR: (f32, f32) = (0.62, 1.38);
 
 /// Straight down the screen, as a world azimuth.
 ///
@@ -890,12 +890,12 @@ fn grow_tuft(
     // disagrees structurally*: some tufts standing across the flow, and some
     // standing up out of it entirely.
     let dissent = draw.unit();
-    let heading = if dissent < 0.07 {
+    let heading = if dissent < 0.04 {
         // Across the colony, near a right angle. Few, and deliberately not
         // random — a tuft at ninety degrees to its neighbours interrupts the
         // band, where one at a random angle just blurs it.
         colony.heading + std::f32::consts::FRAC_PI_2 * draw.signed().signum() + draw.signed() * 0.35
-    } else if dissent < 0.15 {
+    } else if dissent < 0.09 {
         colony.heading + draw.signed() * 1.2
     } else {
         colony.heading + draw.signed() * COLONY_SPREAD
@@ -903,7 +903,7 @@ fn grow_tuft(
     // And a minority that leans hardly at all. A flow is only legible against
     // something upright; with nothing standing straight the whole field looks
     // combed rather than blown.
-    let upright = draw.chance(0.13);
+    let upright = draw.chance(0.08);
     // The colony's own vigour, on top of everything the mound field already
     // said. This is the term that makes one stretch of meadow read as lusher
     // than the next from across the map.
