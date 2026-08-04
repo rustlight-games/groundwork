@@ -72,6 +72,27 @@ fn main() {
             // and every trace misses its own cache entry.
             let page = Page::new(coordinate.as_vec2() * span, PAGE_PIXELS, PAGE_PIXELS);
 
+            // ## Why the trace is not done at the page's own resolution
+            //
+            // A page is baked at 96 pixels to the metre, and a grass blade is a
+            // few millimetres wide — under half a pixel. The rasteriser copes
+            // because it draws *marks*, which have a minimum width by
+            // construction. Cycles draws geometry, and geometry thinner than a
+            // pixel does not become a fine blade: it becomes a partially covered
+            // pixel, which at this density averages the whole canopy into a flat
+            // wash. The first traced page shipped like that and read as a square
+            // of grey-green felt dropped into the field.
+            //
+            // So the same patch of world is traced at several times the density
+            // and box-filtered down. Every output pixel then integrates a dozen
+            // real blades instead of sampling one badly.
+            let fine = Page::at_detail(
+                page.origin * options.supersample as f32,
+                PAGE_PIXELS * options.supersample,
+                PAGE_PIXELS * options.supersample,
+                options.supersample as f32,
+            );
+
             if !options.force && cache::load_from(&cache::directory(), &page, &params).is_some() {
                 skipped += 1;
                 continue;
@@ -81,7 +102,7 @@ fn main() {
                 samples: options.samples,
                 ..default()
             };
-            let grown = GrassScene::build(page, &field, &params);
+            let grown = GrassScene::build(fine, &field, &params);
             let scene = cycles::CyclesScene::build(&grown, &field, settings);
             let png = scratch.join("page.png");
             let _ = std::fs::remove_file(&png);
@@ -111,7 +132,9 @@ fn main() {
                 }
             }
 
-            match to_rgba(&png, PAGE_PIXELS) {
+            match to_rgba(&png, PAGE_PIXELS * options.supersample)
+                .map(|bytes| downsample(&bytes, PAGE_PIXELS, options.supersample))
+            {
                 Some(bytes) => match cache::store(&page, &params, &bytes) {
                     Ok(_) => traced += 1,
                     Err(error) => {
@@ -147,6 +170,38 @@ fn main() {
     println!("is a different picture — trace a radius that covers the view.");
 }
 
+/// Box-filter a traced page down to the size the game stores.
+///
+/// A plain box average, which is the right filter here rather than a lazy one: the
+/// samples being combined are a regular grid over one output pixel's own footprint,
+/// so every one of them belongs to it equally. Anything sharper would be inventing
+/// contrast the trace did not produce.
+fn downsample(rgba: &[u8], side: usize, factor: usize) -> Vec<u8> {
+    if factor <= 1 {
+        return rgba.to_vec();
+    }
+    let source = side * factor;
+    let area = (factor * factor) as u32;
+    let mut out = Vec::with_capacity(side * side * 4);
+    for y in 0..side {
+        for x in 0..side {
+            let mut sums = [0u32; 4];
+            for dy in 0..factor {
+                for dx in 0..factor {
+                    let index = ((y * factor + dy) * source + x * factor + dx) * 4;
+                    for (channel, sum) in sums.iter_mut().enumerate() {
+                        *sum += rgba[index + channel] as u32;
+                    }
+                }
+            }
+            for sum in sums {
+                out.push((sum / area) as u8);
+            }
+        }
+    }
+    out
+}
+
 /// Read the traced PNG as the RGBA bytes a texture wants.
 fn to_rgba(path: &std::path::Path, side: usize) -> Option<Vec<u8>> {
     let image = match image::open(path) {
@@ -170,6 +225,7 @@ fn to_rgba(path: &std::path::Path, side: usize) -> Option<Vec<u8>> {
 
 struct Options {
     radius: usize,
+    supersample: usize,
     seed: u64,
     samples: u32,
     density: f32,
@@ -184,6 +240,10 @@ impl Options {
             // camera height — enough to see the difference without committing an
             // afternoon to it.
             radius: 1,
+            // Three. A blade is then a pixel and a half rather than a third of
+            // one, which is the point where the canopy stops averaging itself
+            // away. Four is visibly better still and costs nearly twice as much.
+            supersample: 3,
             seed: BakeParams::default().seed,
             samples: 192,
             density: 8.0,
@@ -195,6 +255,9 @@ impl Options {
             let mut value = || arguments.next().unwrap_or_default();
             match argument.as_str() {
                 "--radius" => options.radius = value().parse().unwrap_or(options.radius),
+                "--supersample" => {
+                    options.supersample = value().parse().unwrap_or(options.supersample).clamp(1, 6);
+                }
                 "--seed" => options.seed = value().parse().unwrap_or(options.seed),
                 "--samples" => options.samples = value().parse().unwrap_or(options.samples),
                 "--density" => options.density = value().parse().unwrap_or(options.density),
@@ -202,7 +265,7 @@ impl Options {
                 "--force" => options.force = true,
                 "--help" | "-h" => {
                     println!(
-                        "grass_prebake [--radius N] [--seed N] [--samples N]\n\
+                        "grass_prebake [--radius N] [--supersample N] [--seed N] [--samples N]\n\
                          \x20             [--density N] [--length N] [--force]"
                     );
                     std::process::exit(0);
