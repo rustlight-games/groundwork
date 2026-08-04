@@ -38,6 +38,8 @@ struct Rib {
     /// in it at all.
     body_light: f32,
     under_light: f32,
+    /// Whether the owning stroke is rooted in the ground being rendered.
+    visible: bool,
 }
 
 /// Rasterises strokes into one page's [`Surface`].
@@ -62,6 +64,15 @@ pub struct Painter<'a> {
     scale: f32,
     /// Ribs per supersampled pixel of blade length.
     ribs_per_pixel: f32,
+    /// The ground the render is *about*, in world metres.
+    ///
+    /// `None` means the whole page is the picture, which is what a laboratory
+    /// plate wants and is the behaviour every caller had before there were tile
+    /// layouts. When it is set, a mark rooted outside it is still drawn — it
+    /// occludes and it is part of the neighbourhood every shading term reads —
+    /// but it is marked as not belonging to the silhouette. See
+    /// [`crate::surface::Surface::canopy_coverage`].
+    visible_ground: Option<(Vec2, Vec2)>,
     /// Reusable centreline buffer. See [`Painter::draw`].
     samples: Vec<BladeSample>,
 }
@@ -89,6 +100,7 @@ impl<'a> Painter<'a> {
             detail: px_per_metre / iso::PX_PER_METRE,
             scale,
             ribs_per_pixel: 2.0,
+            visible_ground: None,
             samples: Vec::new(),
         }
     }
@@ -97,6 +109,25 @@ impl<'a> Painter<'a> {
     pub fn with_ribs_per_pixel(mut self, ribs: f32) -> Self {
         self.ribs_per_pixel = ribs.max(0.5);
         self
+    }
+
+    /// Which ground the render is about, in world metres.
+    ///
+    /// Half-open, like every other rectangle here.
+    pub fn with_visible_ground(mut self, min: Vec2, max: Vec2) -> Self {
+        self.visible_ground = Some((min, max));
+        self
+    }
+
+    /// Whether a mark rooted here belongs to the picture.
+    #[inline]
+    fn roots_inside(&self, root: Vec3) -> bool {
+        match self.visible_ground {
+            None => true,
+            Some((min, max)) => {
+                root.x >= min.x && root.x < max.x && root.y >= min.y && root.y < max.y
+            }
+        }
     }
 
     /// Supersampled pixels per final pixel on this page.
@@ -195,6 +226,10 @@ impl<'a> Painter<'a> {
         let pen = self.scale * self.detail;
         let under = stroke.under * pen;
         let under_light = (stroke.base_light - 0.22).max(0.0);
+        // Decided once from the root, not per rib: a blade belongs to the
+        // picture or it does not, and the parts of it that lean past the edge
+        // belong with the rest of it.
+        let visible = self.roots_inside(stroke.root);
         for sample in &samples {
             // The rib runs along the blade's own width axis, projected. That is
             // not quite perpendicular to the projected centreline once the blade
@@ -223,6 +258,7 @@ impl<'a> Painter<'a> {
                     along: sample.along,
                     body_light: stroke.base_light + sample.tip_light - sample.root_shade,
                     under_light,
+                    visible,
                 },
             );
         }
@@ -258,6 +294,7 @@ impl<'a> Painter<'a> {
             along,
             body_light,
             under_light,
+            visible,
         } = rib;
         // The under-stroke goes on the side facing away from the light, which is
         // what makes it read as the blade's own shadow rather than as an
@@ -312,6 +349,7 @@ impl<'a> Painter<'a> {
                     along,
                     maturity: stroke.maturity,
                     underside,
+                    visible,
                 }
             } else {
                 let u = (offset * inverse_half).clamp(-1.0, 1.0);
@@ -328,6 +366,7 @@ impl<'a> Painter<'a> {
                     along,
                     maturity: stroke.maturity,
                     underside,
+                    visible,
                 }
             };
 
@@ -548,7 +587,7 @@ mod tests {
                 tip,
                 ..Default::default()
             });
-            surface.painted_map(96, 96).iter().sum::<f32>()
+            surface.canopy_coverage(96, 96, false).iter().sum::<f32>()
         };
         let pointed = paint(TipProfile::Pointed);
         let forked = paint(TipProfile::Forked {
@@ -588,7 +627,7 @@ mod tests {
         // Walk up the painted column and check there is no empty row between the
         // lowest and highest paint — a gap is a fork whose children begin
         // somewhere other than where the parent ended.
-        let painted = surface.painted_map(96, 96);
+        let painted = surface.canopy_coverage(96, 96, false);
         let rows: Vec<bool> = (0..96)
             .map(|y| (0..96).any(|x| painted[y * 96 + x] > 0.0))
             .collect();
@@ -624,7 +663,12 @@ mod tests {
             ..Default::default()
         });
         // It still draws something — collapsing must not delete the blade.
-        assert!(surface.painted_map(64, 64).iter().any(|p| *p > 0.0));
+        assert!(
+            surface
+                .canopy_coverage(64, 64, false)
+                .iter()
+                .any(|p| *p > 0.0)
+        );
     }
     #[test]
     fn a_blade_records_normals_that_face_different_ways_across_its_width() {

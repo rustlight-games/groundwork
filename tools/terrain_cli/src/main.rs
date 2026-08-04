@@ -182,6 +182,18 @@ impl ResolvedFraming {
     fn size(&self) -> (usize, usize) {
         (self.width, self.height)
     }
+
+    /// The ground this render is *of*, for a renderer that draws a silhouette.
+    ///
+    /// `None` for a manual plate: the whole rectangle is the picture, which is
+    /// what a laboratory plate has always meant.
+    fn visible_ground(&self) -> Option<terrain_bake::VisibleGround> {
+        let bounds = self.sample.as_ref()?.frame.visible_bounds();
+        Some(terrain_bake::VisibleGround::new(
+            Vec2::new(bounds.min.u_m as f32, bounds.min.v_m as f32),
+            Vec2::new(bounds.max.u_m as f32, bounds.max.v_m as f32),
+        ))
+    }
 }
 
 impl Framing {
@@ -788,6 +800,22 @@ fn save_rgb(path: &Path, bytes: &[u8], width: usize, height: usize) -> std::io::
     .map_err(std::io::Error::other)
 }
 
+/// Write a plate with its silhouette.
+///
+/// Straight RGBA, unpremultiplied. A PNG of a nine-tile layout is mostly
+/// background, and flattening it against a chosen colour here would bake that
+/// choice into every downstream comparison.
+fn save_rgba(path: &Path, plate: &terrain_bake::RenderImage) -> std::io::Result<()> {
+    image::save_buffer(
+        path,
+        &plate.to_rgba8(),
+        plate.width as u32,
+        plate.height as u32,
+        image::ColorType::Rgba8,
+    )
+    .map_err(std::io::Error::other)
+}
+
 /// Bake a plate through the cheap rasteriser.
 fn preview_export(args: &PreviewArgs) -> ExitCode {
     let framing = match args.framing.resolve() {
@@ -801,6 +829,7 @@ fn preview_export(args: &PreviewArgs) -> ExitCode {
     let params = BakeParams {
         seed: framing.seed,
         quality: args.quality,
+        visible: framing.visible_ground(),
         ..BakeParams::default()
     };
     let page = Page::at_detail(
@@ -816,17 +845,17 @@ fn preview_export(args: &PreviewArgs) -> ExitCode {
     // Padded, so every neighbourhood-reading shading term sees the ground that
     // is actually there rather than whatever part of it fell inside the
     // rectangle. See `bake_padded`.
-    let colours = terrain_bake::bake::bake_padded(page, &params);
-    if let Err(error) = save_rgb(
-        &args.out,
-        &terrain_bake::surface::to_rgb8(&colours),
-        width,
-        height,
-    ) {
+    let plate = terrain_bake::bake::bake_padded_image(page, &params);
+    let colours = plate.colour.clone();
+    if let Err(error) = save_rgba(&args.out, &plate) {
         eprintln!("cannot write {}: {error}", args.out.display());
         return ExitCode::FAILURE;
     }
-    println!("wrote {}", args.out.display());
+    println!(
+        "wrote {} ({:.0}% covered)",
+        args.out.display(),
+        plate.coverage() * 100.0
+    );
 
     if let (Some(sample), false) = (&framing.sample, args.no_sidecars) {
         let manifest = sample.manifest("preview-export", framing.preset, framing.fill);

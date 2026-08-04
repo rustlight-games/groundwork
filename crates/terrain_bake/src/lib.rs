@@ -40,11 +40,14 @@ pub mod request;
 pub mod shadow;
 pub mod surface;
 
-pub use bake::{BakeParams, BakeRegion, Passes, PreviewRasterStyle, bake, bake_padded};
+pub use bake::{
+    BakeParams, BakeRegion, Passes, PreviewRasterStyle, VisibleGround, bake, bake_image,
+    bake_padded, bake_padded_image,
+};
 pub use overlay::{GridStyle, draw_tile_grid, layout_mask, subject_mask};
 pub use painter::Painter;
 pub use request::{
     BakeManifest, BakeOutput, BakeRequest, BakeResolution, MANIFEST_VERSION, MipPolicy, PageLayout,
     PageRecord,
 };
-pub use surface::Surface;
+pub use surface::{RenderImage, Surface};

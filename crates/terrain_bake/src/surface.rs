@@ -121,11 +121,20 @@ struct Cell {
     /// dozen layers the answer is "opaque" and the difference stops mattering.
     optical: u8,
     /// Bit 0: the camera is looking at this surface's underside.
+    /// Bit 1: the owning mark is rooted inside the picture.
     flags: u8,
 }
 
 /// The owning mark faces away from the camera — this is its back.
 const FLAG_UNDERSIDE: u8 = 1;
+
+/// The owning mark is rooted inside the ground the render is *about*.
+///
+/// What separates a blade that belongs to the picture from one that is only in
+/// the scene to shade and occlude it. Both are drawn, because a halo mark
+/// removed from the camera pass takes its occlusion with it and leaves a bright
+/// rim; only this bit decides which of them the silhouette is made of.
+const FLAG_VISIBLE: u8 = 2;
 
 /// Sub-divisions of a reference pixel that [`Cell::top`] counts in.
 ///
@@ -198,6 +207,11 @@ pub struct Fragment {
     pub maturity: f32,
     /// Whether the camera sees this surface's back.
     pub underside: bool,
+    /// Whether the owning mark is rooted inside the ground being rendered.
+    ///
+    /// True for everything unless a caller has said which ground is in the
+    /// picture, so a plate that is not a tile layout behaves exactly as it did.
+    pub visible: bool,
 }
 
 /// The composited state of one page, at supersampled resolution.
@@ -277,7 +291,7 @@ impl Surface {
                 FLAG_UNDERSIDE
             } else {
                 0
-            };
+            } | if fragment.visible { FLAG_VISIBLE } else { 0 };
             // A blade covering bare earth is a blade, not earth.
             cell.soil = 0;
         }
@@ -368,10 +382,22 @@ impl Surface {
         heights
     }
 
-    /// Coverage helper for shape-bound tests. Production pages lay a floor
-    /// before strokes, so this intentionally remains test-only.
-    #[cfg(test)]
-    pub(crate) fn painted_map(&self, final_width: usize, final_height: usize) -> Vec<f32> {
+    /// How much of each final pixel a mark owns, `0..1`.
+    ///
+    /// A mark rather than the floor, which is what `depth.is_finite()` means: the
+    /// floor is laid at negative infinity and every mark writes a real depth.
+    ///
+    /// `visible_only` restricts it to marks rooted inside the ground the render
+    /// is about, and that is what the isometric silhouette is made of. A blade
+    /// rooted in an outer tile may lean past the layout's edge and stay in the
+    /// picture; a blade rooted beyond the layout entirely is in the scene to
+    /// shade and occlude, and must not appear.
+    pub fn canopy_coverage(
+        &self,
+        final_width: usize,
+        final_height: usize,
+        visible_only: bool,
+    ) -> Vec<f32> {
         let mut painted = vec![0.0; final_width * final_height];
         let step = self.supersample;
         let inverse = 1.0 / (step * step) as f32;
@@ -382,7 +408,10 @@ impl Surface {
                     let row = (y * step + sy) * self.width + x * step;
                     count += self.cells[row..row + step]
                         .iter()
-                        .filter(|cell| cell.depth.is_finite())
+                        .filter(|cell| {
+                            cell.depth.is_finite()
+                                && (!visible_only || cell.flags & FLAG_VISIBLE != 0)
+                        })
                         .count();
                 }
                 painted[y * final_width + x] = count as f32 * inverse;
@@ -427,6 +456,53 @@ impl Surface {
             }
         }
         total / (step * step) as f32
+    }
+}
+
+/// A finished plate with a silhouette.
+///
+/// Colour and coverage kept apart rather than as four-channel pixels, because
+/// almost everything downstream wants one or the other: the comparison suite
+/// wants colour, a mask wants coverage, and a PNG writer interleaves them at the
+/// last moment. Premultiplying would be worse still — a training corpus whose
+/// target had been multiplied by its own alpha would teach a network that thin
+/// grass is dark grass.
+#[derive(Clone, Debug)]
+pub struct RenderImage {
+    pub colour: Vec<Vec3>,
+    /// How much of each pixel is picture rather than background, `0..1`.
+    pub alpha: Vec<f32>,
+    pub width: usize,
+    pub height: usize,
+}
+
+impl RenderImage {
+    /// A fully opaque plate, for a caller that has no silhouette.
+    pub fn opaque(colour: Vec<Vec3>, width: usize, height: usize) -> Self {
+        Self {
+            alpha: vec![1.0; colour.len()],
+            colour,
+            width,
+            height,
+        }
+    }
+
+    /// Interleave into the RGBA bytes a PNG wants.
+    pub fn to_rgba8(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.colour.len() * 4);
+        for (colour, alpha) in self.colour.iter().zip(&self.alpha) {
+            bytes.extend_from_slice(&palette::to_bytes(*colour));
+            bytes.push((alpha.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        }
+        bytes
+    }
+
+    /// What fraction of the plate is covered at all.
+    pub fn coverage(&self) -> f32 {
+        if self.alpha.is_empty() {
+            return 0.0;
+        }
+        self.alpha.iter().sum::<f32>() / self.alpha.len() as f32
     }
 }
 
@@ -563,6 +639,7 @@ mod tests {
             along: 0.5,
             maturity: 0.5,
             underside: false,
+            visible: true,
         }
     }
 
@@ -600,6 +677,69 @@ mod tests {
         assert_eq!(surface.optical_at(0), 5.0);
         // And the visible surface is still the near one.
         assert_eq!(surface.pixel(0).1, Tone::Grass);
+    }
+
+    #[test]
+    fn only_marks_rooted_in_the_picture_make_the_silhouette() {
+        // The whole isometric silhouette rests on this. A halo mark is drawn —
+        // removing it from the camera pass takes its occlusion with it and
+        // leaves a bright rim — but it is not part of what the render is *of*.
+        let mut surface = Surface::at_supersample(2, 1, 2);
+        let halo = Fragment {
+            visible: false,
+            ..fragment(1.0, 0.5, Tone::Grass, 4.0)
+        };
+        let inside = fragment(2.0, 0.5, Tone::Grass, 4.0);
+        // Two final pixels, each backed by a two-by-two block of a four-wide
+        // buffer. The left one is halo only; the right is won by an inside mark.
+        for index in [0, 1, 4, 5] {
+            surface.write(index, halo);
+        }
+        for index in [2, 3, 6, 7] {
+            surface.write(index, inside);
+        }
+        let all = surface.canopy_coverage(2, 1, false);
+        let visible = surface.canopy_coverage(2, 1, true);
+        assert_eq!(all, vec![1.0, 1.0]);
+        assert_eq!(visible, vec![0.0, 1.0]);
+    }
+
+    #[test]
+    fn a_nearer_visible_mark_takes_the_pixel_from_a_halo_one() {
+        // And the flag follows the winner, so a halo blade in front of an
+        // inside one does not lend it a silhouette.
+        let mut surface = Surface::at_supersample(1, 1, 1);
+        surface.write(0, fragment(1.0, 0.5, Tone::Grass, 4.0));
+        surface.write(
+            0,
+            Fragment {
+                visible: false,
+                ..fragment(5.0, 0.5, Tone::Grass, 4.0)
+            },
+        );
+        assert_eq!(surface.canopy_coverage(1, 1, true)[0], 0.0);
+        assert_eq!(surface.canopy_coverage(1, 1, false)[0], 1.0);
+    }
+
+    #[test]
+    fn a_plate_interleaves_to_rgba_and_keeps_its_colour_unmultiplied() {
+        // A corpus whose target had been premultiplied would teach a network
+        // that thin grass is dark grass.
+        let image = RenderImage {
+            colour: vec![Vec3::new(1.0, 0.5, 0.0), Vec3::ONE],
+            alpha: vec![0.0, 1.0],
+            width: 2,
+            height: 1,
+        };
+        let bytes = image.to_rgba8();
+        assert_eq!(bytes.len(), 8);
+        assert_eq!(&bytes[0..4], &[255, 128, 0, 0]);
+        assert_eq!(&bytes[4..8], &[255, 255, 255, 255]);
+        assert_eq!(image.coverage(), 0.5);
+        assert_eq!(
+            RenderImage::opaque(vec![Vec3::ZERO; 4], 2, 2).coverage(),
+            1.0
+        );
     }
 
     #[test]

@@ -30,7 +30,7 @@ use crate::lighting::{self, FormWeights};
 use crate::painter::Painter;
 use crate::palette;
 use crate::shadow::{self, ShadowMap};
-use crate::surface::{Surface, blur};
+use crate::surface::{RenderImage, Surface, blur};
 use terrain_generators::field::WorldField;
 use terrain_generators::iso;
 use terrain_generators::page::Page;
@@ -85,6 +85,48 @@ pub struct BakeParams {
 
     /// How the cheap rasteriser draws it. See [`PreviewRasterStyle`].
     pub raster: PreviewRasterStyle,
+
+    /// The ground the picture is *about*. See [`VisibleGround`].
+    ///
+    /// `None` means the whole page, which is what a laboratory plate wants and
+    /// is how every caller behaved before there were tile layouts.
+    pub visible: Option<VisibleGround>,
+}
+
+/// The ground a render is of, as opposed to the ground it is generated over.
+///
+/// The distinction the isometric silhouette rests on. A page is a rectangle and
+/// a nine-tile layout is a *diamond* inside it, so most of what gets generated —
+/// and all of what gets generated in the padding — exists to make the diamond
+/// correct rather than to be seen.
+///
+/// It is deliberately not a clip. Everything is still grown, drawn and shaded:
+/// a mark removed from the camera pass takes its occlusion with it, and every
+/// neighbourhood-reading shading term inside the diamond would then be reading a
+/// canopy that stops at the edge. This only decides what the plate's *alpha* is
+/// made of.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VisibleGround {
+    /// World metres, half-open like every other rectangle here.
+    pub min: Vec2,
+    pub max: Vec2,
+}
+
+impl VisibleGround {
+    pub fn new(min: Vec2, max: Vec2) -> Self {
+        Self {
+            min: min.min(max),
+            max: min.max(max),
+        }
+    }
+
+    #[inline]
+    pub fn contains(&self, point: Vec2) -> bool {
+        point.x >= self.min.x
+            && point.x < self.max.x
+            && point.y >= self.min.y
+            && point.y < self.max.y
+    }
 }
 
 impl BakeParams {
@@ -96,6 +138,12 @@ impl BakeParams {
             light: self.light,
             style: self.style,
         }
+    }
+
+    /// This bake, of a named piece of ground.
+    pub fn showing(mut self, visible: VisibleGround) -> Self {
+        self.visible = Some(visible);
+        self
     }
 }
 
@@ -345,6 +393,7 @@ impl Default for BakeParams {
             light: grass.light,
             style: grass.style,
             raster: PreviewRasterStyle::default(),
+            visible: None,
         }
     }
 }
@@ -598,6 +647,18 @@ impl Macro {
 /// like the expensive one and the shading pass is nine times the pixels.
 /// `benches/bake.rs` times each of them separately for exactly that reason.
 pub fn bake(page: Page, params: &BakeParams) -> Vec<Vec3> {
+    bake_image(page, params).colour
+}
+
+/// Bake one page, colour and silhouette.
+///
+/// The same five stages as [`bake`], and one more question answered: which of
+/// these pixels are *picture*. For a laboratory plate the answer is all of them.
+/// For a tile layout it is the projected diamond of the visible ground, plus
+/// whatever grass rooted inside it leans past that edge — which is what makes
+/// the result read as isometric ground rather than as a rectangle with a grid
+/// drawn on it.
+pub fn bake_image(page: Page, params: &BakeParams) -> RenderImage {
     let field = WorldField::lit_by(params.seed, params.light);
     let lattice = Macro::build(&page, &field);
     // One scene, rendered twice: once from the sun into a depth buffer and once
@@ -614,10 +675,62 @@ pub fn bake(page: Page, params: &BakeParams) -> Vec<Vec3> {
         let mut painter =
             Painter::at_scale(&mut surface, page.origin, params.light, page.px_per_metre)
                 .with_ribs_per_pixel(params.quality.ribs_per_pixel());
+        if let Some(visible) = params.visible {
+            painter = painter.with_visible_ground(visible.min, visible.max);
+        }
         painter.draw_scene(&scene);
     }
     let shadows = cast_shadows(&scene, params);
-    resolve_lit(&surface, &page, &lattice, params, shadows.as_deref())
+    let colour = resolve_lit(&surface, &page, &lattice, params, shadows.as_deref());
+    let alpha = match params.visible {
+        None => vec![1.0; colour.len()],
+        Some(visible) => silhouette(&surface, &page, visible),
+    };
+    RenderImage {
+        colour,
+        alpha,
+        width: page.width,
+        height: page.height,
+    }
+}
+
+/// How many samples on each axis the ground mask is tested at.
+///
+/// Four. The layout's edges run at two to one, and a hard test on a two-to-one
+/// diagonal is a staircase — on the one edge in the picture that is supposed to
+/// read as a clean isometric silhouette.
+const SILHOUETTE_STEPS: usize = 4;
+
+/// What of a plate is picture: the visible ground, and the grass over it.
+///
+/// A union rather than an intersection, and each half is there for a different
+/// reason. The ground gives the diamond its shape. The canopy lets a blade
+/// rooted in an outer tile lean past that shape and stay in the frame, which is
+/// the difference between an edge and a crop — grass cut off dead straight along
+/// a diagonal is the most obviously synthetic thing a meadow can do.
+fn silhouette(surface: &Surface, page: &Page, visible: VisibleGround) -> Vec<f32> {
+    let canopy = surface.canopy_coverage(page.width, page.height, true);
+    let inverse = 1.0 / (SILHOUETTE_STEPS * SILHOUETTE_STEPS) as f32;
+    let mut alpha = vec![0.0f32; page.width * page.height];
+    for y in 0..page.height {
+        for x in 0..page.width {
+            let mut inside = 0usize;
+            for sy in 0..SILHOUETTE_STEPS {
+                for sx in 0..SILHOUETTE_STEPS {
+                    let pixel = Vec2::new(
+                        x as f32 + (sx as f32 + 0.5) / SILHOUETTE_STEPS as f32,
+                        y as f32 + (sy as f32 + 0.5) / SILHOUETTE_STEPS as f32,
+                    );
+                    if visible.contains(page.ground_at(pixel)) {
+                        inside += 1;
+                    }
+                }
+            }
+            let index = y * page.width + x;
+            alpha[index] = (inside as f32 * inverse).max(canopy[index]).clamp(0.0, 1.0);
+        }
+    }
+    alpha
 }
 
 /// Render the scene from the sun, once per sample over its disc.
@@ -725,6 +838,11 @@ fn shading_reach(params: &BakeParams) -> usize {
 ///
 /// [`BakeRegion`]: BakeRegion
 pub fn bake_padded(page: Page, params: &BakeParams) -> Vec<Vec3> {
+    bake_padded_image(page, params).colour
+}
+
+/// [`bake_padded`], with the silhouette.
+pub fn bake_padded_image(page: Page, params: &BakeParams) -> RenderImage {
     let pad = page.radius(shading_reach(params));
     let grown = Page {
         origin: page.origin - Vec2::splat(pad as f32),
@@ -732,12 +850,22 @@ pub fn bake_padded(page: Page, params: &BakeParams) -> Vec<Vec3> {
         height: page.height + pad * 2,
         px_per_metre: page.px_per_metre,
     };
-    let plate = bake(grown, params);
+    let plate = bake_image(grown, params);
 
-    let mut cropped = Vec::with_capacity(page.width * page.height);
+    let mut cropped = RenderImage {
+        colour: Vec::with_capacity(page.width * page.height),
+        alpha: Vec::with_capacity(page.width * page.height),
+        width: page.width,
+        height: page.height,
+    };
     for row in 0..page.height {
         let start = (row + pad) * grown.width + pad;
-        cropped.extend_from_slice(&plate[start..start + page.width]);
+        cropped
+            .colour
+            .extend_from_slice(&plate.colour[start..start + page.width]);
+        cropped
+            .alpha
+            .extend_from_slice(&plate.alpha[start..start + page.width]);
     }
     cropped
 }
@@ -1889,6 +2017,156 @@ fn directional_shadow(
 #[cfg(test)]
 mod tests {
 
+    /// A page framed the way a nine-tile render frames one, small enough to
+    /// bake in a test: the layout's outer diamond centred in the plate.
+    fn nine_tile_page(side_m: f32, px_per_metre: f32, plate: usize) -> (Page, VisibleGround) {
+        let visible = VisibleGround::new(Vec2::ZERO, Vec2::splat(side_m * 3.0));
+        let centre = iso::to_cache_at(Vec2::splat(side_m * 1.5).extend(0.0), px_per_metre);
+        let page = Page::at_detail(
+            centre - Vec2::splat(plate as f32 * 0.5),
+            plate,
+            plate,
+            px_per_metre / iso::PX_PER_METRE,
+        );
+        (page, visible)
+    }
+
+    #[test]
+    fn a_plate_with_no_visible_ground_is_the_opaque_plate_it_always_was() {
+        // The behaviour every existing caller has, kept by construction rather
+        // than by remembering to pass something.
+        let page = Page::new(Vec2::ZERO, 24, 24);
+        let image = bake_image(page, &BakeParams::default());
+        assert_eq!(image.width, 24);
+        assert!(image.alpha.iter().all(|a| *a == 1.0));
+        assert_eq!(image.coverage(), 1.0);
+        // And the colour is the same colour `bake` returns.
+        assert_eq!(image.colour, bake(page, &BakeParams::default()));
+    }
+
+    #[test]
+    fn the_silhouette_is_the_projected_diamond_of_the_visible_ground() {
+        // The whole isometric look, and the number is checkable: a square of
+        // ground projects to a diamond, and a diamond is half its own bounding
+        // box. Anything much above that is grass leaking outside; anything much
+        // below is ground being cut off.
+        let (page, visible) = nine_tile_page(1.0, 48.0, 192);
+        let params = BakeParams::default().showing(visible);
+        let image = bake_image(page, &params);
+
+        // Three metres of ground at 48 px/m is a 288×144 diamond inside a
+        // 192×192 plate, clipped to the plate on the long axis.
+        let corners = [0, 191, 191 * 192, 191 * 192 + 191];
+        for corner in corners {
+            assert_eq!(image.alpha[corner], 0.0, "a plate corner is opaque");
+        }
+        let middle = 96 * 192 + 96;
+        assert_eq!(image.alpha[middle], 1.0, "the middle is transparent");
+
+        // Partly covered pixels along the two-to-one edges, rather than a
+        // staircase.
+        let ramped = image
+            .alpha
+            .iter()
+            .filter(|a| **a > 0.0 && **a < 1.0)
+            .count();
+        assert!(ramped > 100, "only {ramped} pixels are partly covered");
+    }
+
+    #[test]
+    fn grass_rooted_inside_the_layout_may_lean_past_its_edge() {
+        // The difference between an edge and a crop. Grass cut off dead
+        // straight along a diagonal is the most obviously synthetic thing a
+        // meadow can do, so the silhouette is the union of the ground and the
+        // canopy over it — never the ground alone.
+        let (page, visible) = nine_tile_page(1.0, 48.0, 192);
+        let image = bake_image(page, &BakeParams::default().showing(visible));
+
+        // The ground alone, for comparison: the same plate with every mark
+        // ignored.
+        let ground_only = silhouette(
+            &Surface::at_supersample(page.width, page.height, 1),
+            &page,
+            visible,
+        );
+        let ground: f32 = ground_only.iter().sum();
+        let whole: f32 = image.alpha.iter().sum();
+        assert!(
+            whole > ground,
+            "nothing overhangs: {whole} against {ground} of bare ground"
+        );
+        // And not by much — an overhang is a fringe of blades, not a halo.
+        assert!(
+            whole < ground * 1.20,
+            "the silhouette grew by {:.0}%, which is a halo rather than a fringe",
+            (whole / ground - 1.0) * 100.0
+        );
+    }
+
+    #[test]
+    fn grass_rooted_outside_the_layout_is_shaded_in_and_never_shown() {
+        // Both halves matter. A halo mark removed from the camera pass takes
+        // its occlusion with it and leaves a bright rim; a halo mark included
+        // in the silhouette makes the layout's edge ragged with grass that is
+        // not in the picture.
+        let (page, visible) = nine_tile_page(1.0, 48.0, 192);
+        let params = BakeParams::default().showing(visible);
+        let image = bake_image(page, &params);
+
+        // Every opaque pixel is either over the visible ground or within a
+        // blade's reach of it. A halo mark shown would land much further out,
+        // because the plate covers a good deal more ground than the layout.
+        //
+        // The bound is two and a half blade lengths, and the two is not padding:
+        // a tip `h` metres up unprojects to a ground point `h` metres nearer the
+        // camera on *each* axis, and the blade can lean by its own length on top
+        // of that. The half is the margin.
+        let reach = params.style.blade_length.1 * 2.5;
+        let generous = VisibleGround::new(
+            visible.min - Vec2::splat(reach),
+            visible.max + Vec2::splat(reach),
+        );
+        for y in 0..page.height {
+            for x in 0..page.width {
+                if image.alpha[y * page.width + x] <= 0.0 {
+                    continue;
+                }
+                let ground = page.ground_at(Vec2::new(x as f32 + 0.5, y as f32 + 0.5));
+                assert!(
+                    generous.contains(ground),
+                    "({x}, {y}) is opaque over {ground:?}, well outside the layout"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_silhouette_does_not_change_the_colour_under_it() {
+        // The silhouette decides what is shown, never what it looks like. If
+        // asking for one re-shaded the plate, a masked render and an unmasked
+        // one could not be compared, and the whole point of the mask is to
+        // compare them.
+        let (page, visible) = nine_tile_page(1.0, 48.0, 96);
+        let plain = bake(page, &BakeParams::default());
+        let masked = bake_image(page, &BakeParams::default().showing(visible));
+        for (a, b) in plain.iter().zip(&masked.colour) {
+            assert!((*a - *b).length() < 1.0e-6, "{a:?} against {b:?}");
+        }
+    }
+
+    #[test]
+    fn a_padded_bake_crops_its_silhouette_with_its_colour() {
+        // An off-by-one between the two channels is a picture whose alpha is a
+        // row out, which reads as a hairline of background along one edge.
+        let (page, visible) = nine_tile_page(1.0, 48.0, 64);
+        let params = BakeParams::default().showing(visible);
+        let padded = bake_padded_image(page, &params);
+        assert_eq!(padded.width, 64);
+        assert_eq!(padded.colour.len(), 64 * 64);
+        assert_eq!(padded.alpha.len(), padded.colour.len());
+        assert_eq!(padded.colour, bake_padded(page, &params));
+    }
+
     #[test]
     fn a_region_tiles_its_own_pages_exactly() {
         let region = BakeRegion::square(Vec2::new(-256.0, -256.0), 2, 128);
@@ -2484,7 +2762,7 @@ mod tests {
                 // height therefore measures the reach of the *tall* part of a
                 // mark and calls it the reach of the mark. The density channel
                 // counts writes, so it sees all of it.
-                let painted = surface.painted_map(512, 512);
+                let painted = surface.canopy_coverage(512, 512, false);
                 for y in 0..512 {
                     for x in 0..512 {
                         if painted[y * 512 + x] > 0.0 {
@@ -2552,7 +2830,7 @@ mod tests {
                 // height therefore measures the reach of the *tall* part of a
                 // mark and calls it the reach of the mark. The density channel
                 // counts writes, so it sees all of it.
-                let painted = surface.painted_map(512, 512);
+                let painted = surface.canopy_coverage(512, 512, false);
                 for y in 0..512 {
                     for x in 0..512 {
                         if painted[y * 512 + x] > 0.0 {
