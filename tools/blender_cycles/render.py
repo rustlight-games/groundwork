@@ -117,15 +117,49 @@ def build_blades(scene_dir, spec, settings):
     ribs = spec["ribs_per_blade"]
     across = spec["vertices_per_rib"]
     if count == 0:
-        return None
+        return []
 
     per_blade = ribs * across
     raw = np.fromfile(os.path.join(scene_dir, spec["path"]), dtype=np.float32)
     expected = count * per_blade * 3
     if raw.size != expected:
         raise SystemExit(f"blades.bin has {raw.size} floats, expected {expected}")
+    attributes = np.fromfile(
+        os.path.join(scene_dir, spec["attributes"]), dtype=np.float32
+    ).reshape(count, spec["attributes_per_blade"])
 
-    mesh = bpy.data.meshes.new("grass")
+    # The buffer is sorted: the blades rooted inside the ground being rendered
+    # come first, and the halo follows. The halo is built as a second object,
+    # hidden from the camera and left casting shadows — dropping it instead would
+    # take its shadows with it and leave a bright rim exactly at the edge of the
+    # picture, which is where the eye goes.
+    visible = spec.get("visible", count)
+    spans = [("grass", 0, visible), ("grass-halo", visible, count)]
+    material = blade_material(settings)
+    objects = []
+    for name, first, last in spans:
+        if last <= first:
+            continue
+        obj = build_blade_span(
+            name,
+            raw[first * per_blade * 3 : last * per_blade * 3],
+            attributes[first:last],
+            last - first,
+            ribs,
+            across,
+            material,
+        )
+        if name == "grass-halo":
+            obj.visible_camera = False
+            obj.visible_shadow = True
+        objects.append(obj)
+    return objects
+
+
+def build_blade_span(name, raw, attributes, count, ribs, across, material):
+    """One mesh from a run of the ribbon buffer."""
+    per_blade = ribs * across
+    mesh = bpy.data.meshes.new(name)
     mesh.vertices.add(count * per_blade)
     mesh.vertices.foreach_set("co", raw)
 
@@ -157,20 +191,17 @@ def build_blades(scene_dir, spec, settings):
     # average different pairs of triangles.
     mesh.shade_smooth()
 
-    attributes = np.fromfile(
-        os.path.join(scene_dir, spec["attributes"]), dtype=np.float32
-    ).reshape(count, spec["attributes_per_blade"])
     # Per-blade attributes reach the shader through Attribute nodes by name, so
     # the material can vary without the geometry changing. Repeated to the face
     # domain because that is the coarsest domain every vertex of a blade shares.
     per_face = faces.shape[0] // count
-    for index, name in enumerate(("maturity", "moisture", "tone", "exposure")):
-        layer = mesh.attributes.new(name=name, type="FLOAT", domain="FACE")
+    for index, channel in enumerate(("maturity", "moisture", "tone", "exposure")):
+        layer = mesh.attributes.new(name=channel, type="FLOAT", domain="FACE")
         layer.data.foreach_set("value", np.repeat(attributes[:, index], per_face))
 
-    obj = bpy.data.objects.new("grass", mesh)
+    obj = bpy.data.objects.new(name, mesh)
     bpy.context.collection.objects.link(obj)
-    obj.data.materials.append(blade_material(settings))
+    obj.data.materials.append(material)
     return obj
 
 
@@ -803,8 +834,14 @@ def configure_render(render_spec, camera_spec, output):
     scene.render.resolution_percentage = 100
     scene.render.filepath = output
     scene.render.image_settings.file_format = "PNG"
-    scene.render.image_settings.color_mode = "RGB"
     scene.render.image_settings.color_depth = "8"
+
+    # A nine-tile render is a diamond of ground inside a rectangular frame, so
+    # the film has to be transparent and the plate has to carry the silhouette.
+    # Always RGBA: the driver reads four channels either way, and one plate
+    # format is one fewer thing for a caller to know about.
+    scene.render.film_transparent = bool(render_spec.get("film_transparent"))
+    scene.render.image_settings.color_mode = "RGBA"
 
     # The dimetric stretch. See `terrain_scene::projection`.
     scene.render.pixel_aspect_x = 1.0
@@ -931,7 +968,7 @@ def render_one(header_path, output):
         f"[blender_cycles] built {spec['blades']['count']} curves "
         f"({spec['ground']['rows']}x{spec['ground']['columns']} ground) in {built - started:.1f}s"
     )
-    if blades is None:
+    if not blades:
         print("[blender_cycles] warning: no blades in this scene")
     _ = ground
 

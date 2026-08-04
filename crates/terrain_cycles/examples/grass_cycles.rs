@@ -51,6 +51,10 @@ fn main() {
         supersample: options.supersample,
         tiles: options.tiles,
         blade_width: options.blade_width,
+        // A hand-framed laboratory plate: the whole rectangle is the picture,
+        // so there is no silhouette to cut. `terrain render --layout nine` is
+        // the path that asks for one.
+        visible: None,
         settings: RenderSettings {
             samples: options.samples,
             device: options.device.clone(),

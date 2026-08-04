@@ -165,6 +165,12 @@ pub struct PlateRequest {
     pub tiles: usize,
     /// Zero derives it from the framing — see [`blade_width_for`].
     pub blade_width: f32,
+    /// The ground the render is *of*, in world metres. `None` is the whole page.
+    ///
+    /// Set it and the film goes transparent, the ground mesh ends at this
+    /// rectangle, and blades rooted outside it shadow inward without appearing.
+    /// See [`crate::cycles::RenderSettings::visible_ground`].
+    pub visible: Option<(Vec2, Vec2)>,
     pub settings: RenderSettings,
     /// Where the exported scene package is staged.
     pub scene_dir: PathBuf,
@@ -183,6 +189,7 @@ impl PlateRequest {
             supersample: 0,
             tiles: 0,
             blade_width: 0.0,
+            visible: None,
             settings: RenderSettings::default(),
             scene_dir: PathBuf::from("target/cycles-scene"),
             keep_scene: false,
@@ -264,8 +271,13 @@ impl PlatePlan {
     }
 }
 
-/// A finished plate, in RGB8.
+/// A finished plate, in RGBA8.
+///
+/// Four channels whether or not the film was transparent, because the
+/// alternative is two plate types and a caller that has to know which it got.
+/// An opaque trace fills the alpha with 255 and nothing downstream has to care.
 pub struct Plate {
+    /// Interleaved RGBA, unpremultiplied.
     pub pixels: Vec<u8>,
     pub width: usize,
     pub height: usize,
@@ -273,6 +285,9 @@ pub struct Plate {
     pub blades: usize,
     pub plan: PlatePlan,
 }
+
+/// Channels in a plate's buffer.
+const CHANNELS: usize = 4;
 
 impl Plate {
     /// Write the plate as a PNG.
@@ -282,8 +297,29 @@ impl Plate {
             &self.pixels,
             self.width as u32,
             self.height as u32,
-            image::ColorType::Rgb8,
+            image::ColorType::Rgba8,
         )
+    }
+
+    /// The colour channels alone.
+    pub fn rgb(&self) -> Vec<u8> {
+        self.pixels
+            .chunks_exact(CHANNELS)
+            .flat_map(|pixel| pixel[..3].to_vec())
+            .collect()
+    }
+
+    /// What fraction of the plate is picture rather than background.
+    pub fn coverage(&self) -> f32 {
+        if self.pixels.is_empty() {
+            return 0.0;
+        }
+        let total: u64 = self
+            .pixels
+            .chunks_exact(CHANNELS)
+            .map(|pixel| pixel[3] as u64)
+            .sum();
+        total as f32 / (255.0 * (self.pixels.len() / CHANNELS) as f32)
     }
 }
 
@@ -361,7 +397,7 @@ pub fn trace(
 ) -> Result<Plate, PlateError> {
     let plan = PlatePlan::resolve(request, params);
     let blender = cycles::blender_path();
-    let mut canvas = vec![0u8; request.width * request.height * 3];
+    let mut canvas = vec![0u8; request.width * request.height * CHANNELS];
     let mut blades = 0usize;
 
     for row in 0..plan.tiles_across {
@@ -393,6 +429,7 @@ pub fn trace(
             let settings = RenderSettings {
                 ribs: plan.ribs,
                 blade_width: plan.blade_width,
+                visible_ground: request.visible,
                 ..request.settings.clone()
             };
             let scene = CyclesScene::build(&grown, field, settings);
@@ -461,6 +498,12 @@ pub fn trace(
 /// the trace is already a supersampled estimate of the same integral — a
 /// windowed filter here would be weighting samples that are already unweighted
 /// draws from the pixel's own area, which is not sharpening, it is bias.
+///
+/// **Colour is weighted by coverage and alpha is not.** With a transparent film
+/// the background samples come back black with zero alpha, and averaging them
+/// into the colour unweighted would darken every edge of the diamond and every
+/// blade against the sky — a black fringe on precisely the silhouette this whole
+/// change exists to produce.
 fn place_tile(
     path: &Path,
     canvas: &mut [u8],
@@ -475,14 +518,15 @@ fn place_tile(
             path: path.to_path_buf(),
             error: error.to_string(),
         })?
-        .to_rgb8();
+        .to_rgba8();
     let stride = image.width() as usize;
     let rows = image.height() as usize;
-    let area = (supersample * supersample) as u32;
+    let area = (supersample * supersample) as f32;
 
     for y in 0..h {
         for x in 0..w {
-            let mut sums = [0u32; 3];
+            let mut colour = [0.0f32; 3];
+            let mut coverage = 0.0f32;
             for dy in 0..supersample {
                 for dx in 0..supersample {
                     let sx = guard + x * supersample + dx;
@@ -491,15 +535,22 @@ fn place_tile(
                         continue;
                     }
                     let pixel = image.get_pixel(sx as u32, sy as u32);
-                    for (channel, sum) in sums.iter_mut().enumerate() {
-                        *sum += pixel[channel] as u32;
+                    let alpha = pixel[3] as f32 / 255.0;
+                    for (channel, sum) in colour.iter_mut().enumerate() {
+                        *sum += pixel[channel] as f32 * alpha;
                     }
+                    coverage += alpha;
                 }
             }
-            let target = ((y0 + y) * canvas_width + x0 + x) * 3;
-            for (channel, sum) in sums.iter().enumerate() {
-                canvas[target + channel] = (sum / area) as u8;
+            let target = ((y0 + y) * canvas_width + x0 + x) * CHANNELS;
+            for (channel, sum) in colour.iter().enumerate() {
+                canvas[target + channel] = if coverage > 0.0 {
+                    (sum / coverage).round().clamp(0.0, 255.0) as u8
+                } else {
+                    0
+                };
             }
+            canvas[target + 3] = ((coverage / area) * 255.0).round().clamp(0.0, 255.0) as u8;
         }
     }
     Ok(())
@@ -627,6 +678,49 @@ mod tests {
                 "{width}x{height} is not covered exactly once by its tiles"
             );
         }
+    }
+
+    #[test]
+    fn a_traced_plate_frames_exactly_what_the_raster_plate_does() {
+        // The registration check, and the reason both commands go through one
+        // resolver. The cheap plate and the traced plate are the two halves of a
+        // training pair; a camera half a pixel out makes every pair a small
+        // translation, and a network trained on that learns to blur.
+        use terrain_scene::frame::{IsoFrameOptions, ResolvedIsoFrame};
+        use terrain_scene::layout::{IsoTileLayout, WorldTileCoord};
+        use terrain_scene::projection::Projection;
+
+        let layout = IsoTileLayout::nine(WorldTileCoord::new(-713, 284), 4.0).expect("well formed");
+        let frame = ResolvedIsoFrame::resolve(
+            layout,
+            Projection::DIMETRIC_2_1,
+            IsoFrameOptions::sized(960, 540),
+        );
+
+        // The page the rasteriser bakes, and the page the tracer's first slice
+        // grows, are anchored at the same cache pixel at the same scale.
+        let raster = Page::at_detail(
+            Vec2::new(frame.cache_origin[0], frame.cache_origin[1]),
+            960,
+            540,
+            frame.pixels_per_metre / iso::PX_PER_METRE,
+        );
+
+        // The camera that photographs that page has to look at the ground under
+        // the middle of the frame, which is the subject tile's own centre.
+        let camera = cycles::Camera::for_page(&raster, 0.5);
+        let centre_pixel = Vec2::new(480.0, 270.0);
+        let aimed = raster.ground_at(centre_pixel);
+        let subject = frame.layout.subject_centre();
+        assert!(
+            (aimed.x as f64 - subject.u_m).abs() < 0.02
+                && (aimed.y as f64 - subject.v_m).abs() < 0.02,
+            "{aimed:?} against {subject}"
+        );
+        // And the camera is aimed at that same point, reflected.
+        let target = camera.location - camera.basis[2] * (40.0 + 0.5 * 4.0);
+        assert!((target.x - aimed.y).abs() < 0.02, "{target:?} {aimed:?}");
+        assert!((target.y - aimed.x).abs() < 0.02, "{target:?} {aimed:?}");
     }
 
     #[test]

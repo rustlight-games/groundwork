@@ -148,6 +148,14 @@ pub struct CyclesScene {
     pub footprint: (Vec2, Vec2),
     pub camera: Camera,
     pub settings: RenderSettings,
+    /// How many of the blades belong to the picture.
+    ///
+    /// The first `visible_blades` of them are rooted inside the ground the
+    /// render is *of*; the rest are the halo, and Cycles is told to hide them
+    /// from the camera while leaving them casting shadows. Split by *position in
+    /// the buffer* rather than by a second file, so the Python side slices one
+    /// array instead of loading two.
+    pub visible_blades: usize,
     /// Cross-sections each blade was described with.
     ribs: usize,
 }
@@ -316,6 +324,17 @@ pub struct RenderSettings {
     /// them across unchanged would hand Cycles blades several times too fat.
     /// Cycles has no such floor. See [`crate::cycles`] and the geometry phase.
     pub blade_width: f32,
+    /// The ground the render is *of*, in world metres. `None` is the whole page.
+    ///
+    /// When it is set the film is transparent, the ground mesh ends exactly at
+    /// this rectangle, and every blade rooted outside it is hidden from the
+    /// camera while still casting shadows — which is what turns a rectangular
+    /// plate of grass into an isometric diamond of ground with a natural fringe.
+    ///
+    /// Hidden from the camera rather than dropped, deliberately. A blade removed
+    /// from the scene stops shadowing the ground just inside the edge, and the
+    /// result is a bright rim exactly where the eye goes.
+    pub visible_ground: Option<(Vec2, Vec2)>,
 }
 
 impl Default for RenderSettings {
@@ -339,6 +358,7 @@ impl Default for RenderSettings {
             passes: false,
             ribs: 0,
             blade_width: 0.35,
+            visible_ground: None,
         }
     }
 }
@@ -354,6 +374,8 @@ impl CyclesScene {
         };
         let mut points = Vec::with_capacity(scene.marks.len() * ribs * VERTICES_PER_RIB);
         let mut attributes = Vec::with_capacity(scene.marks.len());
+        let mut halo_points = Vec::new();
+        let mut halo_attributes = Vec::new();
 
         // How finely to walk a centreline. The rasteriser asks for ribs per
         // *pixel* because it is filling pixels; here the only requirement is
@@ -375,8 +397,25 @@ impl CyclesScene {
             if walked.len() < 2 {
                 continue;
             }
-            resample_into(&walked, settings.blade_width, ribs, &mut points);
-            attributes.push([
+            // Rooted inside the picture, or part of the halo that shades it.
+            // Sorted into two runs of one buffer rather than two files, so the
+            // Python side slices an array instead of loading a second one.
+            let inside = match settings.visible_ground {
+                None => true,
+                Some((min, max)) => {
+                    mark.root.x >= min.x
+                        && mark.root.x < max.x
+                        && mark.root.y >= min.y
+                        && mark.root.y < max.y
+                }
+            };
+            let (into_points, into_attributes) = if inside {
+                (&mut points, &mut attributes)
+            } else {
+                (&mut halo_points, &mut halo_attributes)
+            };
+            resample_into(&walked, settings.blade_width, ribs, into_points);
+            into_attributes.push([
                 mark.maturity,
                 mark.base_light,
                 mark.tone as u8 as f32,
@@ -384,7 +423,12 @@ impl CyclesScene {
             ]);
         }
 
-        let (footprint, ground, rows, columns) = sample_ground(&page, field);
+        let visible_blades = attributes.len();
+        points.append(&mut halo_points);
+        attributes.append(&mut halo_attributes);
+
+        let (footprint, ground, rows, columns) =
+            sample_ground(&page, field, settings.visible_ground);
         let camera = Camera::for_page(&page, scene.canopy_ceiling());
 
         Self {
@@ -397,6 +441,7 @@ impl CyclesScene {
             footprint,
             camera,
             settings,
+            visible_blades,
             ribs,
         }
     }
@@ -461,12 +506,14 @@ impl CyclesScene {
     "denoise": {},
     "device": "{}",
     "view_transform": "{}",
-    "passes": {}
+    "passes": {},
+    "film_transparent": {}
   }},
   "blades": {{
     "path": "blades.bin",
     "attributes": "attributes.bin",
     "count": {},
+    "visible": {},
     "ribs_per_blade": {},
     "vertices_per_rib": {},
     "attributes_per_blade": {}
@@ -517,7 +564,9 @@ impl CyclesScene {
             settings.device,
             settings.view_transform,
             settings.passes,
+            settings.visible_ground.is_some(),
             self.blades(),
+            self.visible_blades.min(self.blades()),
             self.ribs,
             VERTICES_PER_RIB,
             ATTRIBUTES_PER_BLADE,
@@ -642,24 +691,40 @@ const GROUND_RELIEF: f32 = 0.34;
 /// outside the frame. That waste is the cheapest correct option: a grid aligned
 /// to the diamond would have to be re-derived for every page shape, and the
 /// corners cost four triangles.
-fn sample_ground(page: &Page, field: &WorldField) -> ((Vec2, Vec2), Vec<f32>, usize, usize) {
-    let mut low = Vec2::splat(f32::INFINITY);
-    let mut high = Vec2::splat(f32::NEG_INFINITY);
-    for corner in [
-        Vec2::ZERO,
-        Vec2::new(page.width as f32, 0.0),
-        Vec2::new(0.0, page.height as f32),
-        Vec2::new(page.width as f32, page.height as f32),
-    ] {
-        // Reflected, like everything else that crosses this boundary.
-        let ground = to_blender(page.ground_at(corner).extend(0.0)).truncate();
-        low = low.min(ground);
-        high = high.max(ground);
-    }
-    // A little beyond the frame, so the ground plane never ends inside the
-    // picture and the sun always has something to land on behind the grass.
-    low -= Vec2::splat(1.0);
-    high += Vec2::splat(1.0);
+fn sample_ground(
+    page: &Page,
+    field: &WorldField,
+    visible: Option<(Vec2, Vec2)>,
+) -> ((Vec2, Vec2), Vec<f32>, usize, usize) {
+    let (low, high) = match visible {
+        // The ground ends exactly at the layout, because that edge *is* the
+        // picture's silhouette. A margin here would put a rim of unowned ground
+        // outside the diamond and the render would no longer be of nine tiles.
+        Some((min, max)) => {
+            let a = to_blender(min.extend(0.0)).truncate();
+            let b = to_blender(max.extend(0.0)).truncate();
+            (a.min(b), a.max(b))
+        }
+        None => {
+            let mut low = Vec2::splat(f32::INFINITY);
+            let mut high = Vec2::splat(f32::NEG_INFINITY);
+            for corner in [
+                Vec2::ZERO,
+                Vec2::new(page.width as f32, 0.0),
+                Vec2::new(0.0, page.height as f32),
+                Vec2::new(page.width as f32, page.height as f32),
+            ] {
+                // Reflected, like everything else that crosses this boundary.
+                let ground = to_blender(page.ground_at(corner).extend(0.0)).truncate();
+                low = low.min(ground);
+                high = high.max(ground);
+            }
+            // A little beyond the frame, so the ground plane never ends inside
+            // the picture and the sun always has something to land on behind
+            // the grass.
+            (low - Vec2::splat(1.0), high + Vec2::splat(1.0))
+        }
+    };
 
     // A grid step of about four centimetres. The mound field's finest feature is
     // a good deal broader than that, and the blades hide the surface almost

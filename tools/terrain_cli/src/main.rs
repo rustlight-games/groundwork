@@ -902,6 +902,9 @@ fn render(args: &RenderArgs) -> ExitCode {
         supersample: args.supersample,
         tiles: args.trace_tiles_across,
         blade_width: 0.0,
+        visible: framing
+            .visible_ground()
+            .map(|ground| (ground.min, ground.max)),
         settings: RenderSettings {
             samples: args.samples,
             device: if args.cpu { "CPU" } else { "GPU" }.to_string(),
@@ -966,14 +969,18 @@ fn render(args: &RenderArgs) -> ExitCode {
         eprintln!("cannot write {}: {error}", args.out.display());
         return ExitCode::FAILURE;
     }
-    println!("wrote {}", args.out.display());
+    println!(
+        "wrote {} ({:.0}% covered)",
+        args.out.display(),
+        plate.coverage() * 100.0
+    );
 
     if let (Some(sample), false) = (&framing.sample, args.no_sidecars) {
         // Unpacked so the overlay is drawn the same way on both plates. The
         // grid on a traced render and the grid on a raster preview have to be
         // the same colour, or a reader comparing them sees a difference that is
         // in the annotation rather than in the picture.
-        let colours = terrain_bake::palette::from_bytes_rgb(&plate.pixels);
+        let colours = terrain_bake::palette::from_bytes_rgb(&plate.rgb());
         let mut manifest = sample.manifest("render", framing.preset, framing.fill);
         manifest.samples = Some(args.samples);
         manifest.marks = Some(plate.blades);
