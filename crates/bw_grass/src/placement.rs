@@ -575,6 +575,16 @@ const COLONY_SPREAD: f32 = 0.30;
 /// the reference organises itself in, and the one this renderer had nothing at.
 const COLONY_METRES: f32 = 2.25;
 
+/// How much longer a colony is along the flow than across it.
+///
+/// Two and a half. Grass spreads by runner and by seed shadow, both of which
+/// follow the ground's own run, so real stands are streaks rather than blobs —
+/// but the reason this number is *this* large is the overview rather than
+/// botany. An elongated mass carries its direction in its area, which survives
+/// minification; a round one carries direction only in the blades inside it,
+/// which does not.
+const COLONY_ELONGATION: f32 = 2.5;
+
 /// A group of tufts that grow as one mass.
 #[derive(Clone, Copy)]
 struct Colony {
@@ -628,7 +638,30 @@ struct Colony {
 /// discontinuity at the cell centres either — a linear blend of directions turns
 /// fastest exactly where it crosses a centre, which reads as a crease.
 fn colony_of(seed: u64, root: Vec2, ground: &Ground) -> Colony {
-    let grid = root / COLONY_METRES;
+    // ## Colonies are stretched along the flow, not square
+    //
+    // A square cell makes a round mass, and **a round mass has no direction**.
+    // That does not matter at a close-up, where the eye reads direction from the
+    // blades themselves. It is the whole problem at an overview: at fifty-odd
+    // pixels to the metre a blade is a fifth of a pixel, every blade-scale
+    // gradient averages to noise, and the only directional signal left is the
+    // shape of the masses. Measured, that gap is a coherence of 0.26 at the game
+    // camera against 0.38 at the close-up — from the same field.
+    //
+    // So the grid is warped into the flow's own frame and stretched along it.
+    // Colonies become elongated streaks lying with the flow, which reads as
+    // direction at any distance because it is carried by *area* rather than by
+    // edges. The warp is position-dependent, since the flow is, so the cells are
+    // not a rigid lattice — which is fine and slightly better than fine: the
+    // boundaries curve with the field instead of ruling straight lines across
+    // it, and the four-cell blend hides what is left.
+    let flow = Vec2::from_angle(ground.flow);
+    let along = root.dot(flow);
+    let across = root.dot(Vec2::new(-flow.y, flow.x));
+    let grid = Vec2::new(
+        along / (COLONY_METRES * COLONY_ELONGATION),
+        across / COLONY_METRES,
+    );
     let base = grid.floor();
     let fraction = grid - base;
     // Smoothstep, so the weights meet flat at both ends.

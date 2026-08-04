@@ -332,7 +332,7 @@ impl Default for RenderSettings {
             sun_elevation: 35.0f32.to_radians(),
             sun_azimuth: 125.0f32.to_radians(),
             sun_angle: 3.0f32.to_radians(),
-            sun_strength: 15.0,
+            sun_strength: 18.0,
             sun_colour: [1.0, 0.92, 0.72],
             sky_strength: 1.15,
             sky_colour: [0.30, 0.44, 0.72],

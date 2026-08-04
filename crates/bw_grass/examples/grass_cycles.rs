@@ -71,6 +71,11 @@ fn main() {
     // fatter blades stopped forming legible tufts and took coherence from 0.46
     // to 0.22. A wide view is bought with time, not with the picture.
     let crowding = 1.0f32;
+    let blade_width = if options.blade_width > 0.0 {
+        options.blade_width
+    } else {
+        blade_width_for(shown_px_per_metre)
+    };
     // ## The width compensation is 1/c, not 1/√c
     //
     // Coverage is `count × width × length`, so thinning the population by `c`
@@ -163,7 +168,8 @@ fn main() {
         options.height as f32 / shown_px_per_metre,
     );
     println!(
-        "  tracing at {:.0} px/m ({supersample}x), {ribs} ribs, ~{:.1}M blades",
+        "  tracing at {:.0} px/m ({supersample}x), {ribs} ribs, {blade_width:.2} width, \
+         ~{:.1}M blades",
         shown_px_per_metre * supersample as f32,
         estimated / 1.0e6,
     );
@@ -206,7 +212,7 @@ fn main() {
                 device: options.device.clone(),
                 view_transform: options.view_transform.clone(),
                 ribs: cycles::ribs_for(shown_px_per_metre),
-                blade_width: options.blade_width * width_relief,
+                blade_width: blade_width * width_relief,
                 passes: options.passes,
                 ..default()
             };
@@ -295,6 +301,38 @@ fn main() {
     if !options.keep {
         let _ = std::fs::remove_dir_all(&directory);
     }
+}
+
+/// The framing blade width is authored against, in pixels per metre.
+const WIDTH_REFERENCE_PX_PER_METRE: f32 = 108.0;
+
+/// Blade half-width at the framing above, as a multiple of the authored value.
+const WIDTH_AT_REFERENCE: f32 = 0.35;
+
+/// The widest a blade may be drawn, however far the camera pulls back.
+const WIDTH_CEILING: f32 = 0.95;
+
+/// How wide to draw a blade that will be shown at `px_per_metre`.
+///
+/// **Blade width is a mip parameter**, which is not obvious and was the last
+/// thing to go wrong. A blade drawn at life size is a fifth of a pixel at the
+/// game camera, and a fifth of a pixel does not minify into a thin blade — it
+/// minifies into nothing, taking its highlight and its silhouette with it.
+/// Measured at the overview, life-size blades gave a detail energy of 15
+/// against reference art's 22 and a highlight share of 0.4% against 3.3%.
+///
+/// Drawing them wider fixes that, and the same width ruins a close-up: at the
+/// framing the look was tuned at it doubles the detail energy and the field
+/// turns coarse and busy. There is no single number, because the question is
+/// not how wide a blade is — it is how wide a blade has to be *drawn* to survive
+/// the filtering between here and the screen.
+///
+/// So it scales inversely with the shown resolution, exactly like the rib count
+/// and the supersample. Nobody can see that an overview's blades are twice life
+/// size; everybody can see that they have vanished.
+fn blade_width_for(px_per_metre: f32) -> f32 {
+    let ratio = WIDTH_REFERENCE_PX_PER_METRE / px_per_metre.max(1.0);
+    (WIDTH_AT_REFERENCE * ratio).clamp(WIDTH_AT_REFERENCE, WIDTH_CEILING)
 }
 
 /// The detail every trace runs at, whatever scale the picture is shown at.
@@ -460,7 +498,8 @@ impl Options {
             samples: 256,
             device: "GPU".to_string(),
             view_transform: "Standard".to_string(),
-            blade_width: 0.35,
+            // Zero means derive from the framing — see `blade_width_for`.
+            blade_width: 0.0,
             // Eight times the rasteriser's counts and blades half again as
             // long. Not arbitrary: the old numbers are counts of *strokes
             // covering pixels*, tuned so a 2D mark vocabulary filled the frame,
