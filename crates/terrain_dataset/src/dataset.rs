@@ -607,6 +607,12 @@ fn crop_png_in_place(path: &Path, margin: usize) -> usize {
         eprintln!("cannot reread {}", path.display());
         return 0;
     };
+    // Blender always writes RGBA now, and a corpus pair is three channels, so
+    // the alpha is dropped here. That is right while the dataset frames by page
+    // and the film is opaque — the alpha is 255 everywhere. It would be wrong
+    // the moment the dataset frames by tile layout: the target would lose its
+    // silhouette and be composited against black, which teaches a network that
+    // the outside of a tile is dark ground. See docs/ISOMETRIC_TILES.md.
     let image = image.to_rgb8();
     let (w, h) = (image.width(), image.height());
     let margin = margin as u32;
