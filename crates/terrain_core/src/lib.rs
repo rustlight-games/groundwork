@@ -53,6 +53,9 @@ pub mod digest;
 pub mod document;
 mod document_digest;
 pub mod ids;
+pub mod prepare;
+pub mod registry;
+pub mod sample;
 pub mod seed;
 pub mod validate;
 
@@ -71,6 +74,14 @@ pub use document::{
 pub use ids::{
     AppearanceKey, KeyError, LayerKey, MaterialIndex, MaterialKey, ModifierIndex, ModifierKey,
     PopulationIndex, PopulationKey, RecipeKey, SourceIndex, SourceKey, StreamKey,
+};
+pub use prepare::{PrepareOptions, PrepareReport, PreparedTerrain, prepare};
+pub use registry::{
+    AssetError, AssetResolver, MemoryAssets, NoAssets, ScalarField, SourceRecipe, SourceRegistry,
+};
+pub use sample::{
+    FeatureContext, JunctionClass, MaterialWeight, MaterialWeightSet, MicroreliefSample,
+    ModifierSet, SampleChannels, SampleFootprint, SampleQuery, TerrainSample,
 };
 pub use seed::{
     CandidateId, PopulationHash, RandomAddress, RootSeed, SEED_ALGORITHM_VERSION, SeedContext,

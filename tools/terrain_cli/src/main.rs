@@ -17,11 +17,10 @@
 //!
 //! ## What is a stub, and why it says so loudly
 //!
-//! `inspect` needs continuous world-space sampling, which arrives with
-//! `PreparedTerrain`. It exits non-zero with the reason rather than printing
-//! something reassuring: a command that quietly succeeds while doing nothing is
-//! worse than one that is missing, because the first thing built on top of it
-//! will be built on sand.
+//! `benchmark` needs the terrain fixtures, which arrive with `terrain_bench`. It
+//! exits non-zero with the reason rather than printing something reassuring: a
+//! command that quietly succeeds while doing nothing is worse than one that is
+//! missing, because the first thing built on top of it will be built on sand.
 //!
 //! ## Transitional dependencies
 //!
@@ -42,6 +41,7 @@ use bw_grass::plate::{self, PlatePlan, PlateRequest, Progress};
 use bw_grass::quality::GrassRenderQuality;
 use bw_grass::scene::GrassScene;
 use clap::{Args, Parser, Subcommand};
+use terrain_core::{SampleFootprint, SampleQuery, WorldPoint};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -82,9 +82,12 @@ struct InspectArgs {
     /// World position to sample, as `U,V` in metres.
     #[arg(long, value_name = "U,V")]
     at: Option<String>,
-    /// Report only this source's contribution.
+    /// Report only this source's value.
     #[arg(long)]
     source: Option<String>,
+    /// Sample over a disc of this radius rather than at a point.
+    #[arg(long, value_name = "METRES")]
+    footprint_m: Option<f64>,
 }
 
 /// The framing every raster path shares.
@@ -227,11 +230,7 @@ fn parse_quality(text: &str) -> Result<GrassRenderQuality, String> {
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Validate(args) => validate(&args),
-        Command::Inspect(args) => not_yet(
-            "inspect",
-            &format!("would sample {}", args.document.display()),
-            "continuous world-space sampling arrives with `PreparedTerrain`",
-        ),
+        Command::Inspect(args) => inspect(&args),
         Command::PreviewExport(args) => preview_export(&args),
         Command::Render(args) => render(&args),
         Command::Dataset(args) => run_dataset(&args),
@@ -289,6 +288,130 @@ fn validate(args: &DocumentArgs) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Compile a document and print what the terrain is at a point.
+///
+/// The instrument for the question "why is the ground like that here", and the
+/// reason it prints the *source* values as well as the composed sample: a
+/// material weight that is wrong is nearly always a mask that is wrong, and
+/// seeing both at once is the difference between a guess and an answer.
+fn inspect(args: &InspectArgs) -> ExitCode {
+    let loaded = match terrain_format::load(&args.document) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let terrain = match terrain_core::prepare(
+        &loaded.document,
+        &terrain_core::NoAssets,
+        &terrain_core::SourceRegistry::new(),
+        &terrain_core::PrepareOptions::default(),
+    ) {
+        Ok(terrain) => terrain,
+        Err(report) => {
+            eprintln!("{report}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let position = match args.at.as_deref() {
+        None => WorldPoint::ORIGIN,
+        Some(text) => {
+            let mut parts = text.split(',').map(|p| p.trim().parse::<f64>());
+            match (parts.next(), parts.next()) {
+                (Some(Ok(u)), Some(Ok(v))) => WorldPoint::new(u, v),
+                _ => {
+                    eprintln!("--at wants `U,V` in metres, not `{text}`");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    };
+
+    let footprint = match args.footprint_m {
+        Some(radius) => SampleFootprint::circle(radius),
+        None => SampleFootprint::Point,
+    };
+    let query = SampleQuery::at(position).with_footprint(footprint);
+
+    // Source soloing, when asked for.
+    if let Some(name) = &args.source {
+        let key = match terrain_core::SourceKey::new(name.as_str()) {
+            Ok(key) => key,
+            Err(error) => {
+                eprintln!("`{name}` is not a usable source key: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        return match terrain.source_value(&key, &query) {
+            Some(value) => {
+                println!("{position} {name} = {value}");
+                ExitCode::SUCCESS
+            }
+            None => {
+                eprintln!("no source named `{name}` in {}", args.document.display());
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    let sample = terrain.sample(&query);
+    println!("{position}");
+    println!(
+        "  elevation    {:.4} m   microrelief {:+.4} m   surface {:.4} m",
+        sample.elevation_m,
+        sample.microrelief.displacement_m,
+        sample.surface_height_m(),
+    );
+
+    println!("  materials");
+    if sample.material_weights.is_empty() {
+        println!("    (none — this ground is made of nothing)");
+    } else {
+        for weight in sample.material_weights.iter() {
+            let name = terrain
+                .material_key(weight.material)
+                .map(|k| k.as_str())
+                .unwrap_or("?");
+            println!("    {:>7.3}  {name}", weight.weight);
+        }
+        println!("    blend {:.3}", sample.material_weights.blend());
+    }
+
+    if !terrain.channels().is_empty() {
+        println!("  modifiers");
+        for (index, channel) in terrain.channels().iter().enumerate() {
+            let value = sample
+                .modifiers
+                .get(terrain_core::ModifierIndex(index as u16))
+                .unwrap_or(f32::NAN);
+            println!("    {value:>7.3}  {}", channel.key);
+        }
+    }
+
+    println!("  sources");
+    for source in &loaded.document.sources {
+        match terrain.source_value(&source.key, &query) {
+            Some(value) => println!("    {value:>7.3}  {}", source.key),
+            None => println!("    {:>7}  {}", "-", source.key),
+        }
+    }
+
+    // The layers that actually ran, which is not the document's layer list:
+    // disabled ones and ones whose references did not resolve are gone. An
+    // author looking at terrain that is missing something wants this list.
+    let ran: Vec<&str> = terrain.layer_keys().map(|k| k.as_str()).collect();
+    println!("  layers in order: {}", ran.join(", "));
+    let skipped = loaded.document.layers.len() - ran.len();
+    if skipped > 0 {
+        println!("    ({skipped} layer(s) disabled or unresolved)");
+    }
+
+    ExitCode::SUCCESS
 }
 
 fn plural(count: usize) -> &'static str {
