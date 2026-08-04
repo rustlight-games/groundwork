@@ -1,0 +1,18 @@
+// Scene fingerprints, pinned. See tests/refactor_fingerprints.rs.
+//
+// These are not a performance baseline and not a picture. They are the
+// statement that the generator produces the same meadow it did before,
+// and they are what the terrain migration is checked against after every
+// move. Accept a new set only alongside a deliberate change, with the
+// generator version bumped and the reason in the commit message.
+(
+    generator_version: 1,
+    scenes: [
+        (name: "home.authoring", fingerprint: "7a674ecfe9793a628b98519a68ae3040", marks: 9276),
+        (name: "east.authoring", fingerprint: "92f8c99e656b92340c7bfb550264393d", marks: 13145),
+        (name: "west.authoring", fingerprint: "d3c7e7759c98c5be35c758d3cca6d095", marks: 5809),
+        (name: "origin.straddle", fingerprint: "ddb16c499bbfdf6e36f19d28da41a6fa", marks: 8889),
+        (name: "home.quarter_detail", fingerprint: "b5772abd1ac03adf3987faf696da7d1d", marks: 94918),
+        (name: "home.other_seed", fingerprint: "030922fa155309683902f4c3dc29ee18", marks: 7558),
+    ],
+)
