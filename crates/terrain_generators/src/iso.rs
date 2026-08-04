@@ -27,6 +27,27 @@
 //! [`crate::page::Page::detail`] for what has to be carried through to move
 //! between them — the short version is that a length in metres scales itself and
 //! a length in cache pixels does not.
+//!
+//! ## This is the fast path, not the definition
+//!
+//! [`terrain_scene::projection::Projection`] is where the projection is
+//! *defined*. It is `f64`, it is parameterised, and it is what the Cycles
+//! camera, the scene IR, the tile layout and the frame resolver are all written
+//! against — because the projection is a contract between renderers rather than
+//! one renderer's detail.
+//!
+//! What lives here is the `f32` inner loop: a blade's rasteriser projects a
+//! point per rib per blade, several million times a plate, and doing that in
+//! `f64` through a struct is measurably slower for a result that rounds to the
+//! same pixel.
+//!
+//! The two must agree, and "must agree" is worthless unless something checks.
+//! [`tests`] compares them point for point — ground, elevated, negative, and far
+//! from the origin — and pins each constant here against its `f64` counterpart.
+//! The one thing that must *not* happen is this file being rewritten to call
+//! through to the `f64` path: identical values are not the requirement, bitwise
+//! identical *results* are, and re-associating this arithmetic moves every
+//! pinned fingerprint in the repository.
 
 use glam::{Vec2, Vec3};
 
@@ -397,6 +418,136 @@ mod tests {
             (40.0..65.0).contains(&elevation),
             "the field's key sits at {elevation}° above the ground"
         );
+    }
+
+    /// A spread of points chosen to catch the ways two projections drift apart:
+    /// the origin, each axis alone, height alone, negative ground, and a point
+    /// far enough out that `f32` has started to lose the low bits.
+    fn parity_points() -> [Vec3; 9] {
+        [
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::Y,
+            Vec3::Z,
+            Vec3::new(3.0, -7.0, 0.0),
+            Vec3::new(-12.5, 4.25, 0.31),
+            Vec3::new(-2852.0, 1136.0, 0.0),
+            Vec3::new(8192.0, 8192.0, 1.5),
+            Vec3::new(0.001, -0.001, 0.0),
+        ]
+    }
+
+    fn canonical() -> terrain_scene::projection::Projection {
+        terrain_scene::projection::Projection::DIMETRIC_2_1
+    }
+
+    #[test]
+    fn every_constant_here_matches_the_projection_it_is_a_fast_path_for() {
+        // The cheapest half of the parity check, and the one that fails first if
+        // somebody retunes one file and not the other.
+        let canonical = canonical();
+        assert_eq!(HALF_TILE_W as f64, canonical.half_width);
+        assert_eq!(HALF_TILE_H as f64, canonical.half_height);
+        assert_eq!(Z_SCALE as f64, canonical.height_scale);
+        assert_eq!(DEPTH_PER_GROUND as f64, canonical.depth_per_ground);
+        assert_eq!(DEPTH_PER_HEIGHT as f64, canonical.depth_per_height);
+    }
+
+    #[test]
+    fn this_projection_and_the_scenes_agree_point_for_point() {
+        // The check that lets the tile layout, the frame resolver and the Cycles
+        // camera be written against the `f64` projection while the rasteriser's
+        // inner loop stays in `f32`. Without it, "they are the same projection"
+        // is a comment rather than a fact.
+        let canonical = canonical();
+        for point in parity_points() {
+            let fast = project(point);
+            let exact = canonical.project(terrain_scene::projection::ScenePoint::new(
+                point.x as f64,
+                point.y as f64,
+                point.z as f64,
+            ));
+            // A relative tolerance, because the far point is eight thousand
+            // metres out and an absolute one there would be either meaningless
+            // or unsatisfiable.
+            let scale = (exact.x_m.abs().max(exact.y_m.abs())).max(1.0);
+            assert!(
+                (fast.x as f64 - exact.x_m).abs() < 1.0e-5 * scale
+                    && (fast.y as f64 - exact.y_m).abs() < 1.0e-5 * scale,
+                "{point:?}: {fast:?} against ({}, {})",
+                exact.x_m,
+                exact.y_m
+            );
+
+            let exact_depth = canonical.depth(terrain_scene::projection::ScenePoint::new(
+                point.x as f64,
+                point.y as f64,
+                point.z as f64,
+            ));
+            assert!(
+                (depth(point) as f64 - exact_depth).abs() < 1.0e-5 * scale,
+                "{point:?}: depth {} against {exact_depth}",
+                depth(point)
+            );
+        }
+    }
+
+    #[test]
+    fn both_inversions_land_on_the_same_ground() {
+        let canonical = canonical();
+        for point in parity_points() {
+            let screen = project(point);
+            let fast = unproject_ground(screen);
+            let exact = canonical.unproject_ground(terrain_scene::projection::ScreenPoint::new(
+                screen.x as f64,
+                screen.y as f64,
+            ));
+            let scale = (exact.u_m.abs().max(exact.v_m.abs())).max(1.0);
+            assert!(
+                (fast.x as f64 - exact.u_m).abs() < 1.0e-5 * scale
+                    && (fast.y as f64 - exact.v_m).abs() < 1.0e-5 * scale,
+                "{point:?}: {fast:?} against {exact}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_view_axes_agree_across_the_two_projections() {
+        // The image-to-world bridge is written in `f32` here and derived in
+        // `f64` there. A disagreement would light the two renderers' grass from
+        // slightly different directions, which reads as a material difference.
+        let canonical = canonical();
+        let right = canonical.view_right();
+        assert!((VIEW_RIGHT.x as f64 - right[0]).abs() < 1.0e-6);
+        assert!((VIEW_RIGHT.y as f64 - right[1]).abs() < 1.0e-6);
+        assert!((VIEW_RIGHT.z as f64 - right[2]).abs() < 1.0e-6);
+
+        let toward = canonical.toward_viewer();
+        assert!((TOWARD_VIEWER.x as f64 - toward[0]).abs() < 1.0e-6);
+        assert!((TOWARD_VIEWER.y as f64 - toward[1]).abs() < 1.0e-6);
+        assert!((TOWARD_VIEWER.z as f64 - toward[2]).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn a_square_world_tile_projects_to_a_two_to_one_diamond() {
+        // The property the nine-tile framing is fitted against, asserted on the
+        // side of the projection that actually rasterises it. A tile of side S
+        // is 2S across and S tall on screen, so three by three is 6S × 3S.
+        for side in [1.0f32, 4.0, 7.5] {
+            let corners = [
+                project(Vec3::new(0.0, 0.0, 0.0)),
+                project(Vec3::new(side, 0.0, 0.0)),
+                project(Vec3::new(side, side, 0.0)),
+                project(Vec3::new(0.0, side, 0.0)),
+            ];
+            let (mut low, mut high) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
+            for corner in corners {
+                low = low.min(corner);
+                high = high.max(corner);
+            }
+            assert!(close(high.x - low.x, 2.0 * side), "{side}");
+            assert!(close(high.y - low.y, side), "{side}");
+        }
     }
 
     #[test]
