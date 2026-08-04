@@ -31,7 +31,7 @@
 //! removing it from the *rasteriser* would move every pixel, so the rasteriser
 //! keeps its pixel widths and the bridge converts.
 
-use bevy::prelude::*;
+use glam::Vec2;
 use terrain_core::coords::{WorldPoint, WorldRect};
 use terrain_core::digest::Fingerprint;
 use terrain_scene::mark::{

@@ -37,7 +37,7 @@
 
 use std::sync::{LazyLock, OnceLock};
 
-use bevy::prelude::*;
+use glam::{Vec2, Vec3};
 
 use crate::fastmath;
 use crate::geometry::{self, Frame, TipProfile};
@@ -927,7 +927,7 @@ mod tests {
         );
         painter.draw(&Stroke {
             root: painter.to_ground(Vec2::new(96.0, 140.0)).extend(0.0),
-            ..default()
+            ..Default::default()
         });
         let heights = surface.height_map(64, 64);
         assert!(heights.iter().any(|&h| h > 1.0), "nothing was drawn");
@@ -946,7 +946,7 @@ mod tests {
                 root,
                 bend,
                 length: 0.3,
-                ..default()
+                ..Default::default()
             });
             let heights = surface.height_map(64, 64);
             heights.iter().cloned().fold(0.0f32, f32::max)
@@ -969,7 +969,7 @@ mod tests {
             bend: 0.0,
             length: 0.35,
             tip_light: 0.3,
-            ..default()
+            ..Default::default()
         });
 
         let mut brightest_high = 0.0f32;
@@ -1003,7 +1003,10 @@ mod tests {
         let (mut surface, origin) = page(32, 32);
         let mut painter = Painter::new(&mut surface, origin, Vec3::Z);
         let root = painter.to_ground(Vec2::new(-40.0, 48.0)).extend(0.0);
-        painter.draw(&Stroke { root, ..default() });
+        painter.draw(&Stroke {
+            root,
+            ..Default::default()
+        });
         let heights = surface.height_map(32, 32);
         for y in 0..32 {
             assert_eq!(heights[y * 32], 0.0, "row {y} picked up a wrapped stroke");
@@ -1030,7 +1033,7 @@ mod tests {
             twist,
             side_light: 0.5,
             under: 0.0,
-            ..default()
+            ..Default::default()
         });
         // How far apart the two most opposed normals on the blade are, and how
         // much of the page it covered.
@@ -1082,7 +1085,7 @@ mod tests {
             width: 3.0,
             ridge: 0.0,
             under: 0.0,
-            ..default()
+            ..Default::default()
         });
         for index in 0..surface.width * surface.height {
             if surface.top_at(index) <= 0.0 {
@@ -1109,7 +1112,7 @@ mod tests {
                 length: 0.34,
                 width: 3.0,
                 tip,
-                ..default()
+                ..Default::default()
             });
             surface.painted_map(96, 96).iter().sum::<f32>()
         };
@@ -1146,7 +1149,7 @@ mod tests {
                 long: 0.30,
                 short: 0.20,
             },
-            ..default()
+            ..Default::default()
         });
         // Walk up the painted column and check there is no empty row between the
         // lowest and highest paint — a gap is a fork whose children begin
@@ -1184,7 +1187,7 @@ mod tests {
                 long: 0.22,
                 short: 0.12,
             },
-            ..default()
+            ..Default::default()
         });
         // It still draws something — collapsing must not delete the blade.
         assert!(surface.painted_map(64, 64).iter().any(|p| *p > 0.0));

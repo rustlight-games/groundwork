@@ -54,7 +54,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use bevy::prelude::*;
+use glam::{Vec2, Vec3};
 
 use crate::bake::Page;
 use crate::field::WorldField;
@@ -836,7 +836,7 @@ mod tests {
             root: Vec3::new(1.0, 2.0, 0.0),
             length: 0.3,
             bend: 0.3,
-            ..default()
+            ..Default::default()
         };
         let mut walked = Vec::new();
         walk_blade(&stroke, 30.0, 2.0, stroke.tip, &mut |sample| {

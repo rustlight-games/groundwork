@@ -14,7 +14,7 @@
 //! the specific way a benchmark stops catching what it was written to catch. It
 //! costs a small module in the library to make that impossible.
 
-use bevy::prelude::*;
+use glam::Vec2;
 
 /// World metres visible vertically when the game frames a battle.
 ///

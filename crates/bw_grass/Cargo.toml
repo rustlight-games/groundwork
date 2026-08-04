@@ -10,7 +10,12 @@ description = "Isometric grass: a baked ground-surface cache and its renderer"
 # itself moves. See `src/generic.rs`.
 terrain_core.workspace = true
 terrain_scene.workspace = true
+# Bevy only for the runtime integration — the plugin, the material and the page
+# cache. Everything that decides where a blade goes takes glam directly, which is
+# the same maths: bevy::prelude's Vec2 and Vec3 *are* glam's, so the swap was
+# bit-identical and the pinned fingerprints did not move.
 bevy.workspace = true
+glam.workspace = true
 # Pages are independent of one another by construction — every placement decision
 # is a pure function of world coordinates — so baking them is embarrassingly
 # parallel and threading it changes nothing about the result.
@@ -23,6 +28,7 @@ rayon.workspace = true
 image.workspace = true
 
 [dev-dependencies]
+glam.workspace = true
 bw_bench.workspace = true
 criterion.workspace = true
 rayon.workspace = true
@@ -34,10 +40,6 @@ path = "examples/grass_bake.rs"
 [[example]]
 name = "grass_snapshot"
 path = "examples/grass_snapshot.rs"
-
-[[example]]
-name = "grass_sandbox"
-path = "examples/grass_sandbox.rs"
 
 # The laboratory plate: a small, known population, for judging one mark at a
 # time instead of judging a meadow.

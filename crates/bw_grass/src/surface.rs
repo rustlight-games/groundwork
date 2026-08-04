@@ -29,7 +29,7 @@
 //! to be three everywhere; three is still what the streaming tier uses, and the
 //! offline tiers spend four.
 
-use bevy::prelude::*;
+use glam::Vec3;
 
 use crate::palette::{self, Tone};
 

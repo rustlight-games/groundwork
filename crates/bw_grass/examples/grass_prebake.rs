@@ -17,7 +17,8 @@
 //!
 //! Pages already in the cache are skipped, so an interrupted run resumes.
 
-use bevy::prelude::*;
+use glam::IVec2;
+
 use bw_grass::bake::{BakeParams, Page};
 use bw_grass::cache;
 use bw_grass::cycles::{self, RenderSettings};
@@ -35,7 +36,7 @@ fn main() {
 
     let mut params = BakeParams {
         seed: options.seed,
-        ..default()
+        ..Default::default()
     };
     // The same canopy the look was tuned to. See `grass_cycles` for why the
     // rasteriser's own counts are the wrong quantity for a path tracer.
@@ -100,7 +101,7 @@ fn main() {
 
             let settings = RenderSettings {
                 samples: options.samples,
-                ..default()
+                ..Default::default()
             };
             let grown = GrassScene::build(fine, &field, &params);
             let scene = cycles::CyclesScene::build(&grown, &field, settings);

@@ -33,7 +33,7 @@
 //!   percent of the image, and [`THATCH`] reaches below the ramp to supply it —
 //!   see the note there for why that half percent is not optional.
 
-use bevy::prelude::*;
+use glam::Vec3;
 
 /// Which ramp a pixel is shaded through.
 ///

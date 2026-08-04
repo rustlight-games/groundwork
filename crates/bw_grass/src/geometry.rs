@@ -54,7 +54,7 @@
 //! all. So width responds to the viewing angle but never all the way to zero —
 //! see [`foreshorten`].
 
-use bevy::prelude::*;
+use glam::Vec3;
 
 use crate::fastmath;
 use crate::iso;

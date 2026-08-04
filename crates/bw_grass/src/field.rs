@@ -21,7 +21,7 @@
 
 use std::cell::Cell;
 
-use bevy::prelude::*;
+use glam::{Vec2, Vec3};
 
 use crate::rng::{Draw, Stream, fbm, value_noise};
 

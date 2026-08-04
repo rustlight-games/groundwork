@@ -20,18 +20,18 @@
 
 use std::path::PathBuf;
 
-use bevy::prelude::*;
 use bw_grass::bake::BakeParams;
 use bw_grass::cycles::RenderSettings;
 use bw_grass::field::WorldField;
 use bw_grass::plate::{self, PlatePlan, PlateRequest, Progress};
+use glam::Vec2;
 
 fn main() {
     let options = Options::parse();
     let params = plate::scaled_params(
         &BakeParams {
             seed: options.seed,
-            ..default()
+            ..Default::default()
         },
         options.density,
         options.length,
@@ -56,7 +56,7 @@ fn main() {
             device: options.device.clone(),
             view_transform: options.view_transform.clone(),
             passes: options.passes,
-            ..default()
+            ..Default::default()
         },
         scene_dir: PathBuf::from(&options.scene_dir),
         keep_scene: options.keep,

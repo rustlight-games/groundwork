@@ -61,7 +61,6 @@
 
 use std::hint::black_box;
 
-use bevy::prelude::*;
 use bw_bench::SEEDS;
 use bw_grass::bake::{
     BakeParams, Macro, Page, TILE_PIXELS, bake, bake_grid, lay_floor, plant_strokes, resolve,
@@ -72,6 +71,7 @@ use bw_grass::iso;
 use bw_grass::stroke::{Painter, Stroke};
 use bw_grass::surface::{Surface, blur, resample};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use glam::{Vec2, Vec3};
 
 /// A page bake is around a tenth of a second, so criterion's default hundred
 /// samples would be ten seconds of measurement plus warm-up for every single
@@ -80,7 +80,10 @@ use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, 
 const SAMPLES: usize = 12;
 
 fn params(seed: u64) -> BakeParams {
-    BakeParams { seed, ..default() }
+    BakeParams {
+        seed,
+        ..Default::default()
+    }
 }
 
 /// One page, one thread, at the size the renderer streams.

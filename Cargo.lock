@@ -1956,6 +1956,7 @@ dependencies = [
  "bevy",
  "bw_bench",
  "criterion",
+ "glam",
  "image",
  "rayon",
  "terrain_core",

@@ -43,7 +43,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use bevy::prelude::*;
+use glam::{Vec2, Vec3};
 use rayon::prelude::*;
 
 use crate::bake::{BakeParams, Macro, Page, Passes, cast_shadows, lay_floor, resolve_passes};
@@ -679,7 +679,7 @@ mod tests {
         let page = Page::new(Vec2::new(-32.0, -32.0), 64, 64);
         let params = BakeParams {
             quality: GrassRenderQuality::Dataset,
-            ..default()
+            ..Default::default()
         };
         let pair = Pair::bake(page, &params, GrassRenderQuality::Preview);
         assert!(pair.marks > 100, "the scene grew {} marks", pair.marks);
@@ -722,7 +722,7 @@ mod tests {
         let page = Page::new(Vec2::ZERO, 48, 48);
         let params = BakeParams {
             quality: GrassRenderQuality::Dataset,
-            ..default()
+            ..Default::default()
         };
         let pair = Pair::bake(page, &params, GrassRenderQuality::Preview);
         let passes = &pair.target.passes;
@@ -750,7 +750,7 @@ mod tests {
         let page = Page::new(Vec2::ZERO, 64, 64);
         let params = BakeParams {
             quality: GrassRenderQuality::Preview,
-            ..default()
+            ..Default::default()
         };
         let pair = Pair::bake(page, &params, GrassRenderQuality::Preview);
         let (input, target, w, h) = pair.crop(8);

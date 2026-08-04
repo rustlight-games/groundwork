@@ -25,7 +25,7 @@
 //! and one photographed today have to be pictures of the same experiment. Adding
 //! a fixture goes on the end.
 
-use bevy::prelude::*;
+use glam::{Vec2, Vec3};
 
 use crate::bake::{BakeParams, Macro, Page, lay_floor};
 use crate::field::WorldField;
@@ -390,7 +390,7 @@ pub fn plant_fixture(marks: &mut Vec<Stroke>, lab: &Lab, fixture: Fixture, centr
         twist: draw.signed() * 0.8,
         tip_light: 0.42,
         side_light: 0.34,
-        ..default()
+        ..Default::default()
     };
 
     match fixture {
@@ -405,7 +405,7 @@ pub fn plant_fixture(marks: &mut Vec<Stroke>, lab: &Lab, fixture: Fixture, centr
                 width: 1.8,
                 tip_light: 0.42,
                 glint: 0.85,
-                ..default()
+                ..Default::default()
             });
         }
 
@@ -425,7 +425,7 @@ pub fn plant_fixture(marks: &mut Vec<Stroke>, lab: &Lab, fixture: Fixture, centr
                     twist: step as f32 / 8.0 * std::f32::consts::PI,
                     tip_light: 0.42,
                     side_light: 0.42,
-                    ..default()
+                    ..Default::default()
                 });
             }
         }
@@ -452,7 +452,7 @@ pub fn plant_fixture(marks: &mut Vec<Stroke>, lab: &Lab, fixture: Fixture, centr
                     tip_light: 0.42,
                     side_light: 0.42,
                     glint: 0.85,
-                    ..default()
+                    ..Default::default()
                 });
             }
         }
@@ -466,7 +466,7 @@ pub fn plant_fixture(marks: &mut Vec<Stroke>, lab: &Lab, fixture: Fixture, centr
                     bend: 0.9,
                     width: 1.9,
                     tip_light: 0.42,
-                    ..default()
+                    ..Default::default()
                 });
             }
         }
@@ -532,7 +532,7 @@ pub fn plant_fixture(marks: &mut Vec<Stroke>, lab: &Lab, fixture: Fixture, centr
                     tone: Tone::Thatch,
                     base_light: 0.5,
                     tip_light: 0.14,
-                    ..default()
+                    ..Default::default()
                 });
             }
         }
@@ -549,7 +549,7 @@ pub fn plant_fixture(marks: &mut Vec<Stroke>, lab: &Lab, fixture: Fixture, centr
                     bend: 0.5,
                     width: 1.8,
                     tip_light: 0.42,
-                    ..default()
+                    ..Default::default()
                 });
             }
         }
@@ -566,7 +566,7 @@ pub fn plant_fixture(marks: &mut Vec<Stroke>, lab: &Lab, fixture: Fixture, centr
                     sway: 1.4,
                     width: 1.6,
                     tip_light: 0.3,
-                    ..default()
+                    ..Default::default()
                 });
             }
         }
@@ -587,7 +587,7 @@ pub fn plant_fixture(marks: &mut Vec<Stroke>, lab: &Lab, fixture: Fixture, centr
                         Profile::Tapered
                     },
                     tip_light: 0.42,
-                    ..default()
+                    ..Default::default()
                 });
             }
         }

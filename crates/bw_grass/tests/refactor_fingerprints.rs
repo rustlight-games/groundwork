@@ -32,12 +32,12 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use bevy::prelude::*;
 use bw_grass::bake::{BakeParams, Page};
 use bw_grass::field::WorldField;
 use bw_grass::fingerprint::GENERATOR_VERSION;
 use bw_grass::fixtures::PLACES;
 use bw_grass::scene::GrassScene;
+use glam::Vec2;
 
 /// One pinned scene.
 struct Fixture {

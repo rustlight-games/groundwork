@@ -17,10 +17,10 @@
 
 use std::path::{Path, PathBuf};
 
-use bevy::prelude::*;
 use bw_grass::bake::BakeParams;
 use bw_grass::lab::{self, Fixture, Key, Lab};
 use bw_grass::quality::GrassRenderQuality;
+use glam::Vec3;
 
 fn main() {
     let options = Options::parse();

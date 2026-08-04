@@ -28,7 +28,7 @@
 //! between them — the short version is that a length in metres scales itself and
 //! a length in cache pixels does not.
 
-use bevy::prelude::*;
+use glam::{Vec2, Vec3};
 
 /// Half the screen width of one world metre of X−Y separation.
 ///

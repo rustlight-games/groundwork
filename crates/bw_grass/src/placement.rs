@@ -29,7 +29,7 @@
 //! - **Tufts, not blades.** Blades that share a lean, a length and a brightness
 //!   read as a plant; the same blades scattered independently read as a doormat.
 
-use bevy::prelude::*;
+use glam::{Vec2, Vec3};
 
 use crate::bake::{BakeParams, Page};
 use crate::field::{Ground, GroundCache, WorldField};
@@ -470,7 +470,7 @@ fn mat_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &BakeParams)
         tip_light: 0.14,
         side_light: params.side_light * 0.6,
         under: params.under * 0.5 * (1.0 - ground.bare * 0.85),
-        ..default()
+        ..Default::default()
     }
 }
 
@@ -531,7 +531,7 @@ fn fine_stroke(
         // this density full-strength separation turns the layer into a woven
         // mesh — every blade outlined, which is exactly the fur reading.
         under: params.under * 0.45 * (1.0 - ground.bare * 0.85),
-        ..default()
+        ..Default::default()
     }
 }
 
@@ -961,7 +961,7 @@ fn grow_tuft(
                 side_light: params.side_light * 0.5,
                 under: params.under * 0.4,
                 twist: inner.signed() * 0.4,
-                ..default()
+                ..Default::default()
             },
         );
     }
@@ -1662,7 +1662,7 @@ impl Mark {
             // local contrast per pixel of anything in the field, which makes it
             // the most effective one to spend on the distinction.
             under: params.under * outlined * (0.77 + ground.resolution * 0.46),
-            ..default()
+            ..Default::default()
         };
 
         // The largest marks give silhouette and mass, not attention. Leaving the
@@ -1840,7 +1840,7 @@ fn leaf_cluster(
                 },
                 side_light: params.side_light * 1.4,
                 under: params.under * 0.8,
-                ..default()
+                ..Default::default()
             },
         );
     }

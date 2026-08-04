@@ -47,7 +47,7 @@
 //! actually sees, and makes [`Similarity::changed`] a true count of stored bytes
 //! that moved.
 
-use bevy::prelude::*;
+use glam::Vec3;
 
 use crate::palette;
 use crate::surface::blur;

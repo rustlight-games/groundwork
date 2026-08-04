@@ -36,7 +36,7 @@
 //! plastic. Every diffuse term here is wrapped, and the back of a leaf gets its
 //! own transmission term on top.
 
-use bevy::prelude::*;
+use glam::{Vec2, Vec3};
 
 use crate::iso;
 

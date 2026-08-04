@@ -38,7 +38,7 @@
 
 use std::fmt;
 
-use bevy::prelude::*;
+use glam::Vec2;
 
 use crate::bake::Page;
 use crate::field::WorldField;

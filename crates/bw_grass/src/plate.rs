@@ -35,7 +35,7 @@
 
 use std::path::{Path, PathBuf};
 
-use bevy::prelude::*;
+use glam::Vec2;
 
 use crate::bake::{BakeParams, Page};
 use crate::cycles::{self, CyclesScene, RenderSettings};

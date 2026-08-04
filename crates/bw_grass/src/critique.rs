@@ -43,7 +43,7 @@
 //! by construction. The two luminance figures are linear because they are ratios
 //! — "twice as bright" has to mean twice the light.
 
-use bevy::prelude::*;
+use glam::Vec3;
 
 /// The measured character of one plate.
 #[derive(Clone, Copy, Debug, PartialEq)]

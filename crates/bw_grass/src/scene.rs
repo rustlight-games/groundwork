@@ -30,7 +30,7 @@
 //! is thirty. Holding geometry is not what costs; holding *vertices* would be,
 //! which is why a mark stays a description and is tessellated at raster time.
 
-use bevy::prelude::*;
+use glam::{Vec2, Vec3};
 
 use crate::bake::{BakeParams, Page};
 use crate::field::WorldField;

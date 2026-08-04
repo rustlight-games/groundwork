@@ -39,10 +39,10 @@
 //! given camera height, bakes exactly that, and resamples it to the pixels the
 //! window actually has.
 
-use bevy::prelude::*;
 use bw_grass::bake::{BakeParams, Page, bake, bake_grid};
 use bw_grass::iso;
 use bw_grass::surface::resample;
+use glam::{Vec2, Vec3};
 
 fn main() {
     let options = Options::parse();
@@ -51,7 +51,7 @@ fn main() {
         // picture is judged at.
         quality: options.quality,
         seed: options.seed,
-        ..default()
+        ..Default::default()
     };
     if let Some(scale) = options.density {
         params.tufts *= scale;

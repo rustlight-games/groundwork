@@ -18,8 +18,8 @@
 
 use std::path::{Path, PathBuf};
 
-use bevy::prelude::*;
 use bw_grass::critique::{BANDS, Critique};
+use glam::Vec3;
 
 fn main() {
     let options = Options::parse();

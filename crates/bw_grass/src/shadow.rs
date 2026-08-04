@@ -41,7 +41,7 @@
 //! height, and getting it wrong does not clip a shadow visibly: it deletes one,
 //! and only on the pages whose casters fell outside.
 
-use bevy::prelude::*;
+use glam::{Vec2, Vec3};
 
 use crate::iso;
 use crate::quality::GrassRenderQuality;

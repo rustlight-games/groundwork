@@ -23,7 +23,7 @@
 //! Steps two to four are the part that cannot be reordered. Occlusion measured
 //! before the canopy exists is occlusion of nothing.
 
-use bevy::prelude::*;
+use glam::{Vec2, Vec3};
 use rayon::prelude::*;
 
 use crate::field::WorldField;
@@ -2407,7 +2407,7 @@ mod tests {
             let params = BakeParams {
                 seed: bw_seed(index),
                 quality: GrassRenderQuality::Reference,
-                ..default()
+                ..Default::default()
             };
             let page = Page::new(*origin, 192, 192);
             let field = WorldField::lit_by(params.seed, params.light);
@@ -2450,7 +2450,7 @@ mod tests {
                     elevation,
                 }
                 .direction(),
-                ..default()
+                ..Default::default()
             };
             for detail in [1.0f32, 0.5, 0.25] {
                 let page = Page::at_detail(Vec2::new(-64.0, -64.0), 128, 128, detail);
@@ -2497,7 +2497,7 @@ mod tests {
             );
             let params = BakeParams {
                 light: iso::world_to_image(world).normalize(),
-                ..default()
+                ..Default::default()
             };
             let field = WorldField::lit_by(params.seed, params.light);
             let scene = GrassScene::build(page, &field, &params);
@@ -2664,7 +2664,7 @@ mod tests {
                     sway: 2.4,
                     width: params.blade_width.1,
                     under: params.under,
-                    ..default()
+                    ..Default::default()
                 });
                 // Density, not height. `top` is a canopy height in whole
                 // pixels, so every rib at ground level — a root, an
@@ -2732,7 +2732,7 @@ mod tests {
                     sway: 2.4,
                     width: params.blade_width.1,
                     under: params.under,
-                    ..default()
+                    ..Default::default()
                 });
                 // Density, not height. `top` is a canopy height in whole
                 // pixels, so every rib at ground level — a root, an
@@ -2834,7 +2834,7 @@ mod tests {
             length: longest,
             width: params.blade_width.1,
             under: params.under,
-            ..default()
+            ..Default::default()
         };
         let mut surface = Surface::new(8, 8);
         let bound = Painter::new(&mut surface, Vec2::ZERO, params.light).reach(&stroke);
@@ -2870,7 +2870,7 @@ mod tests {
             length: params.blade_length.1 * 1.25 * VIGOUR_CEILING * 1.35,
             width: params.blade_width.1,
             under: params.under,
-            ..default()
+            ..Default::default()
         };
         let mut surface = Surface::new(8, 8);
         let full = Painter::new(&mut surface, Vec2::ZERO, params.light).reach(&stroke);
