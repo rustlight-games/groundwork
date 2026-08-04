@@ -409,6 +409,53 @@ mod tests {
     }
 
     #[test]
+    fn the_neighbours_grow_into_the_subject() {
+        // The whole reason the eight context tiles exist, and it is not
+        // decoration: a subject tile whose grass stopped at its own edge would
+        // have four hard boundaries through the middle of the frame. One
+        // continuous scene means marks rooted in a neighbour lean across.
+        use terrain_generators::field::WorldField;
+        use terrain_generators::scene::GrassScene;
+        use terrain_scene::layout::TileRole;
+
+        let scenario = iso_scenario("iso_nine.origin").expect("pinned");
+        let frame = scenario.frame();
+        let params = BakeParams {
+            seed: scenario.seed,
+            ..BakeParams::default()
+        };
+        let page = Page::at_detail(
+            glam::Vec2::new(frame.cache_origin[0], frame.cache_origin[1]),
+            frame.output_size[0] as usize,
+            frame.output_size[1] as usize,
+            frame.pixels_per_metre / iso::PX_PER_METRE,
+        );
+        let field = WorldField::lit_by(params.seed, params.light);
+        let scene = GrassScene::build(page, &field, &params.grass());
+        let subject = frame.subject_polygon();
+
+        let mut crossing = 0usize;
+        for mark in &scene.marks {
+            let root =
+                terrain_core::coords::WorldPoint::new(mark.root.x as f64, mark.root.y as f64);
+            if frame.layout.role_at(root) != Some(TileRole::Context) {
+                continue;
+            }
+            // Where the mark's tip lands, which is what actually crosses the
+            // join: a blade leans, and the projection lifts its tip up the
+            // screen as well as along.
+            let tip = page.to_pixel(mark.root + glam::Vec3::Z * mark.length);
+            if subject.contains_px(tip.x, tip.y) {
+                crossing += 1;
+            }
+        }
+        assert!(
+            crossing > 20,
+            "only {crossing} marks rooted in a neighbour reach the subject tile"
+        );
+    }
+
+    #[test]
     fn a_join_measurement_ignores_the_background() {
         // A control band that fell off the diamond would report the difference
         // between grass and nothing, which is enormous and meaningless.

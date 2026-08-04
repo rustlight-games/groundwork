@@ -724,6 +724,47 @@ mod tests {
     }
 
     #[test]
+    fn the_memory_split_does_not_move_the_world_tiles() {
+        // The two things this repository calls a tile, kept apart by a test.
+        // `--trace-tiles-across` is how many pieces Blender traces the plate in;
+        // it must not change the framing by so much as a pixel, or a render
+        // would come out at a different place on a machine with less memory.
+        use terrain_scene::frame::{IsoFrameOptions, ResolvedIsoFrame};
+        use terrain_scene::layout::{IsoTileLayout, WorldTileCoord};
+        use terrain_scene::projection::Projection;
+
+        let layout = IsoTileLayout::nine(WorldTileCoord::new(-713, 284), 2.0).expect("well formed");
+        let frame = ResolvedIsoFrame::resolve(
+            layout,
+            Projection::DIMETRIC_2_1,
+            IsoFrameOptions::sized(960, 540),
+        );
+        let params = cycles_params(&GrassParams::default());
+
+        let mut plans = Vec::new();
+        for trace_tiles in [1usize, 2, 4] {
+            let request = PlateRequest {
+                width: 960,
+                height: 540,
+                origin: Vec2::new(frame.cache_origin[0], frame.cache_origin[1]),
+                px_per_metre: frame.pixels_per_metre,
+                tiles: trace_tiles,
+                ..PlateRequest::square(960, frame.pixels_per_metre)
+            };
+            let plan = PlatePlan::resolve(&request, &params);
+            assert_eq!(plan.tiles_across, trace_tiles);
+            // The framing numbers are the same however the plate is sliced.
+            assert_eq!(request.origin.x, frame.cache_origin[0]);
+            assert_eq!(request.px_per_metre, frame.pixels_per_metre);
+            plans.push((plan.supersample, plan.blade_width, plan.trace_px_per_metre));
+        }
+        assert!(
+            plans.windows(2).all(|w| w[0] == w[1]),
+            "the memory split changed the trace: {plans:?}"
+        );
+    }
+
+    #[test]
     fn the_guard_band_reaches_past_the_tallest_blade() {
         // A guard shorter than a blade's shadow is a bright seam at every tile
         // join, and a seam is the one artefact this whole design exists to
