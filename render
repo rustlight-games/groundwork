@@ -1,10 +1,11 @@
 #!/usr/bin/env sh
 # Place a whole scene in Rust and path-trace it with Cycles, in one go.
 #
-#   ./render                    1920x1080, a natural scene, opened when done
+#   ./render                    what the game shows, path-traced. Opened when done
+#   BW_VIEW=10 ./render         closer: world metres visible vertically
 #   BW_SAMPLES=512 ./render     cleaner, slower
 #   BW_SIZE=2560x1440 ./render  bigger
-#   BW_DETAIL=96 ./render       pixels per metre; lower is a wider view
+#   BW_SUPERSAMPLE=4 ./render   finer, and nearly twice the cost
 #   BW_SEED=12 ./render         somewhere else entirely
 #
 # This is not `./run`. The game streams pages and has a frame to draw them in;
@@ -15,15 +16,27 @@
 # Placement is unchanged either way — every blade is a pure function of its world
 # coordinate, so this is the same meadow the game grows, rendered properly.
 #
-# ## Choosing BW_DETAIL
+# ## The framing matches `./run`
 #
-# Pixels per world metre, and it decides what the picture is *of* rather than
-# how good it looks. The art is authored at 96, which is the scale the game
-# samples pages at. The default here is 192 because a blade of grass is a few
-# millimetres wide: at 96 it is under half a pixel and cannot be drawn at all,
-# and the reference art this was matched against sits at about 200.
+# `BW_VIEW` is world metres visible vertically, the same number `./run` takes,
+# and it defaults to the same 28. So this is the picture the game is trying to
+# be, rendered properly, rather than a flattering close-up of it.
 #
-# Lower it to see more ground; raise it to count the blades.
+# Two things follow from a wide view and both are handled automatically.
+#
+# At 28 metres over 1080 pixels a blade is a fifth of a pixel wide. Cycles draws
+# geometry, and geometry thinner than a pixel does not become a fine blade — it
+# becomes a partly covered pixel, and at canopy density that averages the whole
+# field into a flat wash. So the trace runs at `BW_SUPERSAMPLE` times the output
+# and is filtered down.
+#
+# And blade count grows with the square of how far the camera pulls back: the
+# game framing covers twenty-five times the ground the close-up did, which would
+# be fifty-five million blades. The canopy is thinned toward a fixed number per
+# *pixel* instead, and the survivors widened to keep the coverage. At a scale
+# where no single blade is resolvable that is what a mip level is, not a cheat.
+#
+# `BW_VIEW=10 ./render` for the close-up the look was tuned at.
 set -e
 
 cd "$(dirname "$0")"
@@ -32,16 +45,18 @@ SIZE="${BW_SIZE:-1920x1080}"
 WIDTH="${SIZE%x*}"
 HEIGHT="${SIZE#*x}"
 SAMPLES="${BW_SAMPLES:-256}"
-DETAIL="${BW_DETAIL:-192}"
+VIEW="${BW_VIEW:-28}"
+SUPERSAMPLE="${BW_SUPERSAMPLE:-3}"
 SEED="${BW_SEED:-7}"
 OUT="${BW_OUT:-target/grass-render.png}"
 
-echo "placing and tracing ${WIDTH}x${HEIGHT} at ${DETAIL} px/m, ${SAMPLES} spp, seed ${SEED}"
+echo "placing and tracing ${WIDTH}x${HEIGHT} at ${VIEW} m view, ${SUPERSAMPLE}x, ${SAMPLES} spp, seed ${SEED}"
 
 cargo run --release -p bw_grass --example grass_cycles -- \
 	--width "$WIDTH" \
 	--height "$HEIGHT" \
-	--px-per-metre "$DETAIL" \
+	--view "$VIEW" \
+	--supersample "$SUPERSAMPLE" \
 	--samples "$SAMPLES" \
 	--seed "$SEED" \
 	--out "$OUT" \

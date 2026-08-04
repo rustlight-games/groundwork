@@ -262,6 +262,12 @@ pub struct RenderSettings {
     /// Sun bearing in world space, radians, measured from +X toward +Y.
     pub sun_azimuth: f32,
     /// Angular diameter of the sun, radians.
+    ///
+    /// Three degrees is six times life size, which is the same licence the art
+    /// takes elsewhere — a literal half-degree sun puts a hard edge on every
+    /// blade shadow and the field fills with black confetti. What it must not
+    /// become is *soft*: a wide sun is a second fill light, and fill is what was
+    /// flattening the canopy.
     pub sun_angle: f32,
     pub sun_strength: f32,
     pub sun_colour: [f32; 3],
@@ -296,7 +302,7 @@ impl Default for RenderSettings {
             sun_angle: 3.0f32.to_radians(),
             sun_strength: 15.0,
             sun_colour: [1.0, 0.92, 0.72],
-            sky_strength: 1.30,
+            sky_strength: 1.15,
             sky_colour: [0.30, 0.44, 0.72],
             passes: false,
             blade_width: 0.35,
@@ -567,6 +573,24 @@ fn resample_into(walked: &[BladeSample], width_scale: f32, out: &mut Vec<[f32; 3
     }
 }
 
+/// How much of the mound field reaches the *visible* ground.
+///
+/// A third. The mound field's job is to decide which grass is vigorous, which
+/// way the ground faces and where water collects — its relief reaches a quarter
+/// of a metre, which over a mound a metre across is a twelve-degree slope. That
+/// is a meadow's worth of swell when it is only steering the planting.
+///
+/// Rendered at full strength it is something else. A path tracer draws the mesh,
+/// so a dome that size becomes a *silhouette*, and a dome with bare soil on top
+/// stops reading as ground and reads as a boulder sitting in the field. The
+/// rasteriser never had this problem because it only ever shaded the relief; it
+/// never showed it in profile.
+///
+/// So the swell is kept and its profile is not. What survives still tilts the
+/// surface toward and away from the sun, which is all the lighting ever wanted
+/// from it.
+const GROUND_RELIEF: f32 = 0.34;
+
 /// Ground heights over the page's world footprint.
 ///
 /// The footprint is a diamond in world space — a rectangle on screen unprojects
@@ -611,7 +635,7 @@ fn sample_ground(page: &Page, field: &WorldField) -> ((Vec2, Vec2), Vec<f32>, us
             // The grid is laid out in Blender's reflected space, so the field —
             // which only knows the game's — is asked about the swapped point.
             let world = Vec2::new(blender.y, blender.x);
-            heights.push(field.sample(world).height);
+            heights.push(field.sample(world).height * GROUND_RELIEF);
         }
     }
     ((low, high), heights, rows, columns)

@@ -258,11 +258,14 @@ def blade_material(settings):
     ramp.location = (-700, -100)
     ramp.color_ramp.interpolation = "EASE"
     stops = [
-        (0.00, (0.0030, 0.0345, 0.0014, 1.0)),
-        (0.22, (0.0064, 0.0840, 0.0022, 1.0)),
-        (0.55, (0.0112, 0.1820, 0.0026, 1.0)),
-        (0.82, (0.0178, 0.2760, 0.0032, 1.0)),
-        (1.00, (0.0325, 0.3720, 0.0044, 1.0)),
+        (0.00, (0.0026, 0.0355, 0.0011, 1.0)),
+        (0.22, (0.0055, 0.0870, 0.0017, 1.0)),
+        (0.55, (0.0105, 0.1930, 0.0020, 1.0)),
+        (0.82, (0.0186, 0.2900, 0.0024, 1.0)),
+        # The lit tip runs warm on purpose. A sunlit blade is yellow-green, and
+        # a tip that stays the same hue as its own root reads as a brighter lamp
+        # rather than as sunlight landing on it.
+        (1.00, (0.0415, 0.3880, 0.0030, 1.0)),
     ]
     first = ramp.color_ramp.elements[0]
     first.position, first.color = stops[0][0], stops[0][1]
@@ -276,7 +279,7 @@ def blade_material(settings):
     mix = nodes.new("ShaderNodeMix")
     mix.data_type = "RGBA"
     mix.location = (-500, 0)
-    live(mix.inputs, "B").default_value = (0.026, 0.145, 0.004, 1.0)
+    live(mix.inputs, "B").default_value = (0.020, 0.152, 0.003, 1.0)
 
     links.new(along.outputs["Result"], ramp.inputs["Fac"])
     links.new(ramp.outputs["Color"], live(mix.inputs, "A"))
@@ -356,7 +359,43 @@ def blade_material(settings):
     links.new(live(cool.outputs, "Result"), live(graded.inputs, "A"))
     links.new(live(warm.outputs, "Result"), live(graded.inputs, "B"))
     links.new(spread.outputs["Result"], live(graded.inputs, "Factor"))
-    links.new(live(graded.outputs, "Result"), principled.inputs["Base Color"])
+
+    # ## Dry blades
+    #
+    # A small population of tan and bleached straw, keyed on the `tone` the
+    # placement already assigns — `Tone::Dry` is 4, everything green is below it.
+    # Real turf always carries some dead material, and its absence is one of the
+    # quieter ways a generated field says it was generated: every blade the same
+    # age, none of them finished.
+    #
+    # Kept to what the placement chose rather than sprinkled here, so the dry
+    # blades sit where the field decided grass was struggling.
+    tone = nodes.new("ShaderNodeAttribute")
+    tone.attribute_name = "tone"
+    tone.attribute_type = "GEOMETRY"
+    tone.location = (-1100, -260)
+
+    is_dry = nodes.new("ShaderNodeMapRange")
+    is_dry.location = (-900, -260)
+    is_dry.inputs["From Min"].default_value = 3.3
+    is_dry.inputs["From Max"].default_value = 3.9
+    is_dry.clamp = True
+
+    straw = nodes.new("ShaderNodeValToRGB")
+    straw.location = (-700, -400)
+    straw.color_ramp.elements[0].color = (0.115, 0.088, 0.030, 1.0)
+    straw.color_ramp.elements[1].color = (0.235, 0.190, 0.072, 1.0)
+
+    withered = nodes.new("ShaderNodeMix")
+    withered.data_type = "RGBA"
+    withered.location = (-20, 150)
+
+    links.new(tone.outputs["Fac"], is_dry.inputs["Value"])
+    links.new(along.outputs["Result"], straw.inputs["Fac"])
+    links.new(live(graded.outputs, "Result"), live(withered.inputs, "A"))
+    links.new(live(straw.outputs, "Color"), live(withered.inputs, "B"))
+    links.new(is_dry.outputs["Result"], live(withered.inputs, "Factor"))
+    links.new(live(withered.outputs, "Result"), principled.inputs["Base Color"])
 
     # ## Why the specular lobe is kept small
     #
@@ -373,13 +412,13 @@ def blade_material(settings):
     # specular remains is broad rather than sharp, because a rough lobe spreads
     # the same energy over a wider band and stops clipping.
     principled.inputs["Roughness"].default_value = 0.48
-    principled.inputs["Subsurface Weight"].default_value = 0.70
+    principled.inputs["Subsurface Weight"].default_value = 0.78
     principled.inputs["Subsurface Scale"].default_value = 0.008
     principled.inputs["Subsurface Radius"].default_value = (0.004, 0.012, 0.002)
     # A blade is a sheet, not a solid; this is what stops Cycles treating it as
     # a volume with an inside.
     principled.inputs["Thin Wall"].default_value = True
-    principled.inputs["Transmission Weight"].default_value = 0.32
+    principled.inputs["Transmission Weight"].default_value = 0.40
     principled.inputs["Specular IOR Level"].default_value = 0.20
     principled.inputs["Sheen Weight"].default_value = 0.06
     principled.inputs["Sheen Roughness"].default_value = 0.55
@@ -389,19 +428,34 @@ def blade_material(settings):
 
 
 def ground_material():
-    """What is at the bottom of a gap: moss and dead thatch, not bare earth.
+    """The soil between the clumps: warm olive-brown earth, procedurally grained.
 
-    Deliberately darker than exposed soil would be in isolation, because the
-    ground is seen almost entirely through gaps and a soil bright enough to look
-    right on its own reads as a hole punched through the grass.
-    
-    But *too* dark is the opposite failure and the one this had. A canopy gap
-    with near-black at the bottom does not read as depth, it reads as missing
-    geometry — the eye needs some returned light to understand a recess as a
-    recess. Real turf almost never shows clean earth either: what is down there
-    is moss, dead thatch and stained soil, all of it green-shifted. So this ramp
-    runs from a mossy shadow to a dry olive rather than from black to brown, and
-    the green in it is what lets a gap read as deep rather than as punched.
+    This is the only warm colour in the picture and it is doing more work than
+    its area suggests. It separates one tuft from the next, makes a density
+    change legible, and gives the eye somewhere to rest — a canopy with nothing
+    at all between it reads as fur rather than as plants standing in ground.
+
+    ## Four octaves, because one reads as a gradient
+
+    A single noise ramped between two browns is what this was first, and at any
+    real magnification it is obviously a smooth blend. Earth is not smooth at any
+    scale, so the colour is built from bands that each answer a different
+    distance:
+
+    | Scale | What it is |
+    | --- | --- |
+    | ~2 m | damp and dry regions, the reason one clearing differs from another |
+    | ~25 cm | scuffs and patches, the size of a footfall |
+    | ~4 cm | grain and grit |
+    | ~1 cm | a bump, not a colour — see below |
+
+    The finest band drives **displacement of the normal** rather than colour.
+    Grain that is only a colour stays flat under a moving sun, which is exactly
+    when a surface announces it is a texture; grain that tilts the normal catches
+    light on one side, and that is what makes soil look like soil.
+
+    Everything here is a pure function of world position, so two renders of the
+    same ground produce the same dirt — the same rule the placement lives under.
     """
     material = bpy.data.materials.new("ground")
     material.use_nodes = True
@@ -413,19 +467,90 @@ def ground_material():
     principled = nodes.new("ShaderNodeBsdfPrincipled")
     principled.location = (-300, 0)
 
-    noise = nodes.new("ShaderNodeTexNoise")
-    noise.location = (-900, 0)
-    noise.inputs["Scale"].default_value = 12.0
-    noise.inputs["Detail"].default_value = 6.0
+    coordinate = nodes.new("ShaderNodeTexCoord")
+    coordinate.location = (-1800, 0)
 
-    ramp = nodes.new("ShaderNodeValToRGB")
-    ramp.location = (-600, 0)
-    ramp.color_ramp.elements[0].color = (0.042, 0.072, 0.024, 1.0)
-    ramp.color_ramp.elements[1].color = (0.120, 0.135, 0.052, 1.0)
+    def noise(scale, detail, roughness, y):
+        node = nodes.new("ShaderNodeTexNoise")
+        node.location = (-1600, y)
+        node.inputs["Scale"].default_value = scale
+        node.inputs["Detail"].default_value = detail
+        node.inputs["Roughness"].default_value = roughness
+        links.new(coordinate.outputs["Object"], node.inputs["Vector"])
+        return node
 
-    links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
-    links.new(ramp.outputs["Color"], principled.inputs["Base Color"])
-    principled.inputs["Roughness"].default_value = 0.92
+    region = noise(0.5, 2.0, 0.5, 320)
+    patch = noise(4.0, 3.0, 0.55, 140)
+    grain = noise(26.0, 4.0, 0.6, -40)
+    grit = noise(90.0, 3.0, 0.5, -220)
+
+    # ## How dark the soil has to be, and why it is not a taste question
+    #
+    # These were three times brighter for one render, and the result was not
+    # "pale soil" — it was a **rock**. A broad patch of bare earth sitting on a
+    # terrain mound, bright enough to hold its own against the canopy, stops
+    # reading as ground seen between plants and starts reading as an *object*
+    # lying on top of them. Nothing about the shader said boulder; the value did.
+    #
+    # So both ramps stay well under the grass they sit between. The soil is
+    # allowed to be warm, grained and varied — it is not allowed to compete.
+    # Anything that draws the eye at this scale should be a plant.
+    damp = nodes.new("ShaderNodeValToRGB")
+    damp.location = (-1350, 320)
+    damp.color_ramp.elements[0].color = (0.0125, 0.0135, 0.0070, 1.0)
+    damp.color_ramp.elements[1].color = (0.0330, 0.0290, 0.0150, 1.0)
+    links.new(region.outputs["Fac"], damp.inputs["Fac"])
+
+    dry = nodes.new("ShaderNodeValToRGB")
+    dry.location = (-1350, 140)
+    dry.color_ramp.elements[0].color = (0.0225, 0.0190, 0.0100, 1.0)
+    dry.color_ramp.elements[1].color = (0.0400, 0.0320, 0.0155, 1.0)
+    links.new(patch.outputs["Fac"], dry.inputs["Fac"])
+
+    # Which of the two, decided at the patch scale.
+    earth = nodes.new("ShaderNodeMix")
+    earth.data_type = "RGBA"
+    earth.location = (-1050, 220)
+    links.new(live(damp.outputs, "Color"), live(earth.inputs, "A"))
+    links.new(live(dry.outputs, "Color"), live(earth.inputs, "B"))
+    links.new(patch.outputs["Fac"], live(earth.inputs, "Factor"))
+
+    # Grain: a darkening, not a second colour. Multiplying keeps the hue the two
+    # ramps already agreed on and only varies how much light comes back.
+    grained = nodes.new("ShaderNodeMix")
+    grained.data_type = "RGBA"
+    grained.blend_type = "MULTIPLY"
+    grained.location = (-800, 220)
+    live(grained.inputs, "Factor").default_value = 0.55
+    links.new(live(earth.outputs, "Result"), live(grained.inputs, "A"))
+    links.new(live(grain.outputs, "Color"), live(grained.inputs, "B"))
+    links.new(live(grained.outputs, "Result"), principled.inputs["Base Color"])
+
+    # The bump. Two scales, because soil has both clods and grit, and a single
+    # frequency reads as sandpaper.
+    clods = nodes.new("ShaderNodeBump")
+    clods.location = (-620, -180)
+    clods.inputs["Strength"].default_value = 0.85
+    clods.inputs["Distance"].default_value = 0.022
+    links.new(grain.outputs["Fac"], clods.inputs["Height"])
+
+    fine = nodes.new("ShaderNodeBump")
+    fine.location = (-450, -180)
+    fine.inputs["Strength"].default_value = 0.55
+    fine.inputs["Distance"].default_value = 0.008
+    links.new(grit.outputs["Fac"], fine.inputs["Height"])
+    links.new(clods.outputs["Normal"], fine.inputs["Normal"])
+    links.new(fine.outputs["Normal"], principled.inputs["Normal"])
+
+    # Earth is matte and not remotely specular. A little variation in how matte
+    # keeps damp patches from looking identical to dry ones under the same sun.
+    rough = nodes.new("ShaderNodeMapRange")
+    rough.location = (-620, -420)
+    rough.inputs["To Min"].default_value = 0.78
+    rough.inputs["To Max"].default_value = 0.98
+    links.new(patch.outputs["Fac"], rough.inputs["Value"])
+    links.new(rough.outputs["Result"], principled.inputs["Roughness"])
+
     links.new(principled.outputs["BSDF"], output.inputs["Surface"])
     return material
 

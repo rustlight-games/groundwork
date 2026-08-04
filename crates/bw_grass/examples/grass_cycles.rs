@@ -37,11 +37,46 @@ fn main() {
     params.blade_length.0 *= options.length;
     params.blade_length.1 *= options.length;
 
+    // The scale the picture is *shown* at, from the framing.
+    let shown_px_per_metre = match options.view {
+        Some(metres) => options.height as f32 / metres,
+        None => options.px_per_metre,
+    };
+    // ## Why a wide view cannot keep the same density
+    //
+    // Blade count grows with the ground on screen, and ground grows with the
+    // square of how far out the camera pulls. The framing this look was tuned at
+    // holds 2.2 million blades; the game's own framing covers twenty-five times
+    // the ground, which would be fifty-five million — a billion vertices, and
+    // Blender will not hold it.
+    //
+    // It also should not have to. At 39 pixels to the metre a blade is a fifth
+    // of a pixel wide and cannot be resolved at all, so drawing every one of
+    // them is not detail, it is noise being averaged away at great expense.
+    // Fewer and slightly wider is what a mip level *is*, and the eye cannot tell
+    // the difference at a scale where no single blade is visible.
+    let detail_ratio = (shown_px_per_metre / TUNED_PX_PER_METRE).clamp(0.0, 1.0);
+    let crowding = detail_ratio.max(MIN_CROWDING);
+    let width_relief = 1.0 / crowding.sqrt();
+    params.tufts *= crowding;
+    params.fine *= crowding;
+    params.thatch *= crowding;
+    params.leaves *= crowding;
+
+    // Traced above the resolution it is stored at, then filtered down. Geometry
+    // thinner than a pixel does not become a fine blade — it becomes a partly
+    // covered pixel, and at canopy density that averages the field into a flat
+    // wash. See `grass_prebake`, where the same mistake was made first.
+    let supersample = options.supersample.max(1);
+    let traced_width = options.width * supersample;
+    let traced_height = options.height * supersample;
+    let traced_px_per_metre = shown_px_per_metre * supersample as f32;
+
     let page = Page::at_detail(
-        options.origin,
-        options.width,
-        options.height,
-        options.px_per_metre / bw_grass::iso::PX_PER_METRE,
+        options.origin * supersample as f32,
+        traced_width,
+        traced_height,
+        traced_px_per_metre / bw_grass::iso::PX_PER_METRE,
     );
     let field = WorldField::lit_by(params.seed, params.light);
 
@@ -54,17 +89,28 @@ fn main() {
         samples: options.samples,
         device: options.device.clone(),
         view_transform: options.view_transform.clone(),
-        blade_width: options.blade_width,
+        // Thinned-out grass is widened to compensate, so the canopy keeps the
+        // same coverage rather than opening up as the camera pulls back.
+        blade_width: options.blade_width * width_relief,
         passes: options.passes,
         ..default()
     };
     let scene = CyclesScene::build(&grown, &field, settings);
 
     println!(
-        "page {}x{} at {:.0} px/m — {} marks, {} curves, {}x{} ground",
-        page.width,
-        page.height,
-        page.px_per_metre,
+        "{}x{} shown at {:.0} px/m ({:.1}x{:.1} m of ground)",
+        options.width,
+        options.height,
+        shown_px_per_metre,
+        options.width as f32 / shown_px_per_metre,
+        options.height as f32 / shown_px_per_metre,
+    );
+    println!(
+        "  traced {}x{} at {:.0} px/m, {}x supersample, crowding {:.2}",
+        traced_width, traced_height, traced_px_per_metre, supersample, crowding,
+    );
+    println!(
+        "  {} marks, {} blades, {}x{} ground",
         grown.len(),
         scene.blades(),
         scene.ground_rows,
@@ -131,9 +177,21 @@ fn main() {
     }
 }
 
+/// The framing the look was tuned at, in pixels per metre.
+const TUNED_PX_PER_METRE: f32 = 192.0;
+
+/// The least the canopy may be thinned however far the camera pulls back.
+///
+/// Below this a wide view stops reading as grass and starts reading as a lawn
+/// that needs watering — the individual blades are invisible either way, but the
+/// *coverage* is not, and coverage is what says the ground is alive.
+const MIN_CROWDING: f32 = 0.16;
+
 struct Options {
     width: usize,
     height: usize,
+    view: Option<f32>,
+    supersample: usize,
     origin: Vec2,
     px_per_metre: f32,
     seed: u64,
@@ -154,6 +212,8 @@ impl Options {
         let mut options = Self {
             width: 512,
             height: 512,
+            view: None,
+            supersample: 1,
             origin: Vec2::ZERO,
             // Higher than the 96 the art is authored at, and on purpose. Cycles
             // draws real geometry, and a blade a third of a pixel wide does not
@@ -171,8 +231,15 @@ impl Options {
             // and a path tracer wants counts of *plants occupying space*. Swept
             // against the target art, these are where the canopy closes and the
             // five gated bands all hold.
-            density: 8.0,
-            length: 1.6,
+            // Six rather than eight, and blades a quarter shorter than they
+            // were. At eight and 1.6 the canopy sealed completely: no substrate
+            // showed anywhere, and grass with nothing between it reads as fur
+            // rather than as plants standing in ground. The reference exposes
+            // warm earth between its clumps, and that exposure is doing work —
+            // it separates tufts, makes density legible and carries the only
+            // warm colour in the picture.
+            density: 7.0,
+            length: 1.2,
             passes: false,
             keep: false,
             out: "target/cycles.png".to_string(),
@@ -186,6 +253,11 @@ impl Options {
                     let side = value().parse().unwrap_or(options.width);
                     options.width = side;
                     options.height = side;
+                }
+                "--view" => options.view = value().parse().ok(),
+                "--supersample" => {
+                    options.supersample =
+                        value().parse().unwrap_or(options.supersample).clamp(1, 6);
                 }
                 "--width" => options.width = value().parse().unwrap_or(options.width),
                 "--height" => options.height = value().parse().unwrap_or(options.height),

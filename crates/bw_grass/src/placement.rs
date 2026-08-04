@@ -161,7 +161,7 @@ pub fn plant(marks: &mut Vec<Stroke>, bed: &Bed) {
         // short, there are three hundred of them to a square metre, and the
         // tuft pass thinning itself does nothing about them. An opening with a
         // full mat over it is an opening you cannot see.
-        |ground| (1.20 - ground.resolution * 0.20) * (1.0 - ground.bare * 0.62),
+        |ground| (1.20 - ground.resolution * 0.20) * (1.0 - bareness(ground.bare) * 0.55),
         |marks, page, draw, root, ground, params| {
             let stroke = mat_stroke(draw, root, ground, params);
             emit(marks, page, stroke);
@@ -190,7 +190,18 @@ pub fn plant(marks: &mut Vec<Stroke>, bed: &Bed) {
         bed.params.fine,
         // Thickest where the tufts are thinnest, so a quiet passage is a
         // *smoother* canopy rather than a balder one.
-        |ground| (1.15 - ground.resolution * 0.30) * (1.0 - ground.bare * 0.75),
+        //
+        // And it survives bare ground far better than the tufts do — 0.42 rather
+        // than the 0.75 it was. This layer is the **transition**: a clearing that
+        // loses its tufts and its short grass together has a hard edge, and the
+        // soil inside it becomes a shape rather than a gap. Worse, a bare patch
+        // sitting on a terrain mound with nothing growing on it stops reading as
+        // ground at all and reads as a rock lying on the field, which is exactly
+        // what it did.
+        //
+        // Keeping the short grass thins toward the middle of a clearing instead
+        // of stopping at its edge, so the soil is glimpsed *through* something.
+        |ground| (1.15 - ground.resolution * 0.30) * (1.0 - bareness(ground.bare) * 0.42),
         |marks, page, draw, root, ground, params| {
             let stroke = fine_stroke(draw, root, ground, params, params.seed);
             emit(marks, page, stroke);
@@ -330,7 +341,7 @@ fn scatter(
             // with nothing growing in it is a hole in the texture; a patch with
             // shoots coming through it is somewhere the grass is thin, and the
             // second one is what ground looks like.
-            let coverage = 1.0 - smoothstep(0.04, 0.88, ground.bare) * 0.80;
+            let coverage = 1.0 - smoothstep(0.04, 0.88, bareness(ground.bare)) * 0.80;
             if !draw.chance((ground.density * coverage * weight(&ground)).min(1.0)) {
                 continue;
             }
@@ -524,13 +535,38 @@ fn fine_stroke(
     }
 }
 
+/// How bare a patch of ground is allowed to actually get.
+///
+/// The field's `bare` runs to one, meaning nothing grows. Nothing growing turns
+/// out to be a shape rather than an absence: a broad smooth expanse of lit soil
+/// sitting on a terrain mound stops reading as ground glimpsed between plants
+/// and starts reading as an *object* lying on the field — a rock, most often,
+/// which is a thing this world does not have yet.
+///
+/// So the top of the range is compressed. A clearing still reads as a clearing;
+/// it simply always has something growing in it, and the soil is always seen
+/// *through* grass rather than instead of it.
+#[inline]
+fn bareness(bare: f32) -> f32 {
+    // Nothing above this, however bare the field says the ground is.
+    const CEILING: f32 = 0.72;
+    (bare * CEILING).clamp(0.0, CEILING)
+}
+
 /// How far one tuft may stray from its colony's heading, radians.
 ///
-/// About seven degrees. Deliberately small: the reference art's colonies hold a
-/// shared direction across dozens of blades, and the eye reads that agreement as
-/// a single flowing mass. Widen this and the colonies dissolve back into
-/// independent clumps long before the individual tufts start looking regimented.
-const COLONY_SPREAD: f32 = 0.13;
+/// About seventeen degrees, and the number has been wrong in both directions.
+///
+/// It started at forty — each tuft scattering around the world flow on its own —
+/// and no colony could form, because agreement never survived one plant. Pulling
+/// it to seven built the colonies but overshot: the field turned into broad
+/// directional waves, read as fur or combed reeds rather than as tufted grass,
+/// and lost the sense that each clump is a plant with its own mind.
+///
+/// The band that works is narrow. A colony has to hold its direction across
+/// enough plants for the eye to group them, while each plant still visibly
+/// decides for itself.
+const COLONY_SPREAD: f32 = 0.30;
 
 /// How wide a colony is, in world metres.
 ///
@@ -554,15 +590,46 @@ struct Colony {
 /// join wherever two pages met — and it would be a *change of texture* rather
 /// than a step, which is the kind that survives every seam test.
 ///
-/// The cell is hard-edged, and that is fine because only the *heading* comes
-/// from it: two adjacent colonies differ by a turn rather than by a boundary,
-/// and the tufts either side of the line interleave exactly as they did before.
+/// ## The cell edge has to be soft, and the first version's was not
+///
+/// The heading is interpolated between the four nearest cell centres rather than
+/// read from whichever cell the point falls in. A hard lookup was tried first,
+/// on the reasoning that only a *direction* comes from the cell so a boundary
+/// could not show. That reasoning was wrong in a way worth recording.
+///
+/// Two adjacent colonies can differ by most of a radian. With a hard edge, the
+/// tufts on either side of the line lean away from each other, and grass that
+/// leans apart does not interleave — it opens. The result was a network of
+/// near-black fissures following the cell grid, several blade-lengths deep,
+/// which reads as holes burned in the canopy rather than as shadow. It was the
+/// single worst-looking thing in the field and it came from a boundary that was
+/// supposed to be invisible.
+///
+/// Smoothstep weights rather than linear, so the blend has no derivative
+/// discontinuity at the cell centres either — a linear blend of directions turns
+/// fastest exactly where it crosses a centre, which reads as a crease.
 fn colony_of(seed: u64, root: Vec2, ground: &Ground) -> Colony {
-    let cell = (root / COLONY_METRES).floor();
-    let mut draw = Draw::at(seed, Stream::Colony, cell.x as i32, cell.y as i32);
+    let grid = root / COLONY_METRES;
+    let base = grid.floor();
+    let fraction = grid - base;
+    // Smoothstep, so the weights meet flat at both ends.
+    let ease = |t: f32| t * t * (3.0 - 2.0 * t);
+    let (fx, fy) = (ease(fraction.x), ease(fraction.y));
+
+    // Headings are angles, so they are blended as unit vectors. Averaging
+    // radians directly puts the mean of 350° and 10° at 180°, which would turn
+    // the very boundary this is smoothing into a hard reversal.
+    let mut sum = Vec2::ZERO;
+    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+        let cell = base + Vec2::new(dx as f32, dy as f32);
+        let mut draw = Draw::at(seed, Stream::Colony, cell.x as i32, cell.y as i32);
+        let heading = ground.flow + draw.signed() * 0.75;
+        let weight = (if dx == 0 { 1.0 - fx } else { fx }) * (if dy == 0 { 1.0 - fy } else { fy });
+        sum += Vec2::from_angle(heading) * weight;
+    }
+
     Colony {
-        // The colony scatters around the flow as widely as a tuft used to.
-        heading: ground.flow + draw.signed() * 0.75,
+        heading: sum.normalize_or(Vec2::from_angle(ground.flow)).to_angle(),
     }
 }
 
@@ -740,13 +807,30 @@ fn grow_tuft(
     // for the eye to group them into one mass with a direction; colonies still
     // differ from each other as much as tufts used to.
     let colony = colony_of(params.seed, centre, ground);
-    let heading = if draw.chance(0.09) {
-        // A few plants ignore their colony. Total agreement is a comb, and the
-        // stragglers are what keep a colony's edge from reading as a boundary.
-        colony.heading + draw.signed() * 1.4
+    // Three kinds of plant, and the two minorities are what stop a colony
+    // reading as brushed fibre.
+    //
+    // A field where every tuft obeys its colony is a comb however good the
+    // colony structure is — the flow becomes one continuous bend and the eye
+    // reads fur, carpet or seaweed rather than plants. What breaks it is not
+    // more noise; noise averages back into the mean. It is a *minority that
+    // disagrees structurally*: some tufts standing across the flow, and some
+    // standing up out of it entirely.
+    let dissent = draw.unit();
+    let heading = if dissent < 0.07 {
+        // Across the colony, near a right angle. Few, and deliberately not
+        // random — a tuft at ninety degrees to its neighbours interrupts the
+        // band, where one at a random angle just blurs it.
+        colony.heading + std::f32::consts::FRAC_PI_2 * draw.signed().signum() + draw.signed() * 0.35
+    } else if dissent < 0.15 {
+        colony.heading + draw.signed() * 1.2
     } else {
         colony.heading + draw.signed() * COLONY_SPREAD
     };
+    // And a minority that leans hardly at all. A flow is only legible against
+    // something upright; with nothing standing straight the whole field looks
+    // combed rather than blown.
+    let upright = draw.chance(0.13);
     let flow = Vec2::from_angle(heading);
     let shade = plant_light(draw, ground, params) - params.base_light;
     let maturity = (ground.resolution * 0.6 + ground.density * 0.3 + draw.unit() * 0.35).min(1.0);
@@ -890,6 +974,14 @@ fn grow_tuft(
             stroke.length *=
                 vigour * reach * role.length(&mut inner) * age * (1.0 + (pile - 1.0) * 0.5);
             stroke.bend += role.lean(&mut inner) + (1.0 - pile) * 1.1;
+            if upright {
+                // A tuft that stands. Bend is what turns a plant into a stroke
+                // lying along the flow, so taking most of it back is what makes
+                // this one read as standing *in* the field rather than being
+                // swept through it — and a flow is only legible against
+                // something that is not obeying it.
+                stroke.bend *= 0.38;
+            }
             stroke.width *= role.width(&mut inner) * (0.72 + age * 0.38);
             stroke.twist *= role.twist();
 
