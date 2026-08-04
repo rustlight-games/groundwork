@@ -33,6 +33,9 @@
 //! - [`layout`] — the square world tiles a render is *about*, and which one of
 //!   them is the subject. A composition request laid over continuous terrain,
 //!   never a generation boundary.
+//! - [`frame`] — fitting a layout into a frame, and saying which world it was.
+//!   One resolver, called by every renderer, so the cheap plate and the traced
+//!   plate cannot disagree about scale, origin or which tile is the middle.
 //! - [`scene`] — the whole thing, and the builder that produces it.
 //!
 //! ## What may not live here
@@ -48,6 +51,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod frame;
 pub mod ground;
 pub mod instance;
 pub mod layout;
@@ -55,6 +59,10 @@ pub mod mark;
 pub mod projection;
 pub mod scene;
 
+pub use frame::{
+    IsoFrameOptions, RenderIdentity, ResolvedIsoFrame, ResolvedRenderSample, TilePolygon,
+    resolve_render_sample,
+};
 pub use ground::{GroundMaterialChannel, GroundModifierChannel, GroundSurface};
 pub use instance::{PrototypeBinding, PrototypeIndex, PrototypeInstance};
 pub use layout::{
