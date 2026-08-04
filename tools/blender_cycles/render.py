@@ -103,7 +103,7 @@ def build_blades(scene_dir, spec, settings):
     """Folded ribbons, straight from the exported buffer.
 
     A mesh rather than Cycles curve primitives, and that is not an optimisation
-    — see `bw_grass::cycles::VERTICES_PER_RIB`. A `RIBBONS` curve is a
+    — see `terrain_cycles::export::VERTICES_PER_SEGMENT`. A `RIBBONS` curve is a
     camera-facing quad whose shading normal faces the viewer, so every blade in
     the field presents the same normal to the sun and the canopy shades flat.
     Three vertices per rib give a real fold, and the fold is what puts a lit side
@@ -757,7 +757,7 @@ def build_sun(sun):
 
 
 def build_camera(spec, page):
-    """The orthographic camera `bw_grass::cycles::Camera` derived.
+    """The orthographic camera the scene package derived.
 
     Nothing here is chosen. The basis, the scale and the pixel aspect all arrive
     computed, because the page is a texture the game samples under a fixed
@@ -806,7 +806,7 @@ def configure_render(render_spec, camera_spec, output):
     scene.render.image_settings.color_mode = "RGB"
     scene.render.image_settings.color_depth = "8"
 
-    # The dimetric stretch. See `bw_grass::cycles::Camera`.
+    # The dimetric stretch. See `terrain_scene::projection`.
     scene.render.pixel_aspect_x = 1.0
     scene.render.pixel_aspect_y = camera_spec["pixel_aspect_y"]
 

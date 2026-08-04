@@ -1,9 +1,9 @@
 //! Measure a plate against reference art, in absolute numbers.
 //!
 //! ```sh
-//! cargo run --release -p bw_grass --example grass_critique -- ours.png
-//! cargo run --release -p bw_grass --example grass_critique -- ours.png --target ref.png
-//! cargo run --release -p bw_grass --example grass_critique -- ours.png --crop 1024
+//! cargo run --release -p terrain_bench --example grass_critique -- ours.png
+//! cargo run --release -p terrain_bench --example grass_critique -- ours.png --target ref.png
+//! cargo run --release -p terrain_bench --example grass_critique -- ours.png --crop 1024
 //! ```
 //!
 //! This is the **look gate**, and it is the counterpart to `grass_snapshot`

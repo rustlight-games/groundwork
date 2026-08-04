@@ -2216,7 +2216,7 @@ mod tests {
         let mut tallest = 0.0f32;
         for (index, origin) in terrain_generators::fixtures::PLACES.iter().enumerate() {
             let params = BakeParams {
-                seed: bw_seed(index),
+                seed: scenario_seed(index),
                 quality: GrassRenderQuality::Reference,
                 ..Default::default()
             };
@@ -2240,7 +2240,7 @@ mod tests {
     }
 
     /// A stable per-place seed, so the sweep above covers different worlds.
-    fn bw_seed(index: usize) -> u64 {
+    fn scenario_seed(index: usize) -> u64 {
         0x5eed_1234u64.wrapping_add(index as u64 * 0x9e37_79b9)
     }
 

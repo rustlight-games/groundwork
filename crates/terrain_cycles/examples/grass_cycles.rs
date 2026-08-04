@@ -1,9 +1,9 @@
 //! Grow a page in Rust, trace it in Cycles.
 //!
 //! ```sh
-//! cargo run --release -p bw_grass --example grass_cycles
-//! cargo run --release -p bw_grass --example grass_cycles -- --size 768 --samples 512
-//! cargo run --release -p bw_grass --example grass_cycles -- --px-per-metre 192 --keep
+//! cargo run --release -p terrain_cycles --example grass_cycles
+//! cargo run --release -p terrain_cycles --example grass_cycles -- --size 768 --samples 512
+//! cargo run --release -p terrain_cycles --example grass_cycles -- --px-per-metre 192 --keep
 //! ```
 //!
 //! The eyeball loop for the path-traced tier, and the counterpart to

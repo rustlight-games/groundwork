@@ -2,13 +2,13 @@
 //!
 //! ```sh
 //! # Before optimising: take the pictures and keep them.
-//! cargo run --release -p bw_grass --example grass_snapshot -- --accept
+//! cargo run --release -p terrain_bench --example grass_snapshot -- --accept
 //!
 //! # After: same command without --accept. It prints what changed.
-//! cargo run --release -p bw_grass --example grass_snapshot
+//! cargo run --release -p terrain_bench --example grass_snapshot
 //!
 //! # Record a new committed performance baseline, deliberately.
-//! cargo run --release -p bw_grass --example grass_snapshot -- --accept-perf
+//! cargo run --release -p terrain_bench --example grass_snapshot -- --accept-perf
 //! ```
 //!
 //! ## What this replaced, and why

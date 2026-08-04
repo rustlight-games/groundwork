@@ -18,13 +18,15 @@ use glam::Vec2;
 
 /// World metres visible vertically when the game frames a battle.
 ///
-/// The same unit as `bw_render::BattleCamera::view_height`, deliberately, so a
+/// The same unit as `terrain_bench::scenarios::RTS_VIEW_M`, deliberately, so a
 /// number decided here can be typed straight into the camera.
 pub const BATTLE_VIEW: f32 = 26.0;
 
 /// World metres visible vertically when the game actually opens.
 ///
-/// `bw_render::BattleCamera::default().view_height`, copied because the
+/// The height a strategy camera frames the ground at, and the one every
+/// level-of-detail decision has to hold at. Stated here as well as in
+/// `terrain_bench::scenarios::RTS_VIEW_M` because the
 /// dependency does not point that way. It is **not** [`BATTLE_VIEW`], and the
 /// two having drifted apart is worth naming rather than quietly picking one:
 /// [`BATTLE_VIEW`] is the middle rung of the snapshot ladder, and moving it

@@ -225,7 +225,7 @@ pub const METRES_PER_PX_UP: f32 = 1.0 / (Z_SCALE * PX_PER_METRE);
 /// seen.
 ///
 /// The two numbers this reconciles are set a long way apart in the codebase and
-/// neither knows about the other. `bw_render::BattleCamera::view_height` is
+/// neither knows about the other. `terrain_bench::scenarios::RTS_VIEW_M` is
 /// world metres visible vertically; [`PX_PER_METRE`] is how many cache pixels a
 /// screen metre is baked at. The ratio between them — how much a finished page
 /// is shrunk before anyone sees it — belonged to neither, so until this existed

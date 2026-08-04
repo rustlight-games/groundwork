@@ -1,8 +1,8 @@
 //! Trace the pages the game will ask for, so `./run` shows the good grass.
 //!
 //! ```sh
-//! cargo run --release -p bw_grass --example grass_prebake
-//! cargo run --release -p bw_grass --example grass_prebake -- --radius 4 --samples 256
+//! cargo run --release -p terrain_bevy --example grass_prebake
+//! cargo run --release -p terrain_bevy --example grass_prebake -- --radius 4 --samples 256
 //! ```
 //!
 //! Cycles takes seconds a page and the game has a frame, so the path tracer can

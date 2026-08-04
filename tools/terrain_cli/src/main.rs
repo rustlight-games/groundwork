@@ -22,12 +22,12 @@
 //! command that quietly succeeds while doing nothing is worse than one that is
 //! missing, because the first thing built on top of it will be built on sand.
 //!
-//! ## Transitional dependencies
+//! ## What it reaches for
 //!
-//! Everything here reaches through `bw_grass`. That is expected at this point in
-//! the migration and is the reason this crate exists now rather than later: the
-//! entry points move first, the implementations follow, and the two are never
-//! broken at the same time.
+//! `terrain_format` to read a document, `terrain_core` to compile and sample it,
+//! `terrain_generators` to grow content, `terrain_bake` and `terrain_cycles` to
+//! draw it, and `terrain_dataset` to pair the two. Not Bevy — nothing this
+//! binary does wants a window.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

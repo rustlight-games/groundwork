@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn saving_creates_the_directory_it_was_asked_for() {
-        let root = std::env::temp_dir().join(format!("bw_bench_save_{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("terrain_bench_save_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("baseline").join("thing.ron");
 

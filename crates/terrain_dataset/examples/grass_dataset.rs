@@ -1,9 +1,9 @@
 //! Generate paired training data.
 //!
 //! ```sh
-//! cargo run --release -p bw_grass --example grass_dataset
-//! cargo run --release -p bw_grass --example grass_dataset -- --shards 64 --aovs
-//! cargo run --release -p bw_grass --example grass_dataset -- --out target/corpus
+//! cargo run --release -p terrain_dataset --example grass_dataset
+//! cargo run --release -p terrain_dataset --example grass_dataset -- --shards 64 --aovs
+//! cargo run --release -p terrain_dataset --example grass_dataset -- --out target/corpus
 //! ```
 //!
 //! Each shard is one patch of ground rendered twice from **one scene**, cropped

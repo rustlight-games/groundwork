@@ -22,7 +22,7 @@
 //!
 //! ## Accepting a new set
 //!
-//! `TERRAIN_ACCEPT_FINGERPRINTS=1 cargo test -p bw_grass --test refactor_fingerprints`
+//! `TERRAIN_ACCEPT_FINGERPRINTS=1 cargo test -p terrain_bench --test refactor_fingerprints`
 //!
 //! rewrites the file. Do that only when the meadow was *meant* to change, bump
 //! [`terrain_bench::fingerprint::GENERATOR_VERSION`] in the same commit, and say why

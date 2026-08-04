@@ -1,10 +1,10 @@
 //! What the grass costs.
 //!
 //! ```sh
-//! cargo bench -p bw_grass
-//! cargo bench -p bw_grass -- page_bake        # just the headline
-//! cargo bench -p bw_grass -- --save-baseline before
-//! cargo bench -p bw_grass -- --baseline before
+//! cargo bench -p terrain_bake --bench bake
+//! cargo bench -p terrain_bake --bench bake -- page_bake        # just the headline
+//! cargo bench -p terrain_bake --bench bake -- --save-baseline before
+//! cargo bench -p terrain_bake --bench bake -- --baseline before
 //! ```
 //!
 //! The last two lines are the whole workflow. Save a baseline, optimise,

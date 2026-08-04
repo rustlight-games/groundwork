@@ -1,10 +1,10 @@
 //! Photograph the laboratory plate.
 //!
 //! ```sh
-//! cargo run --release -p bw_grass --example grass_lab
-//! cargo run --release -p bw_grass --example grass_lab -- --sweep
-//! cargo run --release -p bw_grass --example grass_lab -- --azimuth 90 --elevation 20
-//! cargo run --release -p bw_grass --example grass_lab -- --quality preview
+//! cargo run --release -p terrain_bench --example grass_lab
+//! cargo run --release -p terrain_bench --example grass_lab -- --sweep
+//! cargo run --release -p terrain_bench --example grass_lab -- --azimuth 90 --elevation 20
+//! cargo run --release -p terrain_bench --example grass_lab -- --quality preview
 //! ```
 //!
 //! `--sweep` is the one to run after any lighting change. It photographs the

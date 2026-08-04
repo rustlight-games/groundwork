@@ -111,7 +111,7 @@ impl Page {
     ///
     /// The whole point of [`Page::at_detail`], expressed as the call a renderer
     /// actually wants to make. `view_height` is world metres visible
-    /// vertically — `bw_render::BattleCamera::view_height` — and `screen` is the
+    /// vertically — `terrain_bench::scenarios::RTS_VIEW_M` — and `screen` is the
     /// window; [`iso::view_pixels`] turns the pair into the scale the ground is
     /// presented at, and this bakes there instead of baking at the authoring
     /// scale and throwing the difference away.

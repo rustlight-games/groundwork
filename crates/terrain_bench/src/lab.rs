@@ -13,9 +13,9 @@
 //! it says whether it did in one glance.
 //!
 //! ```sh
-//! cargo run --release -p bw_grass --example grass_lab
-//! cargo run --release -p bw_grass --example grass_lab -- --azimuth 90
-//! cargo run --release -p bw_grass --example grass_lab -- --quality preview
+//! cargo run --release -p terrain_bench --example grass_lab
+//! cargo run --release -p terrain_bench --example grass_lab -- --azimuth 90
+//! cargo run --release -p terrain_bench --example grass_lab -- --quality preview
 //! ```
 //!
 //! ## The layout is fixed on purpose

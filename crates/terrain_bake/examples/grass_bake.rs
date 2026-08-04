@@ -6,8 +6,8 @@
 //! that never moves.
 //!
 //! ```sh
-//! cargo run --release -p bw_grass --example grass_bake
-//! cargo run --release -p bw_grass --example grass_bake -- \
+//! cargo run --release -p terrain_bake --example grass_bake
+//! cargo run --release -p terrain_bake --example grass_bake -- \
 //!     --out /tmp/plate.png --size 1448x1086 --seed 7
 //! ```
 //!
@@ -19,7 +19,7 @@
 //! ## Looking at it the size the player will
 //!
 //! ```sh
-//! cargo run --release -p bw_grass --example grass_bake -- --view 13,26,35,48
+//! cargo run --release -p terrain_bake --example grass_bake -- --view 13,26,35,48
 //! ```
 //!
 //! Every art constant in this crate is expressed in cache pixels, and the cache
@@ -320,7 +320,7 @@ struct Options {
     density: Option<f32>,
     /// Camera heights to render, in world metres visible vertically.
     ///
-    /// The same unit as `bw_render::BattleCamera::view_height`, deliberately, so
+    /// The same unit as `terrain_bench::scenarios::RTS_VIEW_M`, deliberately, so
     /// a number that looks right here can be typed straight into the camera.
     views: Vec<f32>,
     /// Overlay unit-sized markers and a ten-metre bar, to judge the framing.
