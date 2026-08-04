@@ -65,15 +65,15 @@ use bw_bench::SEEDS;
 use bw_grass::bake::{
     BakeParams, Macro, TILE_PIXELS, bake, bake_grid, lay_floor, plant_strokes, resolve,
 };
-use bw_grass::field::WorldField;
-use bw_grass::fixtures::{PLACES, place_name};
-use bw_grass::iso;
-use bw_grass::page::Page;
 use bw_grass::painter::Painter;
-use bw_grass::stroke::Stroke;
 use bw_grass::surface::{Surface, blur, resample};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use glam::{Vec2, Vec3};
+use terrain_generators::field::WorldField;
+use terrain_generators::fixtures::{PLACES, place_name};
+use terrain_generators::iso;
+use terrain_generators::page::Page;
+use terrain_generators::stroke::Stroke;
 
 /// A page bake is around a tenth of a second, so criterion's default hundred
 /// samples would be ten seconds of measurement plus warm-up for every single
@@ -189,12 +189,12 @@ fn detail_levels(c: &mut Criterion) {
 /// costs and how much world it buys.
 ///
 /// The two rows do not cover the same ground and are not meant to. At
-/// [`bw_grass::fixtures::SHIPPING_VIEW`] the ground is presented at about a
+/// [`terrain_generators::fixtures::SHIPPING_VIEW`] the ground is presented at about a
 /// fifth, so the second row's page carries roughly twenty-four times the world
 /// the first one's does — which is the whole point, and why the interesting
 /// figure here is the metres of ground per millisecond printed alongside.
 fn stream_page(c: &mut Criterion) {
-    use bw_grass::fixtures::{SCREEN, SHIPPING_VIEW};
+    use terrain_generators::fixtures::{SCREEN, SHIPPING_VIEW};
     let mut group = c.benchmark_group("stream_page");
     group.sample_size(SAMPLES);
     let params = params(SEEDS[0]);
@@ -228,16 +228,16 @@ fn stream_page(c: &mut Criterion) {
 /// One screenful of ground, at the camera the game ships at.
 ///
 /// The end-to-end number, and the only one in this file that answers the
-/// question a player would ask. [`bw_grass::fixtures::BATTLE_VIEW`] metres of
+/// question a player would ask. [`terrain_generators::fixtures::BATTLE_VIEW`] metres of
 /// world on a 1080p window fixes both how much cache is needed and how far it is
-/// minified, and [`bw_grass::iso::view_pixels`] reconciles the two.
+/// minified, and [`terrain_generators::iso::view_pixels`] reconciles the two.
 ///
 /// Both rows cover the same screen. The first bakes at the authoring scale and
 /// lets the sampler shrink it; the second bakes at the scale the screen will
 /// show and does not. All cores, because filling a view is the one thing in this
 /// crate that is genuinely a throughput problem rather than a latency one.
 fn view_fill(c: &mut Criterion) {
-    use bw_grass::fixtures::{SCREEN, SHIPPING_VIEW};
+    use terrain_generators::fixtures::{SCREEN, SHIPPING_VIEW};
     let mut group = c.benchmark_group("view");
     group.sample_size(10);
     group.measurement_time(std::time::Duration::from_secs(30));
@@ -360,7 +360,7 @@ fn resample_view(c: &mut Criterion) {
         .map(|i| Vec3::splat(((i * 41) % 97) as f32 / 96.0))
         .collect();
 
-    let (_, _, scale) = iso::view_pixels(bw_grass::fixtures::BATTLE_VIEW, (1920, 1080));
+    let (_, _, scale) = iso::view_pixels(terrain_generators::fixtures::BATTLE_VIEW, (1920, 1080));
     let target = (SIDE as f32 * scale) as usize;
 
     group.throughput(Throughput::Elements((SIDE * SIDE) as u64));

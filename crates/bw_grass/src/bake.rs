@@ -26,19 +26,19 @@
 use glam::{Vec2, Vec3};
 use rayon::prelude::*;
 
-use crate::field::WorldField;
-use crate::iso;
 use crate::lighting::{self, FormWeights};
-use crate::page::Page;
 use crate::painter::Painter;
 use crate::palette;
-use crate::quality::GrassRenderQuality;
-use crate::rng::Stream;
-use crate::scene::GrassScene;
 use crate::shadow::{self, ShadowMap};
-use crate::style::{GrassParams, GrassStyle};
 use crate::surface::{Surface, blur};
-use crate::tone::Tone;
+use terrain_generators::field::WorldField;
+use terrain_generators::iso;
+use terrain_generators::page::Page;
+use terrain_generators::quality::GrassRenderQuality;
+use terrain_generators::rng::Stream;
+use terrain_generators::scene::GrassScene;
+use terrain_generators::style::{GrassParams, GrassStyle};
+use terrain_generators::tone::Tone;
 
 /// Hermite ramp between two edges.
 #[inline]
@@ -1361,7 +1361,7 @@ pub fn resolve_passes(
         for x in 0..width {
             let (fx, fy) = (x as f32, y as f32);
             // Shaded by the domes themselves rather than by differencing their
-            // sum — see [`crate::field::WorldField::mounds`]. Smooth by
+            // sum — see [`terrain_generators::field::WorldField::mounds`]. Smooth by
             // construction, with no lattice creases and no terminator.
             let facing = lattice.at(&lattice.lit, fx, fy).clamp(-1.0, 1.0);
             // The shaded side falls away at roughly half the rate the lit side
@@ -1940,8 +1940,8 @@ mod tests {
     // only the rasteriser knows where the paint actually lands. A test that
     // reasoned about the band without drawing anything would certify arithmetic
     // rather than pixels, which is exactly the failure they exist to prevent.
-    use crate::placement::{BEND_CEILING, MARGIN, TUFT_RADIUS, VIGOUR_CEILING};
-    use crate::stroke::Stroke;
+    use terrain_generators::placement::{BEND_CEILING, MARGIN, TUFT_RADIUS, VIGOUR_CEILING};
+    use terrain_generators::stroke::Stroke;
 
     fn small_page() -> Page {
         Page::new(Vec2::new(-64.0, -64.0), 96, 96)
@@ -2212,9 +2212,9 @@ mod tests {
         // Swept over real pages rather than reasoned about, because the bound is
         // the product of four independent multipliers and any one of them can be
         // raised without the others being looked at.
-        use crate::placement::CANOPY_METRES;
+        use terrain_generators::placement::CANOPY_METRES;
         let mut tallest = 0.0f32;
-        for (index, origin) in crate::fixtures::PLACES.iter().enumerate() {
+        for (index, origin) in terrain_generators::fixtures::PLACES.iter().enumerate() {
             let params = BakeParams {
                 seed: bw_seed(index),
                 quality: GrassRenderQuality::Reference,
@@ -2250,13 +2250,13 @@ mod tests {
         // down to the lowest elevation the renderer claims to support. Getting
         // this wrong at 35° and right at 55° is exactly the shape of the bug
         // this exists to prevent.
-        use crate::placement::{Bed, CANOPY_METRES, footprint};
+        use terrain_generators::placement::{Bed, CANOPY_METRES, footprint};
         let field = WorldField::lit_by(1, BakeParams::default().light);
         for degrees in [35.0f32, 45.0, 55.0] {
             let elevation = degrees.to_radians();
             let params = BakeParams {
                 quality: GrassRenderQuality::Reference,
-                light: crate::sun::Key {
+                light: terrain_generators::sun::Key {
                     azimuth: 0.0,
                     elevation,
                 }
@@ -2420,9 +2420,9 @@ mod tests {
         let light = BakeParams::default().light;
         let plane = Vec2::new(light.x, light.y).normalize();
         assert!(
-            plane.distance(crate::field::LIGHT_PLANE) < 1.0e-3,
+            plane.distance(terrain_generators::field::LIGHT_PLANE) < 1.0e-3,
             "bake says {plane:?}, the mound field says {:?}",
-            crate::field::LIGHT_PLANE
+            terrain_generators::field::LIGHT_PLANE
         );
         // And it is the upper left, in image space where +Y points down.
         assert!(plane.x < 0.0 && plane.y < 0.0, "the sun moved: {plane:?}");
@@ -2707,7 +2707,7 @@ mod tests {
         }
     }
 
-    use crate::fixtures::PLACES;
+    use terrain_generators::fixtures::PLACES;
 
     /// A page baked coarsely has to be the page baked finely and then shrunk.
     ///
@@ -2778,7 +2778,7 @@ mod tests {
     /// Page independence has to survive the detail levels too.
     ///
     /// Every placement decision is a pure function of a world coordinate, and
-    /// [`crate::field::GroundCache`] quantises that coordinate onto a lattice
+    /// [`terrain_generators::field::GroundCache`] quantises that coordinate onto a lattice
     /// whose spacing comes from the page's *scale*. If it ever came from the
     /// page's origin instead, two neighbouring pages would quantise the same
     /// point differently and the join between them would open up.
@@ -2898,7 +2898,7 @@ impl BakeRegion {
             origin,
             pages: (side.max(1), side.max(1)),
             page_pixels,
-            px_per_metre: crate::iso::PX_PER_METRE,
+            px_per_metre: terrain_generators::iso::PX_PER_METRE,
         }
     }
 

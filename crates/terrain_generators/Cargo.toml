@@ -1,0 +1,14 @@
+[package]
+name = "terrain_generators"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "What grows on the terrain: fields, candidates, and blade morphology"
+
+# No Bevy, no rasteriser, no path tracer. This crate decides where every mark
+# goes and what shape it is, and hands that description to whoever is drawing.
+[dependencies]
+terrain_core.workspace = true
+terrain_scene.workspace = true
+glam.workspace = true
+rayon.workspace = true

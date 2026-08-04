@@ -22,6 +22,7 @@ rust-version = "1.95"
 terrain_core = { path = "crates/terrain_core" }
 terrain_format = { path = "crates/terrain_format" }
 terrain_scene = { path = "crates/terrain_scene" }
+terrain_generators = { path = "crates/terrain_generators" }
 bw_bench = { path = "crates/bw_bench" }
 bw_grass = { path = "crates/bw_grass" }
 

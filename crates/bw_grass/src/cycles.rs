@@ -56,12 +56,12 @@ use std::path::{Path, PathBuf};
 
 use glam::{Vec2, Vec3};
 
-use crate::field::WorldField;
-use crate::iso;
-use crate::page::Page;
-use crate::quality::GrassRenderQuality;
-use crate::scene::GrassScene;
-use crate::stroke::{BladeSample, walk_blade};
+use terrain_generators::field::WorldField;
+use terrain_generators::iso;
+use terrain_generators::page::Page;
+use terrain_generators::quality::GrassRenderQuality;
+use terrain_generators::scene::GrassScene;
+use terrain_generators::stroke::{BladeSample, walk_blade};
 
 /// How many cross-sections each exported blade carries.
 ///
@@ -117,7 +117,7 @@ pub fn ribs_for(px_per_metre: f32) -> usize {
 /// it is a property of the primitive.
 ///
 /// Three vertices give a real fold. The centre stands proud by
-/// [`crate::geometry::RIDGE`] of the half-width, so the two facets face
+/// [`terrain_generators::geometry::RIDGE`] of the half-width, so the two facets face
 /// genuinely different directions and one can catch the sun while the other does
 /// not — the value break *inside* a single blade that the reference art has
 /// everywhere.
@@ -604,7 +604,7 @@ fn resample_into(walked: &[BladeSample], width_scale: f32, ribs: usize, out: &mu
         };
 
         let half_width = (half / iso::PX_PER_METRE * width_scale).max(1.0e-5);
-        let ridge = crate::geometry::RIDGE * half_width;
+        let ridge = terrain_generators::geometry::RIDGE * half_width;
         for step in 0..VERTICES_PER_RIB {
             // −1, 0, +1 across the blade.
             let u = step as f32 - 1.0;
@@ -746,20 +746,18 @@ pub fn blender_path() -> PathBuf {
     PathBuf::from("blender")
 }
 
-/// Quality tiers, expressed as path-tracer budgets.
-impl GrassRenderQuality {
-    /// Path-tracing samples per pixel for this tier.
-    ///
-    /// The rasteriser's tiers measured supersampling and shadow-map density.
-    /// Those quantities do not exist here — there is one number that trades
-    /// noise against time, and the denoiser moves where the useful part of that
-    /// curve sits.
-    pub const fn cycles_samples(self) -> u32 {
-        match self {
-            Self::Preview => 48,
-            Self::Dataset => 256,
-            Self::Reference => 1024,
-        }
+/// Path-tracing samples per pixel for a quality tier.
+///
+/// A free function because the tier belongs to the generator and this budget
+/// belongs to Cycles. The rasteriser's tiers measure supersampling and shadow-map
+/// density; those quantities do not exist here, where there is one number that
+/// trades noise against time and a denoiser that moves where the useful part of
+/// that curve sits.
+pub const fn cycles_samples(quality: GrassRenderQuality) -> u32 {
+    match quality {
+        GrassRenderQuality::Preview => 48,
+        GrassRenderQuality::Dataset => 256,
+        GrassRenderQuality::Reference => 1024,
     }
 }
 
@@ -831,7 +829,7 @@ mod tests {
 
     #[test]
     fn a_walked_blade_resamples_to_a_fixed_point_count() {
-        use crate::stroke::Stroke;
+        use terrain_generators::stroke::Stroke;
         let stroke = Stroke {
             root: Vec3::new(1.0, 2.0, 0.0),
             length: 0.3,
@@ -913,7 +911,7 @@ mod tests {
         // could quietly take away: a scene is reproducible, so the picture can
         // be rebuilt from a seed rather than archived.
         use crate::bake::BakeParams;
-        use crate::field::WorldField;
+        use terrain_generators::field::WorldField;
 
         let params = BakeParams::default();
         let page = Page::new(Vec2::new(37.0, -19.0), 96, 96);
@@ -943,7 +941,7 @@ mod tests {
         // with its neighbour along their shared edge and no guard band could
         // hide it.
         use crate::bake::BakeParams;
-        use crate::field::WorldField;
+        use terrain_generators::field::WorldField;
 
         let params = BakeParams::default();
         let field = WorldField::lit_by(params.seed, params.light);
@@ -992,7 +990,7 @@ mod tests {
         // The property the whole mesh export exists for. A flat ribbon presents
         // one normal and shades uniformly; this checks the fold is real by
         // measuring the angle between the two facets of one rib.
-        use crate::geometry::Frame;
+        use terrain_generators::geometry::Frame;
         let frame = Frame::build(0.0, 1.0, 0.0, 1.0, 0.0);
         let walk: Vec<BladeSample> = [0.0f32, 0.5, 1.0]
             .iter()
@@ -1034,7 +1032,7 @@ mod tests {
         // A straight run with samples deliberately bunched at one end. Even
         // spacing on the output is what says the resample read distance rather
         // than sample index.
-        use crate::geometry::Frame;
+        use terrain_generators::geometry::Frame;
         let frame = Frame::build(0.0, 1.0, 0.0, 1.0, 0.0);
         let bunched: Vec<BladeSample> = [0.0f32, 0.01, 0.02, 0.03, 0.04, 0.5, 1.0]
             .iter()

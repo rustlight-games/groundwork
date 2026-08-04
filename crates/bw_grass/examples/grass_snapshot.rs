@@ -40,8 +40,8 @@
 //! field is exactly the other way round. Photographing a single height would
 //! certify half the changes that damage the look.
 //!
-//! So every place in [`bw_grass::fixtures::PLACES`] is photographed at every
-//! height in [`bw_grass::fixtures::ZOOMS`], and the report carries the worst row
+//! So every place in [`terrain_generators::fixtures::PLACES`] is photographed at every
+//! height in [`terrain_generators::fixtures::ZOOMS`], and the report carries the worst row
 //! as well as the mean. The mean is the summary; the worst row is the finding.
 //!
 //! ## Snapshots are temporary, the performance baseline is not
@@ -57,11 +57,11 @@ use std::path::{Path, PathBuf};
 use bw_bench::{Measurement, Report, SEEDS, Unit};
 use bw_grass::bake::{BakeParams, TILE_PIXELS, bake, bake_grid};
 use bw_grass::compare::{self, Similarity, Verdict};
-use bw_grass::fixtures::{PLACES, SCREEN, ZOOMS, place_name};
-use bw_grass::iso;
-use bw_grass::page::Page;
 use bw_grass::surface::resample;
 use glam::Vec3;
+use terrain_generators::fixtures::{PLACES, SCREEN, ZOOMS, place_name};
+use terrain_generators::iso;
+use terrain_generators::page::Page;
 
 /// How much the single-threaded page latency may move before it is a regression.
 ///

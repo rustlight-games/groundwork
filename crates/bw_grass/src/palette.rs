@@ -35,19 +35,21 @@
 
 use glam::Vec3;
 
-pub use crate::tone::Tone;
+pub use terrain_generators::tone::Tone;
 
-impl Tone {
-    /// The ramp this tone shades through.
-    #[inline]
-    pub fn ramp(self) -> &'static [[f32; 3]] {
-        match self {
-            Tone::Soil => &SOIL,
-            Tone::Thatch => &THATCH,
-            Tone::Grass => &GRASS,
-            Tone::Leaf => &LEAF,
-            Tone::Dry => &DRY,
-        }
+/// The ramp a tone shades through.
+///
+/// A free function rather than a method, and the change is not cosmetic: a tone
+/// is an intrinsic property of a plant and lives with the generator, while the
+/// measured colours it shades through are this module's. A method would have put
+/// the paint table inside the vocabulary that names families of plant.
+pub fn ramp(tone: Tone) -> &'static [[f32; 3]] {
+    match tone {
+        Tone::Soil => &SOIL,
+        Tone::Thatch => &THATCH,
+        Tone::Grass => &GRASS,
+        Tone::Leaf => &LEAF,
+        Tone::Dry => &DRY,
     }
 }
 
@@ -236,7 +238,7 @@ fn shadow_floor(bottom: Vec3) -> Vec3 {
 /// above one clamps, because the top stop is already an extrapolation.
 #[inline]
 pub fn shade(tone: Tone, q: f32) -> Vec3 {
-    let ramp = tone.ramp();
+    let ramp = ramp(tone);
     if q < 0.0 {
         let bottom = Vec3::new(ramp[0][0], ramp[0][1], ramp[0][2]);
         // One at the ramp's own floor, zero at the full depth of shadow.
@@ -399,7 +401,7 @@ mod tests {
     #[test]
     fn every_ramp_climbs() {
         for tone in [Tone::Soil, Tone::Thatch, Tone::Grass, Tone::Leaf, Tone::Dry] {
-            let ramp = tone.ramp();
+            let ramp = ramp(tone);
             for pair in ramp.windows(2) {
                 let (a, b) = (Vec3::from(pair[0]), Vec3::from(pair[1]));
                 assert!(luma(b) > luma(a), "{tone:?} ramp goes backwards");

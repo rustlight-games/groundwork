@@ -4,7 +4,7 @@
 //! obvious and it is the thing the old renderer could not do: its key light was
 //! authored in image coordinates where `+Z` points at the viewer, and every term
 //! that read `light.z` as an up-ness was reading toward-the-viewer-ness instead.
-//! [`crate::iso::image_to_world`] is the bridge and carries the warning.
+//! [`terrain_generators::iso::image_to_world`] is the bridge and carries the warning.
 //!
 //! ## Three normals, blended, not chosen
 //!
@@ -38,7 +38,7 @@
 
 use glam::{Vec2, Vec3};
 
-use crate::iso;
+use terrain_generators::iso;
 
 /// How far past the terminator a wrapped diffuse keeps giving light.
 ///
@@ -157,7 +157,7 @@ pub fn half_vector(sun: Vec3) -> Vec3 {
 #[inline]
 pub fn sheen(normal: Vec3, half: Vec3, power: f32) -> f32 {
     let facing = normal.dot(half).abs();
-    crate::fastmath::pow(facing.clamp(0.0, 1.0), power)
+    terrain_generators::fastmath::pow(facing.clamp(0.0, 1.0), power)
 }
 
 /// The world normal of a height field sampled on the page grid.

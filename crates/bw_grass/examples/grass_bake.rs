@@ -40,10 +40,10 @@
 //! window actually has.
 
 use bw_grass::bake::{BakeParams, bake, bake_grid};
-use bw_grass::iso;
-use bw_grass::page::Page;
 use bw_grass::surface::resample;
 use glam::{Vec2, Vec3};
+use terrain_generators::iso;
+use terrain_generators::page::Page;
 
 fn main() {
     let options = Options::parse();
@@ -232,7 +232,7 @@ fn draw_ruler(pixels: &mut [Vec3], width: usize, height: usize, metres: f32) {
 /// plain, which is much harder to notice. Bare ground in particular went missing
 /// twice while every other number in the table stayed healthy.
 fn report_fields(options: &Options, params: &BakeParams) {
-    let field = bw_grass::WorldField::new(params.seed);
+    let field = terrain_generators::WorldField::new(params.seed);
     let (mut height, mut density, mut bare, mut crown) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let (mut lit_low, mut lit_high, mut lit_sq) = (0.0f32, 0.0f32, 0.0f64);
     let (mut peak_bare, mut exposed, mut fringe) = (0.0f32, 0usize, 0usize);
@@ -241,7 +241,7 @@ fn report_fields(options: &Options, params: &BakeParams) {
 
     for y in (0..options.height).step_by(4) {
         for x in (0..options.width).step_by(4) {
-            let ground = field.sample(bw_grass::iso::from_cache_ground(
+            let ground = field.sample(terrain_generators::iso::from_cache_ground(
                 options.origin + Vec2::new(x as f32, y as f32),
             ));
             height += ground.height as f64;
@@ -310,7 +310,7 @@ fn write_png(path: &str, colours: &[Vec3], width: usize, height: usize) {
 struct Options {
     /// Which tier to render. The example exists to judge the picture, so it
     /// defaults to the tier the picture is judged at.
-    quality: bw_grass::GrassRenderQuality,
+    quality: terrain_generators::GrassRenderQuality,
     out: String,
     width: usize,
     height: usize,
@@ -332,7 +332,7 @@ struct Options {
 impl Options {
     fn parse() -> Self {
         let mut options = Self {
-            quality: bw_grass::GrassRenderQuality::Reference,
+            quality: terrain_generators::GrassRenderQuality::Reference,
             out: "grass_plate.png".to_string(),
             width: 1448,
             height: 1086,
@@ -399,9 +399,9 @@ impl Options {
                 "--tiled" => options.tiled = true,
                 "--quality" => {
                     options.quality = match value(index).as_str() {
-                        "preview" => bw_grass::GrassRenderQuality::Preview,
-                        "dataset" => bw_grass::GrassRenderQuality::Dataset,
-                        _ => bw_grass::GrassRenderQuality::Reference,
+                        "preview" => terrain_generators::GrassRenderQuality::Preview,
+                        "dataset" => terrain_generators::GrassRenderQuality::Dataset,
+                        _ => terrain_generators::GrassRenderQuality::Reference,
                     };
                     index += 1;
                 }

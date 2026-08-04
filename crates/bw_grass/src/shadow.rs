@@ -12,8 +12,8 @@
 //!
 //! ## The same geometry, not the same shape twice
 //!
-//! Both passes walk [`crate::stroke::walk_blade`] over the marks in one
-//! [`crate::scene::GrassScene`]. That is the whole reason the scene became a
+//! Both passes walk [`terrain_generators::stroke::walk_blade`] over the marks in one
+//! [`terrain_generators::scene::GrassScene`]. That is the whole reason the scene became a
 //! value: regenerating the blades for the shadow pass would nearly work, because
 //! placement is deterministic, and "nearly" is exactly the failure that produces
 //! shadows which do not quite belong to the blades casting them.
@@ -43,11 +43,11 @@
 
 use glam::{Vec2, Vec3};
 
-use crate::geometry::reach_per_height;
-use crate::iso;
-use crate::quality::GrassRenderQuality;
-use crate::scene::GrassScene;
-use crate::stroke::{Stroke, walk_blade};
+use terrain_generators::geometry::reach_per_height;
+use terrain_generators::iso;
+use terrain_generators::quality::GrassRenderQuality;
+use terrain_generators::scene::GrassScene;
+use terrain_generators::stroke::{Stroke, walk_blade};
 
 /// A depth buffer rendered from the sun.
 pub struct ShadowMap {
@@ -168,7 +168,7 @@ impl ShadowMap {
         // blade whose split the *page* cannot show may still cast a forked
         // shadow. That is the right way round: the map is the denser buffer.
         let tip = match stroke.tip {
-            crate::geometry::TipProfile::Forked { long, short, .. } => stroke
+            terrain_generators::geometry::TipProfile::Forked { long, short, .. } => stroke
                 .tip
                 .resolved_at(long.min(short) * stroke.length / self.texel),
             other => other,
@@ -338,7 +338,7 @@ pub fn sun_samples(count: usize) -> Vec<Vec2> {
 /// above what it shades. Grass is short: a blade sits some ten centimetres up,
 /// so at the half-degree of the real sun the penumbra is *nine microns*, and
 /// even at several times life size it stays under one page pixel at
-/// [`crate::iso::PX_PER_METRE`].
+/// [`terrain_generators::iso::PX_PER_METRE`].
 ///
 /// A sub-pixel penumbra is not a soft shadow that went unnoticed. It is a
 /// **binary** term — every sample lands on the same side of the blocker — and
@@ -364,8 +364,8 @@ pub fn nudge(sun: Vec3, offset: Vec2, radius: f32) -> Vec3 {
 mod tests {
     use super::*;
     use crate::bake::BakeParams;
-    use crate::field::WorldField;
-    use crate::page::Page;
+    use terrain_generators::field::WorldField;
+    use terrain_generators::page::Page;
 
     fn sun_at(elevation: f32) -> Vec3 {
         Vec3::new(0.0, elevation.cos(), elevation.sin())

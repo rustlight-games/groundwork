@@ -22,10 +22,10 @@ use glam::IVec2;
 use bw_grass::bake::BakeParams;
 use bw_grass::cache;
 use bw_grass::cycles::{self, RenderSettings};
-use bw_grass::field::WorldField;
-use bw_grass::page::Page;
 use bw_grass::plugin::PAGE_PIXELS;
-use bw_grass::scene::GrassScene;
+use terrain_generators::field::WorldField;
+use terrain_generators::page::Page;
+use terrain_generators::scene::GrassScene;
 
 fn main() {
     let options = Options::parse();

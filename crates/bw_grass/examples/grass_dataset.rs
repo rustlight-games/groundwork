@@ -30,7 +30,7 @@ use std::path::PathBuf;
 
 use bw_grass::cycles;
 use bw_grass::dataset::{self, CorpusRequest};
-use bw_grass::quality::GrassRenderQuality;
+use terrain_generators::quality::GrassRenderQuality;
 
 fn main() {
     let request = parse();

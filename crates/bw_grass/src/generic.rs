@@ -20,7 +20,7 @@
 //! A `Stroke` states its widths in **cache pixels against a 96-pixel metre** —
 //! the units the reference art was drawn in — and a [`RibbonGeometry`] states
 //! them in metres. So the widths are divided through by
-//! [`crate::iso::PX_PER_METRE`] on the way across, and that is the whole of the
+//! [`terrain_generators::iso::PX_PER_METRE`] on the way across, and that is the whole of the
 //! conversion.
 //!
 //! It is worth naming what that division fixes. Widths in cache pixels tie the
@@ -41,12 +41,12 @@ use terrain_scene::mark::{
 use terrain_scene::projection::ScenePoint;
 use terrain_scene::scene::{SceneBuilder, SceneRequest, TerrainScene};
 
-use crate::geometry::{Profile, TipProfile};
-use crate::iso;
-use crate::page::Page;
-use crate::scene::GrassScene;
-use crate::stroke::Stroke;
-use crate::tone::Tone;
+use terrain_generators::geometry::{Profile, TipProfile};
+use terrain_generators::iso;
+use terrain_generators::page::Page;
+use terrain_generators::scene::GrassScene;
+use terrain_generators::stroke::Stroke;
+use terrain_generators::tone::Tone;
 
 /// The version this bridge stamps on the scenes it builds.
 ///
@@ -258,7 +258,7 @@ pub fn request_for_page(page: &Page) -> SceneRequest {
 mod tests {
     use super::*;
     use crate::bake::BakeParams;
-    use crate::field::WorldField;
+    use terrain_generators::field::WorldField;
 
     fn grown() -> (GrassScene, WorldField, BakeParams) {
         let params = BakeParams::default();

@@ -40,11 +40,11 @@ use std::fmt;
 
 use glam::Vec2;
 
-use crate::field::WorldField;
-use crate::geometry::TipProfile;
-use crate::page::Page;
-use crate::scene::GrassScene;
-use crate::stroke::Stroke;
+use terrain_generators::field::WorldField;
+use terrain_generators::geometry::TipProfile;
+use terrain_generators::page::Page;
+use terrain_generators::scene::GrassScene;
+use terrain_generators::stroke::Stroke;
 
 /// Bumped when the generator is *meant* to produce a different meadow.
 ///
@@ -311,20 +311,18 @@ pub fn ground(digest: &mut Digest, page: &Page, field: &WorldField) {
     }
 }
 
-impl GrassScene {
-    /// The digest of this scene: the page, every mark, and the ground beneath.
-    ///
-    /// `seed` is taken rather than read off the field because a field does not
-    /// expose its own seed, and the seed is the one input that decides everything
-    /// here — leaving it out would let two worlds share a fingerprint.
-    pub fn fingerprint(&self, seed: u64, field: &WorldField) -> SceneFingerprint {
-        let mut digest = Digest::new();
-        digest.u32(GENERATOR_VERSION).u64(seed);
-        page(&mut digest, &self.page);
-        marks(&mut digest, &self.marks);
-        ground(&mut digest, &self.page, field);
-        digest.finish()
-    }
+/// The digest of this scene: the page, every mark, and the ground beneath.
+///
+/// `seed` is taken rather than read off the field because a field does not
+/// expose its own seed, and the seed is the one input that decides everything
+/// here — leaving it out would let two worlds share a fingerprint.
+pub fn fingerprint(scene: &GrassScene, seed: u64, field: &WorldField) -> SceneFingerprint {
+    let mut digest = Digest::new();
+    digest.u32(GENERATOR_VERSION).u64(seed);
+    page(&mut digest, &scene.page);
+    marks(&mut digest, &scene.marks);
+    ground(&mut digest, &scene.page, field);
+    digest.finish()
 }
 
 #[cfg(test)]
@@ -348,8 +346,8 @@ mod tests {
     fn the_same_scene_fingerprints_the_same_way_twice() {
         let (scene, field, seed) = scene_at(Vec2::new(-64.0, -64.0), 64, 7);
         assert_eq!(
-            scene.fingerprint(seed, &field),
-            scene.fingerprint(seed, &field)
+            fingerprint(&scene, seed, &field),
+            fingerprint(&scene, seed, &field)
         );
     }
 
@@ -362,8 +360,8 @@ mod tests {
         let (first, field, seed) = scene_at(Vec2::new(128.0, -32.0), 64, 11);
         let (second, _, _) = scene_at(Vec2::new(128.0, -32.0), 64, 11);
         assert_eq!(
-            first.fingerprint(seed, &field),
-            second.fingerprint(seed, &field)
+            fingerprint(&first, seed, &field),
+            fingerprint(&second, seed, &field)
         );
     }
 
@@ -372,8 +370,8 @@ mod tests {
         let (a, a_field, a_seed) = scene_at(Vec2::ZERO, 48, 1);
         let (b, b_field, b_seed) = scene_at(Vec2::ZERO, 48, 2);
         assert_ne!(
-            a.fingerprint(a_seed, &a_field),
-            b.fingerprint(b_seed, &b_field)
+            fingerprint(&a, a_seed, &a_field),
+            fingerprint(&b, b_seed, &b_field)
         );
     }
 
@@ -381,7 +379,7 @@ mod tests {
     fn a_different_place_is_a_different_meadow() {
         let (a, field, seed) = scene_at(Vec2::ZERO, 48, 5);
         let (b, _, _) = scene_at(Vec2::new(2048.0, 1024.0), 48, 5);
-        assert_ne!(a.fingerprint(seed, &field), b.fingerprint(seed, &field));
+        assert_ne!(fingerprint(&a, seed, &field), fingerprint(&b, seed, &field));
     }
 
     #[test]
@@ -390,25 +388,28 @@ mod tests {
         // seed dropped from the digest, this would be the only test that
         // noticed.
         let (scene, field, _) = scene_at(Vec2::ZERO, 32, 3);
-        assert_ne!(scene.fingerprint(3, &field), scene.fingerprint(4, &field));
+        assert_ne!(
+            fingerprint(&scene, 3, &field),
+            fingerprint(&scene, 4, &field)
+        );
     }
 
     #[test]
     fn moving_one_mark_moves_the_fingerprint() {
         let (mut scene, field, seed) = scene_at(Vec2::ZERO, 48, 9);
-        let before = scene.fingerprint(seed, &field);
+        let before = fingerprint(&scene, seed, &field);
         // A tenth of a millimetre, on one mark out of thousands.
         scene.marks[0].root.x += 0.0001;
-        assert_ne!(before, scene.fingerprint(seed, &field));
+        assert_ne!(before, fingerprint(&scene, seed, &field));
     }
 
     #[test]
     fn reordering_the_marks_moves_the_fingerprint() {
         let (mut scene, field, seed) = scene_at(Vec2::ZERO, 48, 9);
-        let before = scene.fingerprint(seed, &field);
+        let before = fingerprint(&scene, seed, &field);
         let last = scene.marks.len() - 1;
         scene.marks.swap(0, last);
-        assert_ne!(before, scene.fingerprint(seed, &field));
+        assert_ne!(before, fingerprint(&scene, seed, &field));
     }
 
     #[test]
@@ -438,12 +439,14 @@ mod tests {
             ("kink_turn", |s| s.kink_turn += 1.0),
             ("width", |s| s.width += 1.0),
             ("tip_width", |s| s.tip_width += 1.0),
-            ("profile", |s| s.profile = crate::stroke::Profile::Oval),
+            ("profile", |s| {
+                s.profile = terrain_generators::stroke::Profile::Oval
+            }),
             ("twist", |s| s.twist += 1.0),
             ("ridge", |s| s.ridge += 1.0),
             ("tip", |s| s.tip = TipProfile::Notched { depth: 0.2 }),
             ("maturity", |s| s.maturity += 1.0),
-            ("tone", |s| s.tone = crate::tone::Tone::Dry),
+            ("tone", |s| s.tone = terrain_generators::tone::Tone::Dry),
             ("base_light", |s| s.base_light += 1.0),
             ("tip_light", |s| s.tip_light += 1.0),
             ("glint", |s| s.glint += 1.0),
@@ -536,8 +539,11 @@ mod tests {
         let base = BakeParams::default();
         let field = WorldField::lit_by(base.seed, base.light);
         let page = Page::new(Vec2::new(-48.0, -48.0), 48, 48);
-        let reference =
-            GrassScene::build(page, &field, &base.grass()).fingerprint(base.seed, &field);
+        let reference = fingerprint(
+            &GrassScene::build(page, &field, &base.grass()),
+            base.seed,
+            &field,
+        );
 
         type Nudge = (&'static str, fn(&mut crate::bake::PreviewRasterStyle));
         let nudges: [Nudge; 12] = [
@@ -557,8 +563,11 @@ mod tests {
         for (name, nudge) in nudges {
             let mut params = base;
             nudge(&mut params.raster);
-            let moved =
-                GrassScene::build(page, &field, &params.grass()).fingerprint(params.seed, &field);
+            let moved = fingerprint(
+                &GrassScene::build(page, &field, &params.grass()),
+                params.seed,
+                &field,
+            );
             assert_eq!(
                 reference, moved,
                 "changing `{name}` moved the meadow — it belongs in GrassStyle, \
@@ -577,12 +586,15 @@ mod tests {
         // grow on half a square metre, so a smaller one would pass this test by
         // never reaching the code it is checking.
         let page = Page::new(Vec2::new(-48.0, -48.0), 96, 96);
-        let reference =
-            GrassScene::build(page, &field, &base.grass()).fingerprint(base.seed, &field);
+        let reference = fingerprint(
+            &GrassScene::build(page, &field, &base.grass()),
+            base.seed,
+            &field,
+        );
 
         // `blade_bend` is deliberately absent, and the reason is a finding
         // rather than an omission — see `blade_bend_reaches_nothing` below.
-        type Nudge = (&'static str, fn(&mut crate::style::GrassStyle));
+        type Nudge = (&'static str, fn(&mut terrain_generators::style::GrassStyle));
         let nudges: [Nudge; 5] = [
             ("tufts", |s| s.tufts *= 1.5),
             ("fine", |s| s.fine *= 1.5),
@@ -593,8 +605,11 @@ mod tests {
         for (name, nudge) in nudges {
             let mut params = base;
             nudge(&mut params.style);
-            let moved =
-                GrassScene::build(page, &field, &params.grass()).fingerprint(params.seed, &field);
+            let moved = fingerprint(
+                &GrassScene::build(page, &field, &params.grass()),
+                params.seed,
+                &field,
+            );
             assert_ne!(
                 reference, moved,
                 "changing `{name}` did not move the meadow"
@@ -624,14 +639,21 @@ mod tests {
         let base = BakeParams::default();
         let field = WorldField::lit_by(base.seed, base.light);
         let page = Page::new(Vec2::new(-48.0, -48.0), 96, 96);
-        let reference =
-            GrassScene::build(page, &field, &base.grass()).fingerprint(base.seed, &field);
+        let reference = fingerprint(
+            &GrassScene::build(page, &field, &base.grass()),
+            base.seed,
+            &field,
+        );
 
         let mut absurd = base;
         absurd.style.blade_bend = (5.0, 9.0);
         assert_eq!(
             reference,
-            GrassScene::build(page, &field, &absurd.grass()).fingerprint(absurd.seed, &field),
+            fingerprint(
+                &GrassScene::build(page, &field, &absurd.grass()),
+                absurd.seed,
+                &field
+            ),
             "blade_bend now reaches the meadow — delete this test and add it to \
              the list in `the_meadow_does_move_when_the_style_changes`"
         );
@@ -640,7 +662,7 @@ mod tests {
     #[test]
     fn a_fingerprint_survives_a_round_trip_through_text() {
         let (scene, field, seed) = scene_at(Vec2::ZERO, 32, 13);
-        let printed = scene.fingerprint(seed, &field);
+        let printed = fingerprint(&scene, seed, &field);
         assert_eq!(
             SceneFingerprint::from_str(&printed.to_string()),
             Ok(printed)

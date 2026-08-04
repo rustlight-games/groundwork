@@ -21,23 +21,23 @@
 //! ## The layout is fixed on purpose
 //!
 //! Cells are indexed, not placed by taste, and the order is append-only for the
-//! same reason [`crate::fixtures::PLACES`] is: a plate photographed last week
+//! same reason [`terrain_generators::fixtures::PLACES`] is: a plate photographed last week
 //! and one photographed today have to be pictures of the same experiment. Adding
 //! a fixture goes on the end.
 
 use glam::{Vec2, Vec3};
 
 use crate::bake::{BakeParams, Macro, lay_floor};
-use crate::field::WorldField;
-use crate::geometry::TipProfile;
-use crate::iso;
-use crate::page::Page;
 use crate::painter::Painter;
-use crate::quality::GrassRenderQuality;
-use crate::rng::{Draw, Stream};
-use crate::stroke::{Profile, Stroke};
-pub use crate::sun::{DEFAULT_ELEVATION, Key};
-use crate::tone::Tone;
+use terrain_generators::field::WorldField;
+use terrain_generators::geometry::TipProfile;
+use terrain_generators::iso;
+use terrain_generators::page::Page;
+use terrain_generators::quality::GrassRenderQuality;
+use terrain_generators::rng::{Draw, Stream};
+use terrain_generators::stroke::{Profile, Stroke};
+pub use terrain_generators::sun::{DEFAULT_ELEVATION, Key};
+use terrain_generators::tone::Tone;
 
 use crate::surface::Surface;
 
@@ -232,7 +232,7 @@ pub fn bake_lab(lab: &Lab, params: &BakeParams) -> Vec<Vec3> {
     // The fixtures go into a scene rather than straight onto the surface, so
     // the plate is lit and shadowed by exactly the path a page is. A laboratory
     // that skipped the shadow pass would certify a renderer nobody runs.
-    let mut scene = crate::scene::GrassScene {
+    let mut scene = terrain_generators::scene::GrassScene {
         page,
         marks: Vec::new(),
     };
@@ -594,7 +594,7 @@ mod tests {
         // every mark's under-stroke about where that was.
         let direction = Key::default().direction();
         let plane = Vec2::new(direction.x, direction.y).normalize();
-        assert!(plane.distance(crate::field::LIGHT_PLANE) < 1.0e-4);
+        assert!(plane.distance(terrain_generators::field::LIGHT_PLANE) < 1.0e-4);
         // The bearing survives every elevation, which is what lets the sun be
         // lowered without recomposing the picture.
         for degrees in [25.0f32, 35.0, 55.0] {
@@ -604,7 +604,7 @@ mod tests {
             };
             let plane = Vec2::new(key.direction().x, key.direction().y).normalize();
             assert!(
-                plane.distance(crate::field::LIGHT_PLANE) < 1.0e-3,
+                plane.distance(terrain_generators::field::LIGHT_PLANE) < 1.0e-3,
                 "a {degrees}° sun moved the screen bearing to {plane:?}"
             );
         }

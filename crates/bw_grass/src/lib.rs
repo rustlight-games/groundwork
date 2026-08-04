@@ -64,47 +64,31 @@ pub mod compare;
 pub mod critique;
 pub mod cycles;
 pub mod dataset;
-pub mod fastmath;
-pub mod field;
 pub mod fingerprint;
-pub mod fixtures;
 pub mod generic;
-pub mod geometry;
-pub mod iso;
 pub mod lab;
 pub mod lighting;
 pub mod material;
-pub mod page;
 pub mod painter;
 pub mod palette;
-pub mod placement;
 pub mod plate;
 pub mod plugin;
-pub mod quality;
-pub mod rng;
-pub mod scene;
 pub mod shadow;
-pub mod stroke;
-pub mod style;
-pub mod sun;
 pub mod surface;
-pub mod tone;
 
 pub use bake::BakeRegion;
 pub use bake::{BakeParams, bake};
+// Re-exported so existing callers keep working while the remaining modules
+// move. See `terrain_generators` for where these actually live now.
 pub use compare::{Similarity, Verdict};
 pub use critique::Critique;
 pub use dataset::{Pair, ShardMetadata};
-pub use field::WorldField;
 pub use fingerprint::{Digest, SceneFingerprint};
 pub use generic::{request_for_page, scene_from_grass};
 pub use lab::{Fixture, Lab, bake_lab};
 pub use material::GrassSurfaceMaterial;
-pub use page::Page;
 pub use plate::{Plate, PlatePlan, PlateRequest};
 pub use plugin::{GrassPlugin, GrassWorld, PAGE_PIXELS};
-pub use quality::GrassRenderQuality;
-pub use scene::GrassScene;
-pub use style::{GrassParams, GrassStyle};
-pub use sun::Key;
-pub use tone::Tone;
+pub use terrain_generators::{
+    GrassParams, GrassRenderQuality, GrassScene, GrassStyle, Key, Page, Stroke, Tone,
+};

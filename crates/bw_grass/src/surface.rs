@@ -11,7 +11,7 @@
 //! winning height field, so recording every failed depth test only added a hot
 //! read-modify-write that resolve discarded.
 //!
-//! Depth, not height, is the test. [`crate::iso::depth`] folds "how far down the
+//! Depth, not height, is the test. [`terrain_generators::iso::depth`] folds "how far down the
 //! screen is this rooted" together with "how high does it stand", which is the
 //! only ordering that lets a short blade in front cover a tall blade behind
 //! while a tall blade still covers its own roots.
@@ -25,17 +25,17 @@
 //! than as a polygon.
 //!
 //! The factor is a property of the surface rather than a constant, because it
-//! is now the main thing a [`crate::quality::GrassRenderQuality`] buys. It used
+//! is now the main thing a [`terrain_generators::quality::GrassRenderQuality`] buys. It used
 //! to be three everywhere; three is still what the streaming tier uses, and the
 //! offline tiers spend four.
 
 use glam::Vec3;
 
 use crate::palette;
-use crate::tone::Tone;
+use terrain_generators::tone::Tone;
 
 /// The supersampling factor the look was tuned at, and what
-/// [`crate::quality::GrassRenderQuality::Preview`] still uses.
+/// [`terrain_generators::quality::GrassRenderQuality::Preview`] still uses.
 ///
 /// Kept as a named constant rather than an inline three because two things have
 /// to agree about it — the quality tier and every test that builds a bare

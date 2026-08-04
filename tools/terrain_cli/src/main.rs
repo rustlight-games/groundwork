@@ -36,13 +36,13 @@ use bevy::math::Vec2;
 use bw_grass::bake::BakeParams;
 use bw_grass::cycles::RenderSettings;
 use bw_grass::dataset::{self, CorpusRequest};
-use bw_grass::field::WorldField;
-use bw_grass::page::Page;
 use bw_grass::plate::{self, PlatePlan, PlateRequest, Progress};
-use bw_grass::quality::GrassRenderQuality;
-use bw_grass::scene::GrassScene;
 use clap::{Args, Parser, Subcommand};
 use terrain_core::{SampleFootprint, SampleQuery, WorldPoint};
+use terrain_generators::field::WorldField;
+use terrain_generators::page::Page;
+use terrain_generators::quality::GrassRenderQuality;
+use terrain_generators::scene::GrassScene;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -443,7 +443,7 @@ fn preview_export(args: &PreviewArgs) -> ExitCode {
         args.framing.origin(),
         width,
         height,
-        px_per_metre / bw_grass::iso::PX_PER_METRE,
+        px_per_metre / terrain_generators::iso::PX_PER_METRE,
     );
 
     println!(
@@ -634,7 +634,7 @@ fn describe(page: Page, params: &BakeParams) -> String {
         "{} marks, canopy ceiling {:.3} m, fingerprint {}",
         scene.len(),
         scene.canopy_ceiling(),
-        scene.fingerprint(params.seed, &field),
+        bw_grass::fingerprint::fingerprint(&scene, params.seed, &field),
     )
 }
 

@@ -9,7 +9,7 @@
 //!   implementation detail of getting the plate traced, and nothing outside this
 //!   module should have to know how many there were.
 //! - A **page** is a unit of *storage* in the runtime cache, and is unrelated to
-//!   either. See [`crate::page::Page`].
+//!   either. See [`terrain_generators::page::Page`].
 //!
 //! This module owns the first two. It used to live inside the `grass_cycles`
 //! example, which was the wrong place for it the moment a second caller wanted a
@@ -39,10 +39,10 @@ use glam::Vec2;
 
 use crate::bake::BakeParams;
 use crate::cycles::{self, CyclesScene, RenderSettings};
-use crate::field::WorldField;
-use crate::iso;
-use crate::page::Page;
-use crate::scene::GrassScene;
+use terrain_generators::field::WorldField;
+use terrain_generators::iso;
+use terrain_generators::page::Page;
+use terrain_generators::scene::GrassScene;
 
 /// The framing blade width is authored against, in pixels per metre.
 const WIDTH_REFERENCE_PX_PER_METRE: f32 = 108.0;

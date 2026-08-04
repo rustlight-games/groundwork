@@ -22,9 +22,9 @@ use std::path::PathBuf;
 
 use bw_grass::bake::BakeParams;
 use bw_grass::cycles::RenderSettings;
-use bw_grass::field::WorldField;
 use bw_grass::plate::{self, PlatePlan, PlateRequest, Progress};
 use glam::Vec2;
+use terrain_generators::field::WorldField;
 
 fn main() {
     let options = Options::parse();

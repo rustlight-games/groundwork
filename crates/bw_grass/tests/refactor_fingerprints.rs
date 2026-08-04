@@ -33,12 +33,12 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use bw_grass::bake::BakeParams;
-use bw_grass::field::WorldField;
 use bw_grass::fingerprint::GENERATOR_VERSION;
-use bw_grass::fixtures::PLACES;
-use bw_grass::page::Page;
-use bw_grass::scene::GrassScene;
 use glam::Vec2;
+use terrain_generators::field::WorldField;
+use terrain_generators::fixtures::PLACES;
+use terrain_generators::page::Page;
+use terrain_generators::scene::GrassScene;
 
 /// One pinned scene.
 struct Fixture {
@@ -129,7 +129,7 @@ impl Fixture {
         let page = Page::at_detail(self.origin, self.side, self.side, self.detail);
         let scene = GrassScene::build(page, &field, &params.grass());
         (
-            scene.fingerprint(params.seed, &field).to_string(),
+            bw_grass::fingerprint::fingerprint(&scene, params.seed, &field).to_string(),
             scene.len(),
         )
     }

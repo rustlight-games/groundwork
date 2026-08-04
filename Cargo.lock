@@ -1960,6 +1960,7 @@ dependencies = [
  "image",
  "rayon",
  "terrain_core",
+ "terrain_generators",
  "terrain_scene",
 ]
 
@@ -5058,6 +5059,7 @@ dependencies = [
  "image",
  "terrain_core",
  "terrain_format",
+ "terrain_generators",
 ]
 
 [[package]]
@@ -5075,6 +5077,16 @@ dependencies = [
  "serde",
  "terrain_core",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "terrain_generators"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "rayon",
+ "terrain_core",
+ "terrain_scene",
 ]
 
 [[package]]

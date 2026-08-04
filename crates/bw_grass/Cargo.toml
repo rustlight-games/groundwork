@@ -9,6 +9,7 @@ description = "Isometric grass: a baked ground-surface cache and its renderer"
 # The generic scene IR, so the grass can be expressed in it before the generator
 # itself moves. See `src/generic.rs`.
 terrain_core.workspace = true
+terrain_generators.workspace = true
 terrain_scene.workspace = true
 # Bevy only for the runtime integration — the plugin, the material and the page
 # cache. Everything that decides where a blade goes takes glam directly, which is

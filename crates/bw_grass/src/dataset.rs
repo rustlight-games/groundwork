@@ -26,7 +26,7 @@
 //! image in the corpus looks wrong.
 //!
 //! So [`Pair::bake`] builds one [`GrassScene`] and renders it twice. That is
-//! also why [`crate::quality::GrassRenderQuality`] is forbidden from changing
+//! also why [`terrain_generators::quality::GrassRenderQuality`] is forbidden from changing
 //! what grows where — the tier is allowed to decide how finely something is
 //! measured and never whether it exists.
 //!
@@ -48,13 +48,13 @@ use rayon::prelude::*;
 
 use crate::bake::{BakeParams, Macro, Passes, cast_shadows, lay_floor, resolve_passes};
 use crate::cycles::{self, CyclesScene, RenderSettings};
-use crate::field::WorldField;
-use crate::iso;
-use crate::page::Page;
 use crate::painter::Painter;
-use crate::quality::GrassRenderQuality;
-use crate::scene::GrassScene;
 use crate::surface::Surface;
+use terrain_generators::field::WorldField;
+use terrain_generators::iso;
+use terrain_generators::page::Page;
+use terrain_generators::quality::GrassRenderQuality;
+use terrain_generators::scene::GrassScene;
 
 /// One rendering of a scene, at one budget.
 pub struct Render {
@@ -158,7 +158,7 @@ impl Pair {
 /// one [`GrassScene`] through two *different* renderers, which sounds like it
 /// weakens the guarantee and does the opposite: both sides consume the identical
 /// `Vec<Stroke>`, and the Cycles export walks those strokes with the same
-/// [`crate::stroke::walk_blade`] the rasteriser draws them with. There is one
+/// [`terrain_generators::stroke::walk_blade`] the rasteriser draws them with. There is one
 /// geometry source and no second generation to drift.
 ///
 /// ## Why the image is not read here
@@ -291,7 +291,7 @@ pub struct ShardMetadata {
 
 impl ShardMetadata {
     pub fn of(page: &Page, params: &BakeParams, input: GrassRenderQuality, marks: usize) -> Self {
-        let sun = crate::iso::image_to_world(params.light).normalize_or(Vec3::Z);
+        let sun = terrain_generators::iso::image_to_world(params.light).normalize_or(Vec3::Z);
         Self {
             renderer: env!("CARGO_PKG_VERSION"),
             target_quality: params.quality.name(),
@@ -301,7 +301,7 @@ impl ShardMetadata {
             page_pixels: (page.width, page.height),
             px_per_metre: page.px_per_metre,
             sun: (sun.x, sun.y, sun.z),
-            sun_elevation_degrees: crate::iso::elevation_of(sun).to_degrees(),
+            sun_elevation_degrees: terrain_generators::iso::elevation_of(sun).to_degrees(),
             sun_radius: params.raster.sun_radius,
             marks,
         }
@@ -775,7 +775,9 @@ mod tests {
         let params = BakeParams::default();
         let meta = ShardMetadata::of(&page, &params, GrassRenderQuality::Preview, 1234);
         assert!(
-            (meta.sun_elevation_degrees - crate::sun::DEFAULT_ELEVATION.to_degrees()).abs() < 0.5,
+            (meta.sun_elevation_degrees - terrain_generators::sun::DEFAULT_ELEVATION.to_degrees())
+                .abs()
+                < 0.5,
             "metadata says {}°",
             meta.sun_elevation_degrees
         );

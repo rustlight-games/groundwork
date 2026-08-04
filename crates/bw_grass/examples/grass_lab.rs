@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 
 use bw_grass::bake::BakeParams;
 use bw_grass::lab::{self, Fixture, Key, Lab};
-use bw_grass::quality::GrassRenderQuality;
 use glam::Vec3;
+use terrain_generators::quality::GrassRenderQuality;
 
 fn main() {
     let options = Options::parse();

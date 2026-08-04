@@ -15,11 +15,11 @@
 
 use glam::{Vec2, Vec3};
 
-use crate::geometry::{self, Frame, TipProfile};
-use crate::iso;
-use crate::scene::GrassScene;
-use crate::stroke::{BladeSample, Stroke, walk_blade};
 use crate::surface::{Fragment, Surface};
+use terrain_generators::geometry::{self, Frame, TipProfile};
+use terrain_generators::iso;
+use terrain_generators::scene::GrassScene;
+use terrain_generators::stroke::{BladeSample, Stroke, walk_blade};
 
 /// One slice across a stroke, with everything the slice needs already worked
 /// out.
@@ -352,11 +352,11 @@ impl Painter<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::geometry::TipProfile;
     use crate::painter::Painter;
-    use crate::stroke::Stroke;
     use crate::surface::Surface;
     use glam::{Vec2, Vec3};
+    use terrain_generators::geometry::TipProfile;
+    use terrain_generators::stroke::Stroke;
 
     use super::*;
 
