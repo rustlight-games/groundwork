@@ -30,7 +30,8 @@ crates/
   terrain_core        coordinates, keys, seeds, digests, the document,
                       validation, PreparedTerrain, sampling, built-in sources
   terrain_format      the versioned file: envelope, raw types, migration, RON
-  terrain_scene       projection, ground, marks, instances, painter order
+  terrain_scene       projection, tile layout, frame resolver, ground, marks,
+                      instances, painter order
   terrain_generators  what grows: fields, candidates, blades, recipes
   terrain_bake        the cheap raster tier, and bake requests and manifests
   terrain_cycles      the scene package, the tiled plate driver, Blender
@@ -58,6 +59,8 @@ Dependencies point downward. `terrain_core` depends on nothing but `serde`.
 | Why can sampling not fail? | `terrain_core/src/prepare.rs` |
 | Why is noise per metre? | `terrain_core/src/sources.rs` |
 | Why is the projection a mirror? | `terrain_scene/src/projection.rs` |
+| Why nine tiles and not a rectangle? | `terrain_scene/src/layout.rs` |
+| Where does 144 px/m come from? | `terrain_scene/src/frame.rs` |
 | Why is the ground grid edge-anchored? | `terrain_scene/src/ground.rs` |
 | What decides what draws over what? | `terrain_scene/src/mark.rs` |
 | Why candidates and not counts? | `terrain_generators/src/population.rs` |
@@ -74,13 +77,22 @@ cargo run -p terrain_cli -- --help
 
 terrain validate <document>          # every problem, in one pass
 terrain inspect  <document> --at U,V # what the ground is, and why
-terrain preview-export --size 1024   # the cheap tier, headless
-terrain render --size 768 --samples 512
-terrain dataset --shards 8 --aovs
 
-./render                             # a whole scene, 1920x1080, opened
+./run                                # nine tiles, cheap tier, seconds
+./render                             # the same nine tiles, path-traced
+TERRAIN_SEED=5a17e33b ./run          # that world again, exactly
+
+terrain preview-export --seed 7      # the cheap tier, headless
+terrain render --samples 512         # nine tiles through Cycles
+terrain dataset --shards 8 --aovs
 cargo run --release -p terrain_preview
 ```
+
+A render is **nine world tiles**, three by three, subject in the middle, on a
+transparent background. Random by default and reproducible from the manifest
+written beside it — see [docs/ISOMETRIC_TILES.md](docs/ISOMETRIC_TILES.md).
+`--manual` is the old hand-framed laboratory plate, and the two modes refuse
+each other's options rather than picking silently.
 
 `TERRAIN_BLENDER` overrides where Blender is found. Pinned to 5.2 LTS.
 
@@ -98,6 +110,9 @@ Three instruments, answering different questions. Use the right one.
   which fifth to attack.
 - **`grass_snapshot`** — *did the picture move?* Pixel for pixel against the
   last accepted set.
+- **`terrain_bench::iso`** — *is the subject any good, and are the joins
+  invisible?* Every number twice, once over the layout and once weighted by the
+  subject mask, because a nine-tile plate is eight ninths set dressing.
 
 `terrain_bench::SCENARIOS` is the pinned ground. Append only.
 
@@ -123,6 +138,13 @@ Real, currently true, and worth knowing before tripping over them.
   is the new interface; the meadow the fingerprints pin comes from the former.
 - **No wind, no trampling, no animated crown layer.** The baked surface is
   static.
+- **The nine-tile world is flat.** All tile bases are coplanar; no steps, no
+  cliffs, no camera pitch. Deliberate, so a bad result after the layout change
+  has one possible cause rather than three. Only the seed and the centre tile
+  are randomised — sun, camera, framing and style are fixed.
+- **`TileLayoutPreset` has one variant.** Twenty-seven tiles is not a number, it
+  is a shape nobody has chosen; the layout is a coordinate list precisely so
+  choosing one later changes `layout.rs` and nothing downstream.
 - **Terrain blending is reserved, not implemented.** The weights compose; the
   shared candidate field that stops a transition doubling its marks does not
   exist yet. See [docs/MATERIAL_BLENDING.md](docs/MATERIAL_BLENDING.md).

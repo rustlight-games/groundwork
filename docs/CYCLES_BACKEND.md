@@ -147,10 +147,23 @@ Blender does not have.
 ## Running it
 
 ```sh
-terrain render --size 768 --samples 512 --out target/render.png
-terrain render --view 55 --width 1920 --height 1080     # tiled automatically
-terrain render --size 512 --dry-run                     # the plan, no tracing
-./render                                                # 1920x1080, opened
+./render                                         # nine tiles, 1920x1080, opened
+terrain render --samples 512                     # sliced automatically
+terrain render --seed 5a17e33b0c9d2f14           # that world again, exactly
+terrain render --dry-run                         # the plan, no tracing
+terrain render --manual --size 768 --px-per-metre 192   # a laboratory plate
 ```
+
+`--trace-tiles-across` overrides the memory split above. It is **not** the world
+tile layout — see [ISOMETRIC_TILES.md](ISOMETRIC_TILES.md) for the four things
+this repository calls a tile.
+
+With a tile layout the film is transparent, the ground mesh ends exactly at the
+layout's outer boundary, and blades rooted outside it are a second object with
+`visible_camera = False`: they shadow inward without appearing. Dropping them
+instead leaves a bright rim at the edge of the picture. The slice filter weights
+colour by coverage for the same reason — with a transparent film the background
+samples come back black at zero alpha, and averaging them in unweighted puts a
+black fringe on every silhouette in the frame.
 
 `TERRAIN_BLENDER` overrides where Blender is found. Pinned to 5.2 LTS.

@@ -1,10 +1,18 @@
 //! The terrain framework's command line.
 //!
 //! ```sh
-//! terrain render --out target/plate.png --size 768 --samples 512
-//! terrain preview-export --out target/preview.png --size 1024
+//! terrain render --out target/plate.png --samples 512
+//! terrain preview-export --out target/preview.png
+//! terrain render --seed 5a17e33b0c9d2f14 --centre-tile=-713,284
 //! terrain dataset --out target/corpus --shards 8 --aovs
 //! ```
+//!
+//! ## A render is nine tiles
+//!
+//! Both raster commands frame a three-by-three isometric layout by default, with
+//! the middle tile as the subject: a fresh world every run, a manifest beside
+//! the picture, and the replay command printed at the end. `--manual` is the
+//! hand-framed laboratory plate this used to be. See `docs/ISOMETRIC_TILES.md`.
 //!
 //! This is the headless entry point, and its first job is a structural one: it
 //! must be possible to grow terrain, trace it through Cycles and export a corpus

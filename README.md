@@ -47,6 +47,14 @@ any of them the identity gives the framework a preferred resolution and a
 preferred origin, and then two pages that have never met stop agreeing along
 their shared edge.
 
+**A render is nine world tiles, and they are a composition, not a boundary.**
+The destination is an isometric game, so a render is three by three two-metre
+tiles with the middle one as the subject and the eight around it as set
+dressing — one continuous scene over all of them plus a halo, never nine scenes
+composited. Grass crosses the internal joins, shadows fall across them, and the
+measured step across a join is indistinguishable from the step the grass makes
+on its own. See [docs/ISOMETRIC_TILES.md](docs/ISOMETRIC_TILES.md).
+
 **Randomness is addressed, not drawn.** You never ask for the next number — you
 ask for the value at an address built from the population, the world cell, the
 candidate's rank and a named stream. A sequential generator makes every value
@@ -73,6 +81,9 @@ Working today:
   ramp and threshold profiles.
 - A generic scene IR — ribbons, curves, analytic shapes, stamps, instances —
   with a total painter order and an exact fingerprint.
+- The isometric nine-tile layout: one resolver both renderers frame from, an
+  RGBA silhouette that ends where the tiles do, and a manifest that makes a
+  random render reproducible from a seed.
 - The Cycles backend: a generic scene package, appearance-key material
   dispatch, tiling, guard bands and the derived trace resolution a wide view
   needs.
@@ -81,6 +92,10 @@ Working today:
 - Four population recipes. One is finished.
 
 Not built yet:
+
+- **Elevation, in the layout.** The nine tiles are coplanar: no steps, no cliffs,
+  no camera pitch. Deliberately, so a bad result after the isometric change has
+  one cause rather than three.
 
 - **Raster and shape-distance sources.** They need an image decoder and a
   polygon index; `prepare` refuses them with a message rather than silently
@@ -96,6 +111,15 @@ Not built yet:
 ## Running it
 
 ```sh
+# Nine isometric tiles, somewhere new, through the cheap rasteriser. Seconds.
+./run
+
+# The same nine tiles, path-traced. Minutes.
+./render
+
+# That world again, exactly. Both scripts print the command that repeats them.
+TERRAIN_SEED=5a17e33b0c9d2f14 ./run
+
 cargo run -p terrain_cli -- --help
 
 # Read a document, and report everything wrong with it in one pass.
@@ -104,22 +128,22 @@ cargo run -p terrain_cli -- validate assets/terrain/documents/blend_lab.terrain.
 # What is the ground here, and why?
 cargo run -p terrain_cli -- inspect assets/terrain/documents/blend_lab.terrain.ron --at 0,5
 
-# A plate through the cheap rasteriser: no window, no GPU.
-cargo run --release -p terrain_cli -- preview-export --size 1024 --out target/preview.png
-
-# The same ground, path-traced.
-cargo run --release -p terrain_cli -- render --size 768 --samples 512 --out target/render.png
+# A hand-framed laboratory plate, for a diagnostic that has to be the same
+# twice. The layout options and the manual ones refuse each other.
+cargo run --release -p terrain_cli -- preview-export --manual --size 1024 --px-per-metre 192
 
 # A paired corpus: one scene, two renderers, structural channels beside it.
 cargo run --release -p terrain_cli -- dataset --shards 8 --aovs --out target/corpus
-
-# One whole scene at 1920x1080, traced and opened.
-./render
 
 # The terrain live, in a window. Pan with WASD, zoom with the wheel,
 # 1/2/3 for the close, standard and wide framings.
 cargo run --release -p terrain_preview
 ```
+
+Every layout render writes four files: the picture as RGBA with everything
+outside the diamond transparent, a debug plate with the nine tiles outlined and
+labelled, a subject mask, and a manifest naming the seed, the centre tile, the
+bounds and the scale.
 
 Cycles renders need Blender on the path; `TERRAIN_BLENDER` overrides where it is
 found. Pinned to 5.2 LTS.
@@ -131,7 +155,8 @@ crates/
   terrain_core        coordinates, keys, seeds, digests, the document,
                       validation, PreparedTerrain, sampling, built-in sources
   terrain_format      the versioned file: envelope, migration, RON
-  terrain_scene       projection, ground, marks, instances, painter order
+  terrain_scene       projection, tile layout, frame resolver, ground, marks,
+                      instances, painter order
   terrain_generators  what grows: fields, candidates, blades, recipes
   terrain_bake        the cheap raster tier, bake requests and manifests
   terrain_cycles      the scene package, the tiled plate driver, Blender
@@ -167,6 +192,9 @@ Three instruments, answering different questions:
   "a page costs 100 ms" tells an optimiser nothing about which fifth to attack.
 - **`grass_snapshot`** — *did the picture move?* Photographs three places at four
   camera heights and compares pixel for pixel against the last accepted set.
+- **`terrain_bench::iso`** — *is the subject any good, and are the joins
+  invisible?* A nine-tile plate is eight ninths set dressing, so every number is
+  taken twice: once over the layout and once weighted by the subject mask.
 
 A speed improvement bought by generating fewer marks or shorter grass is a
 quality-tier change, not an optimisation, so every speed claim carries its
