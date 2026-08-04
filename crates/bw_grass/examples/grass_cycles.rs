@@ -55,8 +55,23 @@ fn main() {
     // them is not detail, it is noise being averaged away at great expense.
     // Fewer and slightly wider is what a mip level *is*, and the eye cannot tell
     // the difference at a scale where no single blade is visible.
+    // ## Tiling removes the need to thin at all
+    //
+    // The thinning above exists only because a single-pass wide render will not
+    // fit in memory. Tiles bound memory directly and far better, so when the
+    // render is tiled the canopy keeps its full density — which matters, because
+    // thinning was never free. Holding *coverage* is not holding *structure*:
+    // fewer, fatter blades cover the same ground and stop forming legible tufts,
+    // and measured that took coherence from 0.46 to 0.22 and the highlight share
+    // to a fifth of the reference's.
+    //
+    // So a wide view is bought with time rather than with the picture.
     let detail_ratio = (shown_px_per_metre / TUNED_PX_PER_METRE).clamp(0.0, 1.0);
-    let crowding = detail_ratio.max(MIN_CROWDING);
+    let crowding = if options.tiles > 1 {
+        1.0
+    } else {
+        detail_ratio.max(MIN_CROWDING)
+    };
     // ## The width compensation is 1/c, not 1/√c
     //
     // Coverage is `count × width × length`, so thinning the population by `c`
@@ -88,39 +103,34 @@ fn main() {
     // covered pixel, and at canopy density that averages the field into a flat
     // wash. See `grass_prebake`, where the same mistake was made first.
     let supersample = options.supersample.max(1);
-    let traced_width = options.width * supersample;
-    let traced_height = options.height * supersample;
-    let traced_px_per_metre = shown_px_per_metre * supersample as f32;
+    let across = options.tiles.max(1);
 
-    let page = Page::at_detail(
-        options.origin * supersample as f32,
-        traced_width,
-        traced_height,
-        traced_px_per_metre / bw_grass::iso::PX_PER_METRE,
-    );
+    // ## Why a wide view has to be tiled
+    //
+    // At the close-up density this look was tuned to, the game's own framing
+    // holds fifty-five million blades. There is no rib count that fits that in
+    // memory, so a single-pass wide render can only be bought by thinning — and
+    // thinning buys it at the price of the picture. Holding *coverage* is not
+    // holding *structure*: fewer, fatter blades cover the same ground and no
+    // longer form legible tufts, so the colony signal collapses and nothing
+    // catches a highlight. Measured, coherence falls to 0.225 against 0.456.
+    //
+    // Tiles keep full density and pay in time instead. They are seamless for
+    // free, because placement is a pure function of world position — the one
+    // property this whole design has been protecting. Each tile is grown with a
+    // guard band so blades just outside it still shadow and occlude inward, then
+    // the guard is cropped away.
+    let tile_width = options.width.div_ceil(across);
+    let tile_height = options.height.div_ceil(across);
+    let guard = (TILE_GUARD_METRES * shown_px_per_metre * supersample as f32).ceil() as usize;
+
     let field = WorldField::lit_by(params.seed, params.light);
-
+    let mut canvas = vec![0u8; options.width * options.height * 3];
     #[allow(clippy::disallowed_types)]
     let started = std::time::Instant::now();
-    let grown = GrassScene::build(page, &field, &params);
-    let grow = started.elapsed();
-
-    let settings = RenderSettings {
-        samples: options.samples,
-        device: options.device.clone(),
-        view_transform: options.view_transform.clone(),
-        // From the scale the blade is *shown* at, not the scale it is traced at.
-        // Supersampling samples a blade more finely; it does not make the blade
-        // any bigger in the finished picture, so letting it raise the rib count
-        // spends geometry on detail nobody will ever see.
-        ribs: cycles::ribs_for(shown_px_per_metre),
-        // Thinned-out grass is widened to compensate, so the canopy keeps the
-        // same coverage rather than opening up as the camera pulls back.
-        blade_width: options.blade_width * width_relief,
-        passes: options.passes,
-        ..default()
-    };
-    let scene = CyclesScene::build(&grown, &field, settings);
+    let blender = cycles::blender_path();
+    let directory = PathBuf::from(&options.scene_dir);
+    let mut total_blades = 0usize;
 
     println!(
         "{}x{} shown at {:.0} px/m ({:.1}x{:.1} m of ground)",
@@ -130,86 +140,131 @@ fn main() {
         options.width as f32 / shown_px_per_metre,
         options.height as f32 / shown_px_per_metre,
     );
-    println!(
-        "  traced {}x{} at {:.0} px/m, {}x supersample, crowding {:.2}",
-        traced_width, traced_height, traced_px_per_metre, supersample, crowding,
-    );
-    let vertices = scene.blades() * scene.ribs() * bw_grass::cycles::VERTICES_PER_RIB;
-    println!(
-        "  {} marks, {} blades × {} ribs = {:.0}M vertices, {}x{} ground",
-        grown.len(),
-        scene.blades(),
-        scene.ribs(),
-        vertices as f64 / 1.0e6,
-        scene.ground_rows,
-        scene.ground_columns,
-    );
-    if vertices > VERTEX_CEILING {
-        eprintln!(
-            "\n{:.0}M vertices is past the {:.0}M ceiling — Blender will run out of\n\
-             memory and take a segmentation fault rather than report anything.\n\
-             Widen the view less, or lower --supersample or --density.",
-            vertices as f64 / 1.0e6,
-            VERTEX_CEILING as f64 / 1.0e6,
+    if across > 1 {
+        println!(
+            "  {across}x{across} tiles of {tile_width}x{tile_height}, {guard} px guard, \
+             {supersample}x supersample, crowding {crowding:.2}"
         );
+    }
+
+    for row in 0..across {
+        for column in 0..across {
+            // The tile's own window on the output, and the world it covers.
+            let x0 = column * tile_width;
+            let y0 = row * tile_height;
+            let w = tile_width.min(options.width - x0);
+            let h = tile_height.min(options.height - y0);
+
+            let traced_w = w * supersample + guard * 2;
+            let traced_h = h * supersample + guard * 2;
+            let traced_px_per_metre = shown_px_per_metre * supersample as f32;
+            // The page origin is in cache pixels at the page's own scale, so the
+            // tile's offset scales with the supersample and the guard is
+            // subtracted in the same units.
+            let origin = options.origin * supersample as f32
+                + Vec2::new(
+                    (x0 * supersample) as f32 - guard as f32,
+                    (y0 * supersample) as f32 - guard as f32,
+                );
+
+            let page = Page::at_detail(
+                origin,
+                traced_w,
+                traced_h,
+                traced_px_per_metre / bw_grass::iso::PX_PER_METRE,
+            );
+            let grown = GrassScene::build(page, &field, &params);
+            let settings = RenderSettings {
+                samples: options.samples,
+                device: options.device.clone(),
+                view_transform: options.view_transform.clone(),
+                ribs: cycles::ribs_for(shown_px_per_metre),
+                blade_width: options.blade_width * width_relief,
+                passes: options.passes,
+                ..default()
+            };
+            let scene = CyclesScene::build(&grown, &field, settings);
+            total_blades += scene.blades();
+
+            let vertices = scene.blades() * scene.ribs() * bw_grass::cycles::VERTICES_PER_RIB;
+            if vertices > VERTEX_CEILING {
+                eprintln!(
+                    "\ntile {column},{row}: {:.0}M vertices is past the {:.0}M ceiling — \
+                     Blender will run out of memory and take a segmentation fault rather \
+                     than report anything.\nRaise --tiles, or lower --supersample.",
+                    vertices as f64 / 1.0e6,
+                    VERTEX_CEILING as f64 / 1.0e6,
+                );
+                std::process::exit(1);
+            }
+
+            let tile_png = directory.join(format!("tile-{row}-{column}.png"));
+            let header = match scene.write(&directory) {
+                Ok(path) => path,
+                Err(error) => {
+                    eprintln!("cannot write scene: {error}");
+                    std::process::exit(1);
+                }
+            };
+            let _ = std::fs::remove_file(&tile_png);
+            match cycles::render(&header, &tile_png, &blender) {
+                Ok(output) if tile_png.exists() && output.status.success() => {}
+                Ok(output) => {
+                    eprintln!(
+                        "tile {column},{row} produced nothing:\n{}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    std::process::exit(1);
+                }
+                Err(error) => {
+                    eprintln!("cannot run blender: {error}");
+                    std::process::exit(1);
+                }
+            }
+
+            if !place_tile(
+                &tile_png,
+                &mut canvas,
+                options.width,
+                x0,
+                y0,
+                w,
+                h,
+                guard,
+                supersample,
+            ) {
+                std::process::exit(1);
+            }
+            let _ = std::fs::remove_file(&tile_png);
+            if across > 1 {
+                println!(
+                    "  tile {}/{}  {:.0} s elapsed",
+                    row * across + column + 1,
+                    across * across,
+                    started.elapsed().as_secs_f64()
+                );
+            }
+        }
+    }
+
+    println!(
+        "  {total_blades} blades over {} tiles, traced in {:.0} s",
+        across * across,
+        started.elapsed().as_secs_f64()
+    );
+
+    if let Err(error) = image::save_buffer(
+        &options.out,
+        &canvas,
+        options.width as u32,
+        options.height as u32,
+        image::ColorType::Rgb8,
+    ) {
+        eprintln!("cannot write {}: {error}", options.out);
         std::process::exit(1);
     }
-    println!(
-        "camera: ortho {:.4} m, pixel aspect {:.5}, from {:?}",
-        scene.camera.ortho_scale, scene.camera.pixel_aspect_y, scene.camera.basis[2],
-    );
-    println!("grown in {:.2} s", grow.as_secs_f64());
+    println!("wrote {}", options.out);
 
-    let directory = PathBuf::from(&options.scene_dir);
-    let header = match scene.write(&directory) {
-        Ok(path) => path,
-        Err(error) => {
-            eprintln!("cannot write scene to {}: {error}", directory.display());
-            std::process::exit(1);
-        }
-    };
-    println!("scene -> {}", header.display());
-
-    let blender = cycles::blender_path();
-    println!("tracing with {}", blender.display());
-    #[allow(clippy::disallowed_types)]
-    let traced = std::time::Instant::now();
-    let output = match cycles::render(&header, &PathBuf::from(&options.out), &blender) {
-        Ok(output) => output,
-        Err(error) => {
-            eprintln!("cannot run {}: {error}", blender.display());
-            eprintln!("set BW_BLENDER to the Blender executable");
-            std::process::exit(1);
-        }
-    };
-
-    // Blender is chatty and most of it is not interesting; the script's own
-    // lines are, and so is anything on stderr.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines().filter(|l| l.contains("[bw_cycles]")) {
-        println!("  {line}");
-    }
-    // Blender exits zero even when the script raised, so the status is not
-    // enough on its own — the only reliable evidence a render happened is the
-    // file. Without this check a traceback reports as a successful bake.
-    let produced = std::fs::metadata(&options.out)
-        .map(|m| m.len())
-        .unwrap_or(0);
-    if !output.status.success() || produced == 0 {
-        eprintln!("--- blender stdout ---\n{stdout}");
-        eprintln!(
-            "--- blender stderr ---\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        eprintln!("no image at {}", options.out);
-        std::process::exit(1);
-    }
-
-    println!(
-        "traced in {:.1} s -> {}",
-        traced.elapsed().as_secs_f64(),
-        options.out
-    );
     if !options.keep {
         let _ = std::fs::remove_dir_all(&directory);
     }
@@ -241,11 +296,75 @@ const MIN_CROWDING: f32 = 0.22;
 /// half a billion dies. This sits below the first with room to spare.
 const VERTEX_CEILING: usize = 260_000_000;
 
+/// How far a tile reaches beyond itself, in world metres.
+///
+/// Half a metre. A tile only holds the blades rooted inside it, so a blade just
+/// outside its edge would cast no shadow into it and occlude nothing — and the
+/// join would show as a bright seam, not a step. This is the tallest a blade
+/// stands plus the ground it shades at the lowest sun the renderer supports.
+///
+/// The guard is rendered and then cropped away, which is the same discipline
+/// `bake_padded` uses and for the same reason.
+const TILE_GUARD_METRES: f32 = 0.5;
+
+/// Crop a traced tile's guard band, filter it down, and put it on the canvas.
+///
+/// The guard is in *traced* pixels and the filter is a plain box average over
+/// each output pixel's own footprint — see `grass_prebake` for why box is the
+/// right filter here rather than a lazy one.
+#[allow(clippy::too_many_arguments)]
+fn place_tile(
+    path: &std::path::Path,
+    canvas: &mut [u8],
+    canvas_width: usize,
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+    guard: usize,
+    supersample: usize,
+) -> bool {
+    let image = match image::open(path) {
+        Ok(image) => image.to_rgb8(),
+        Err(error) => {
+            eprintln!("cannot read {}: {error}", path.display());
+            return false;
+        }
+    };
+    let stride = image.width() as usize;
+    let area = (supersample * supersample) as u32;
+
+    for y in 0..h {
+        for x in 0..w {
+            let mut sums = [0u32; 3];
+            for dy in 0..supersample {
+                for dx in 0..supersample {
+                    let sx = guard + x * supersample + dx;
+                    let sy = guard + y * supersample + dy;
+                    if sx >= stride || sy >= image.height() as usize {
+                        continue;
+                    }
+                    let pixel = image.get_pixel(sx as u32, sy as u32);
+                    for (channel, sum) in sums.iter_mut().enumerate() {
+                        *sum += pixel[channel] as u32;
+                    }
+                }
+            }
+            let target = ((y0 + y) * canvas_width + x0 + x) * 3;
+            for (channel, sum) in sums.iter().enumerate() {
+                canvas[target + channel] = (sum / area) as u8;
+            }
+        }
+    }
+    true
+}
+
 struct Options {
     width: usize,
     height: usize,
     view: Option<f32>,
     supersample: usize,
+    tiles: usize,
     origin: Vec2,
     px_per_metre: f32,
     seed: u64,
@@ -268,6 +387,7 @@ impl Options {
             height: 512,
             view: None,
             supersample: 1,
+            tiles: 1,
             origin: Vec2::ZERO,
             // Higher than the 96 the art is authored at, and on purpose. Cycles
             // draws real geometry, and a blade a third of a pixel wide does not
@@ -309,6 +429,7 @@ impl Options {
                     options.height = side;
                 }
                 "--view" => options.view = value().parse().ok(),
+                "--tiles" => options.tiles = value().parse().unwrap_or(options.tiles).clamp(1, 8),
                 "--supersample" => {
                     options.supersample =
                         value().parse().unwrap_or(options.supersample).clamp(1, 6);
