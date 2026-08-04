@@ -12,13 +12,16 @@ bevy.workspace = true
 # is a pure function of world coordinates — so baking them is embarrassingly
 # parallel and threading it changes nothing about the result.
 rayon.workspace = true
+# The traced-plate driver reads its tiles back to crop and filter them, and
+# writes the assembled plate. It was a dev-dependency while that driver lived in
+# an example; it is a real one now that the driver is in the library, where a
+# second caller can reach it. Bevy already depends on `image`, so the cost is the
+# line rather than the compile.
+image.workspace = true
 
 [dev-dependencies]
 bw_bench.workspace = true
 criterion.workspace = true
-# The headless examples write PNGs, and the snapshot example reads the previous
-# ones back in to compare against.
-image.workspace = true
 rayon.workspace = true
 
 [[example]]

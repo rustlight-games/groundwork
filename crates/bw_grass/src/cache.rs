@@ -38,11 +38,11 @@ use std::path::{Path, PathBuf};
 
 use crate::bake::{BakeParams, Page};
 
-/// Where traced pages live, unless [`BW_GRASS_CACHE`] says otherwise.
+/// Where traced pages live, unless [`TERRAIN_GRASS_CACHE`] says otherwise.
 pub const DEFAULT_DIRECTORY: &str = "target/grass-pages";
 
 /// Environment variable pointing at the page cache.
-pub const BW_GRASS_CACHE: &str = "BW_GRASS_CACHE";
+pub const TERRAIN_GRASS_CACHE: &str = "TERRAIN_GRASS_CACHE";
 
 /// Set this to read traced pages. Unset, the game rasterises everything.
 ///
@@ -58,11 +58,11 @@ pub const BW_GRASS_CACHE: &str = "BW_GRASS_CACHE";
 ///
 /// So the mixing is opt-in. Trace a region, set the variable, and every page in
 /// that region is traced; leave it unset and the whole field is consistent.
-pub const BW_GRASS_TRACED: &str = "BW_GRASS_TRACED";
+pub const TERRAIN_GRASS_TRACED: &str = "TERRAIN_GRASS_TRACED";
 
 /// Whether the game should read traced pages at all.
 pub fn traced_enabled() -> bool {
-    std::env::var(BW_GRASS_TRACED).is_ok_and(|v| v != "0" && !v.is_empty())
+    std::env::var(TERRAIN_GRASS_TRACED).is_ok_and(|v| v != "0" && !v.is_empty())
 }
 
 /// Bytes one page occupies: RGBA, one byte a channel.
@@ -73,7 +73,7 @@ fn expected_len(page: &Page) -> usize {
 
 /// The cache directory in force.
 pub fn directory() -> PathBuf {
-    std::env::var(BW_GRASS_CACHE)
+    std::env::var(TERRAIN_GRASS_CACHE)
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_DIRECTORY))
 }

@@ -1,0 +1,22 @@
+[package]
+name = "terrain_cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The terrain framework's command line: validate, inspect, render, dataset"
+
+# One binary, named for the verb rather than the crate. `terrain render` reads
+# better than `terrain_cli render`, and the crate name only ever appears in a
+# Cargo command.
+[[bin]]
+name = "terrain"
+path = "src/main.rs"
+
+[dependencies]
+# Transitional. Every headless path here goes through the grass crate today and
+# will go through `terrain_core`, `terrain_scene` and `terrain_cycles` once those
+# exist — see the migration note in `main.rs`.
+bw_grass.workspace = true
+bevy.workspace = true
+clap.workspace = true
+image.workspace = true

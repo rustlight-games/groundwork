@@ -41,7 +41,7 @@ fn spawn_camera(mut commands: Commands) {
     commands.spawn((grass_camera(framing.view_height), framing));
 }
 
-/// `BW_VIEW`, in world metres visible vertically.
+/// `TERRAIN_VIEW`, in world metres visible vertically.
 ///
 /// Read here rather than in [`BattleCamera::default`] because the composition
 /// root is the layer allowed to know about the environment the game was launched
@@ -54,14 +54,14 @@ fn spawn_camera(mut commands: Commands) {
 /// between looks is the thing that stops anybody doing it.
 ///
 /// ```sh
-/// BW_VIEW=55 ./run     # a wide strategy camera
-/// BW_VIEW=15 ./run     # a farming-sim camera
+/// TERRAIN_VIEW=55 ./run     # a wide strategy camera
+/// TERRAIN_VIEW=15 ./run     # a farming-sim camera
 /// ```
 ///
 /// Ignored if it does not parse or is not positive, because a typo in a
 /// convenience variable should not decide the framing of the game silently.
 fn view_height_override() -> Option<f32> {
-    std::env::var("BW_VIEW")
+    std::env::var("TERRAIN_VIEW")
         .ok()?
         .trim()
         .parse::<f32>()

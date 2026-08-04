@@ -119,7 +119,7 @@ fn capture(keys: Res<ButtonInput<KeyCode>>, mut commands: Commands) {
 
 /// Grab one frame at a set time, then quit.
 ///
-/// `BW_CAPTURE=path.png BW_CAPTURE_AFTER=4` photographs the running renderer
+/// `TERRAIN_CAPTURE=path.png TERRAIN_CAPTURE_AFTER=4` photographs the running renderer
 /// without a person sitting in front of it. Worth having for its own sake: the
 /// headless baker proves the plate is right, and this is the only thing that
 /// proves the plate reaches the screen — a separate claim, and the one that has
@@ -130,10 +130,10 @@ fn scripted_capture(
     mut exit: MessageWriter<AppExit>,
     mut stage: Local<u32>,
 ) {
-    let Ok(path) = std::env::var("BW_CAPTURE") else {
+    let Ok(path) = std::env::var("TERRAIN_CAPTURE") else {
         return;
     };
-    let at: f32 = std::env::var("BW_CAPTURE_AFTER")
+    let at: f32 = std::env::var("TERRAIN_CAPTURE_AFTER")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(4.0);

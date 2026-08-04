@@ -8418,6 +8418,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrain_cli"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bw_grass",
+ "clap",
+ "image",
+]
+
+[[package]]
+name = "terrain_preview"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bw_grass",
+]
+
+[[package]]
 name = "text_placeholder"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

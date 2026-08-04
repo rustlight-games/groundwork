@@ -29,7 +29,7 @@ fn main() {
     let options = Options::parse();
     let blender = cycles::blender_path();
     if !blender.exists() && blender.as_os_str() != "blender" {
-        eprintln!("no Blender at {}; set BW_BLENDER", blender.display());
+        eprintln!("no Blender at {}; set TERRAIN_BLENDER", blender.display());
         std::process::exit(1);
     }
 
@@ -165,7 +165,7 @@ fn main() {
     if failed > 0 {
         std::process::exit(1);
     }
-    println!("\nBW_GRASS_TRACED=1 ./run   to see them.");
+    println!("\nTERRAIN_GRASS_TRACED=1 ./run   to see them.");
     println!("Pages outside the traced region fall back to the rasteriser, which");
     println!("is a different picture — trace a radius that covers the view.");
 }

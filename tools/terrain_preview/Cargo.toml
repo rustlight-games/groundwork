@@ -1,0 +1,21 @@
+[package]
+name = "terrain_preview"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The terrain, live, in a window: pan, zoom, seed, and screenshots"
+
+[[bin]]
+name = "terrain_preview"
+path = "src/main.rs"
+
+[dependencies]
+# Transitional. The Bevy integration moves to `terrain_bevy`, and this becomes a
+# thin shell over it.
+bw_grass.workspace = true
+bevy.workspace = true
+
+[features]
+# Dynamic Bevy linking, which cuts incremental link time dramatically. Never for
+# a shipped build.
+dev = ["bevy/dynamic_linking"]

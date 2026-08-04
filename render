@@ -2,12 +2,12 @@
 # Place a whole scene in Rust and path-trace it with Cycles, in one go.
 #
 #   ./render                    what the game shows, path-traced. Opened when done
-#   BW_VIEW=10 ./render         closer: world metres visible vertically
-#   BW_SAMPLES=512 ./render     cleaner, slower
-#   BW_SIZE=2560x1440 ./render  bigger
-#   BW_SUPERSAMPLE=2 ./render   override the derived supersample (0 = derive)
-#   BW_TILES=4 ./render         override the derived tile split (0 = derive)
-#   BW_SEED=12 ./render         somewhere else entirely
+#   TERRAIN_VIEW=10 ./render         closer: world metres visible vertically
+#   TERRAIN_SAMPLES=512 ./render     cleaner, slower
+#   TERRAIN_SIZE=2560x1440 ./render  bigger
+#   TERRAIN_SUPERSAMPLE=2 ./render   override the derived supersample (0 = derive)
+#   TERRAIN_TILES=4 ./render         override the derived tile split (0 = derive)
+#   TERRAIN_SEED=12 ./render         somewhere else entirely
 #
 # This is not `./run`. The game streams pages and has a frame to draw them in;
 # Cycles takes seconds, so it cannot run in a render loop. What it can do is
@@ -19,7 +19,7 @@
 #
 # ## The framing matches `./run`
 #
-# `BW_VIEW` is world metres visible vertically, the same number `./run` takes,
+# `TERRAIN_VIEW` is world metres visible vertically, the same number `./run` takes,
 # and it defaults to the same 28. So this is the picture the game is trying to
 # be, rendered properly, rather than a flattering close-up of it.
 #
@@ -42,21 +42,21 @@
 # The count of both is arithmetic rather than a guess: guessing wrong is Blender
 # taking a segmentation fault several minutes in, not a slow render.
 #
-# `BW_VIEW=10 ./render` for the close-up the look was tuned at.
+# `TERRAIN_VIEW=10 ./render` for the close-up the look was tuned at.
 set -e
 
 cd "$(dirname "$0")"
 
-SIZE="${BW_SIZE:-1920x1080}"
+SIZE="${TERRAIN_SIZE:-1920x1080}"
 WIDTH="${SIZE%x*}"
 HEIGHT="${SIZE#*x}"
-SAMPLES="${BW_SAMPLES:-256}"
-VIEW="${BW_VIEW:-28}"
-SUPERSAMPLE="${BW_SUPERSAMPLE:-0}"
-SEED="${BW_SEED:-7}"
-OUT="${BW_OUT:-target/grass-render.png}"
+SAMPLES="${TERRAIN_SAMPLES:-256}"
+VIEW="${TERRAIN_VIEW:-28}"
+SUPERSAMPLE="${TERRAIN_SUPERSAMPLE:-0}"
+SEED="${TERRAIN_SEED:-7}"
+OUT="${TERRAIN_OUT:-target/grass-render.png}"
 
-TILES="${BW_TILES:-0}"
+TILES="${TERRAIN_TILES:-0}"
 
 echo "placing and tracing ${WIDTH}x${HEIGHT} at ${VIEW} m view, ${SAMPLES} spp, seed ${SEED}"
 

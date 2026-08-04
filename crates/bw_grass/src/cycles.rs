@@ -730,7 +730,7 @@ fn script_path() -> PathBuf {
 
 /// Where Blender is, honouring an override.
 pub fn blender_path() -> PathBuf {
-    if let Ok(path) = std::env::var("BW_BLENDER") {
+    if let Ok(path) = std::env::var("TERRAIN_BLENDER") {
         return PathBuf::from(path);
     }
     for candidate in [

@@ -784,19 +784,45 @@ def enable_passes(scene):
     Configuration rather than plumbing. The renderer this replaces carried ten
     channels by hand through its own resolve loop, and each one was a chance for
     the recorded value to drift from the value actually used.
+
+    ## Why every assignment is guarded
+
+    Blender renames and retires pass flags between releases, and an assignment to
+    a flag that no longer exists raises rather than being ignored. That turned a
+    cosmetic API change into a *total* render failure: `use_pass_shadow_catcher`
+    went away in 5.x, and the only symptom was `--aovs` producing no image at all
+    — not a missing channel, no picture. The beauty pass had nothing to do with
+    the flag that failed.
+
+    So a pass that this Blender does not have is skipped and named. A missing
+    channel is a real problem and worth saying out loud; it is not a reason to
+    throw away the render that was going to carry the other nine.
     """
     layer = scene.view_layers[0]
-    layer.use_pass_combined = True
-    layer.use_pass_z = True
-    layer.use_pass_normal = True
-    layer.use_pass_diffuse_direct = True
-    layer.use_pass_diffuse_indirect = True
-    layer.use_pass_diffuse_color = True
-    layer.use_pass_glossy_direct = True
-    layer.use_pass_transmission_direct = True
-    layer.use_pass_ambient_occlusion = True
-    layer.use_pass_shadow_catcher = False
-    layer.use_pass_cryptomatte_object = True
+    wanted = {
+        "use_pass_combined": True,
+        "use_pass_z": True,
+        "use_pass_normal": True,
+        "use_pass_diffuse_direct": True,
+        "use_pass_diffuse_indirect": True,
+        "use_pass_diffuse_color": True,
+        "use_pass_glossy_direct": True,
+        "use_pass_transmission_direct": True,
+        "use_pass_ambient_occlusion": True,
+        "use_pass_shadow_catcher": False,
+        "use_pass_cryptomatte_object": True,
+    }
+    missing = []
+    for flag, value in wanted.items():
+        if not hasattr(layer, flag):
+            # Only worth reporting for a pass that was asked for. A flag being
+            # turned off is satisfied by its own absence.
+            if value:
+                missing.append(flag)
+            continue
+        setattr(layer, flag, value)
+    if missing:
+        print(f"[bw_cycles] this Blender has no {', '.join(missing)} — skipped")
     layer.cycles.denoising_store_passes = True
 
 

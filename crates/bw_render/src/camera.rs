@@ -55,7 +55,7 @@ impl Default for BattleCamera {
         // broad scale. Tune the ground against a `--view 28 --ruler` render,
         // never against a 1:1 plate.
         //
-        // `BW_VIEW` overrides it at run time — see `bw_app`.
+        // `TERRAIN_VIEW` overrides it at run time — see `bw_app`.
         Self { view_height: 28.0 }
     }
 }

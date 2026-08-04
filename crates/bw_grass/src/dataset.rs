@@ -41,13 +41,15 @@
 //! [`crate::bake::Passes`] is the structure, exported beside the picture.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use bevy::prelude::*;
+use rayon::prelude::*;
 
 use crate::bake::{BakeParams, Macro, Page, Passes, cast_shadows, lay_floor, resolve_passes};
 use crate::cycles::{self, CyclesScene, RenderSettings};
 use crate::field::WorldField;
+use crate::iso;
 use crate::quality::GrassRenderQuality;
 use crate::scene::GrassScene;
 use crate::stroke::Painter;
@@ -328,6 +330,339 @@ impl ShardMetadata {
             self.sun_radius,
             self.marks,
         )
+    }
+}
+
+/// How much of each edge is thrown away when a crop is cut.
+///
+/// Not decoration. Every neighbourhood-reading term in the renderer — occlusion,
+/// the relief comparison, the shadows themselves — is wrong near a page edge,
+/// and a corpus of crops baked at their own size teaches a network that page
+/// borders exist. It will then faithfully reproduce them.
+pub const CROP_MARGIN: usize = 96;
+
+/// A whole corpus job, as a value.
+///
+/// This lived in the `grass_dataset` example until a second caller wanted it.
+/// Keeping it there had the same defect the tiling arithmetic did: the rules
+/// that decide whether a corpus is *usable* — one scene per pair, a crop taken
+/// from the middle of a larger bake, a fresh world per shard — were reachable
+/// only by running an example, and a second entry point would have had to
+/// reimplement them and get all three right again.
+#[derive(Clone, Debug)]
+pub struct CorpusRequest {
+    pub shards: usize,
+    /// Side of the bake, in final pixels. Larger than the crop, deliberately.
+    pub page: usize,
+    /// Side of the crop actually kept.
+    pub crop: usize,
+    pub px_per_metre: f32,
+    /// The root seed. Each shard derives its own world from it.
+    pub seed: u64,
+    pub target: GrassRenderQuality,
+    pub input: GrassRenderQuality,
+    /// Write the structural channels beside the picture.
+    pub aovs: bool,
+    /// Pair the cheap render against an expensive *rasterisation* rather than
+    /// against Cycles. The older pairing, kept for when Blender is absent.
+    pub raster: bool,
+    pub samples: u32,
+    pub density: f32,
+    pub length: f32,
+    pub out: PathBuf,
+}
+
+impl Default for CorpusRequest {
+    fn default() -> Self {
+        Self {
+            shards: 8,
+            page: 448,
+            crop: 256,
+            px_per_metre: iso::PX_PER_METRE,
+            seed: 0x9a55_0001,
+            target: GrassRenderQuality::Dataset,
+            input: GrassRenderQuality::Preview,
+            aovs: false,
+            raster: false,
+            samples: 192,
+            // The tuned canopy. See `crate::plate` for why the rasteriser's own
+            // counts are the wrong quantity for a path tracer.
+            density: 8.0,
+            length: 1.6,
+            out: PathBuf::from("target/grass-dataset"),
+        }
+    }
+}
+
+impl CorpusRequest {
+    /// Pixels thrown away from each edge.
+    pub fn margin(&self) -> usize {
+        CROP_MARGIN.min(self.page.saturating_sub(self.crop) / 2)
+    }
+
+    /// A stable seed per shard.
+    ///
+    /// Every shard is its own *world* rather than its own patch of one world,
+    /// which is deliberate. Crops from one world share its regional hue, its
+    /// density and its flow, so a corpus drawn from a single seed is far less
+    /// varied than its size suggests — and a validation split cut from the same
+    /// world is not a held-out sample at all.
+    pub fn seed_for(&self, shard: usize) -> u64 {
+        self.seed
+            .wrapping_add((shard as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
+    }
+
+    /// Where in that world to stand.
+    pub fn origin_for(&self, shard: usize) -> Vec2 {
+        let step = (shard as f32) * 977.0;
+        Vec2::new(step % 8191.0 - 4096.0, (step * 1.618) % 7817.0 - 3908.0)
+    }
+
+    /// The parameters one shard is grown under.
+    pub fn params_for(&self, shard: usize) -> BakeParams {
+        let mut params = BakeParams {
+            seed: self.seed_for(shard),
+            quality: self.target,
+            ..BakeParams::default()
+        };
+        params.tufts *= self.density;
+        params.fine *= self.density;
+        params.thatch *= self.density;
+        params.leaves *= self.density;
+        params.blade_length.0 *= self.length;
+        params.blade_length.1 *= self.length;
+        params
+    }
+
+    /// The page one shard is baked on.
+    pub fn page_for(&self, shard: usize) -> Page {
+        Page::at_detail(
+            self.origin_for(shard),
+            self.page,
+            self.page,
+            self.px_per_metre / iso::PX_PER_METRE,
+        )
+    }
+}
+
+/// What a corpus job produced.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CorpusReport {
+    pub shards: usize,
+    pub images: usize,
+    /// Shards that failed and wrote nothing.
+    pub failed: usize,
+}
+
+/// Generate a corpus, writing shards under `request.out`.
+///
+/// `progress` is called once per finished shard, with the shard's index and how
+/// many images it wrote.
+pub fn generate(
+    request: &CorpusRequest,
+    progress: &mut (dyn FnMut(usize, usize) + Send + Sync),
+) -> io::Result<CorpusReport> {
+    std::fs::create_dir_all(&request.out)?;
+
+    if request.raster {
+        // The rasteriser is threaded and holds no subprocess, so shards fan out.
+        let counts: Vec<usize> = (0..request.shards)
+            .into_par_iter()
+            .map(|shard| raster_shard(request, shard))
+            .collect();
+        for (shard, images) in counts.iter().enumerate() {
+            progress(shard, *images);
+        }
+        return Ok(tally(request.shards, &counts));
+    }
+
+    // Cycles renders on the GPU and Blender is a process, so shards are traced
+    // one at a time while the rasteriser's own work stays threaded inside each.
+    // Fanning out subprocesses here would contend for one device and make the
+    // whole job slower, not faster.
+    let blender = cycles::blender_path();
+    let mut counts = Vec::with_capacity(request.shards);
+    for shard in 0..request.shards {
+        let images = traced_shard(request, shard, &blender);
+        progress(shard, images);
+        counts.push(images);
+    }
+    Ok(tally(request.shards, &counts))
+}
+
+fn tally(shards: usize, counts: &[usize]) -> CorpusReport {
+    CorpusReport {
+        shards,
+        images: counts.iter().sum(),
+        failed: counts.iter().filter(|&&n| n == 0).count(),
+    }
+}
+
+/// One shard, with Cycles as the target.
+fn traced_shard(request: &CorpusRequest, shard: usize, blender: &Path) -> usize {
+    let params = request.params_for(shard);
+    let page = request.page_for(shard);
+    let settings = RenderSettings {
+        samples: request.samples,
+        passes: request.aovs,
+        ..RenderSettings::default()
+    };
+    let pair = TracedPair::build(page, &params, request.input, settings);
+
+    let stem = request.out.join(format!("{shard:05}"));
+    let target_path = request.out.join(format!("{shard:05}-target.png"));
+    let scene_dir = request.out.join(format!(".scene-{shard:05}"));
+    if let Err(error) = pair.trace(&scene_dir, &target_path, blender) {
+        eprintln!("shard {shard}: {error}");
+        let _ = std::fs::remove_dir_all(&scene_dir);
+        return 0;
+    }
+    let _ = std::fs::remove_dir_all(&scene_dir);
+
+    let margin = request.margin();
+    let (input, w, h) = pair.crop_input(margin);
+    let mut wrote = write_rgb(&stem, "input", &input, w, h);
+    // The traced target arrives full-page; crop it to match the input.
+    wrote += crop_png_in_place(&target_path, margin);
+    if request.aovs {
+        wrote += write_passes(&stem, &pair.input.passes, request.page, margin, w, h);
+    }
+
+    let meta = ShardMetadata::of(&page, &params, request.input, pair.marks);
+    let _ = std::fs::write(stem.with_extension("ron"), meta.to_ron());
+    wrote
+}
+
+/// One shard, with an expensive rasterisation as the target.
+fn raster_shard(request: &CorpusRequest, shard: usize) -> usize {
+    let params = request.params_for(shard);
+    let page = request.page_for(shard);
+    let pair = Pair::bake(page, &params, request.input);
+    let (input, target, w, h) = pair.crop(request.margin());
+
+    let stem = request.out.join(format!("{shard:05}"));
+    let mut wrote = write_rgb(&stem, "input", &input, w, h);
+    wrote += write_rgb(&stem, "target", &target, w, h);
+    if request.aovs {
+        wrote += write_passes(
+            &stem,
+            &pair.input.passes,
+            request.page,
+            request.margin(),
+            w,
+            h,
+        );
+    }
+
+    let meta = ShardMetadata::of(&page, &params, request.input, pair.marks);
+    let _ = std::fs::write(stem.with_extension("ron"), meta.to_ron());
+    wrote
+}
+
+/// Write every structural channel beside the picture.
+fn write_passes(
+    stem: &Path,
+    passes: &Passes,
+    side: usize,
+    margin: usize,
+    w: usize,
+    h: usize,
+) -> usize {
+    let mut wrote = 0;
+    for (name, channel) in passes.scalars() {
+        let cropped = crop_channel(channel, side, margin);
+        wrote += write_grey(stem, name, &cropped, w, h);
+    }
+    for (name, channel) in passes.vectors() {
+        let cropped = crop_channel(channel, side, margin);
+        // Signed directions into an unsigned image. Decoded as `2v - 1`.
+        let encoded: Vec<Vec3> = cropped
+            .iter()
+            .map(|n| *n * 0.5 + Vec3::splat(0.5))
+            .collect();
+        wrote += write_rgb(stem, name, &encoded, w, h);
+    }
+    wrote
+}
+
+fn crop_channel<T: Copy>(source: &[T], side: usize, margin: usize) -> Vec<T> {
+    let cw = side - margin * 2;
+    let mut out = Vec::with_capacity(cw * cw);
+    for row in 0..cw {
+        let start = (row + margin) * side + margin;
+        out.extend_from_slice(&source[start..start + cw]);
+    }
+    out
+}
+
+/// Crop a written PNG to its middle, in place.
+///
+/// The traced target arrives at the full page size because Cycles photographs
+/// the whole camera frame, and the crop has to match the input's exactly — see
+/// [`Pair::crop`] for why a training crop is cut from the middle of a larger
+/// bake rather than baked at its own size.
+fn crop_png_in_place(path: &Path, margin: usize) -> usize {
+    let Ok(image) = image::open(path) else {
+        eprintln!("cannot reread {}", path.display());
+        return 0;
+    };
+    let image = image.to_rgb8();
+    let (w, h) = (image.width(), image.height());
+    let margin = margin as u32;
+    if margin * 2 >= w.min(h) {
+        return 1;
+    }
+    let cropped = image::imageops::crop_imm(&image, margin, margin, w - margin * 2, h - margin * 2)
+        .to_image();
+    match cropped.save(path) {
+        Ok(()) => 1,
+        Err(error) => {
+            eprintln!("{}: {error}", path.display());
+            0
+        }
+    }
+}
+
+fn channel_path(stem: &Path, name: &str) -> PathBuf {
+    stem.with_file_name(format!(
+        "{}-{name}.png",
+        stem.file_name().unwrap_or_default().to_string_lossy()
+    ))
+}
+
+fn write_rgb(stem: &Path, name: &str, colours: &[Vec3], w: usize, h: usize) -> usize {
+    let bytes = crate::surface::to_rgb8(colours);
+    let path = channel_path(stem, name);
+    match image::save_buffer(&path, &bytes, w as u32, h as u32, image::ColorType::Rgb8) {
+        Ok(()) => 1,
+        Err(error) => {
+            eprintln!("{}: {error}", path.display());
+            0
+        }
+    }
+}
+
+/// A scalar channel, scaled to its own range and written as grey.
+///
+/// Normalised per channel rather than globally, and the normalisation is *not*
+/// recorded — because these are for looking at. A trainer reading them back
+/// would want the raw floats; that is a different exporter, and this one is an
+/// instrument.
+fn write_grey(stem: &Path, name: &str, values: &[f32], w: usize, h: usize) -> usize {
+    let low = values.iter().cloned().fold(f32::INFINITY, f32::min);
+    let high = values.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let span = (high - low).max(1.0e-6);
+    let bytes: Vec<u8> = values
+        .iter()
+        .map(|v| (((v - low) / span).clamp(0.0, 1.0) * 255.0) as u8)
+        .collect();
+    let path = channel_path(stem, name);
+    match image::save_buffer(&path, &bytes, w as u32, h as u32, image::ColorType::L8) {
+        Ok(()) => 1,
+        Err(error) => {
+            eprintln!("{}: {error}", path.display());
+            0
+        }
     }
 }
 
