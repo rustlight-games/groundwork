@@ -30,6 +30,9 @@
 //!   painter order that decides what draws over what.
 //! - [`instance`] — prototypes, for geometry that is distinctive and expensive
 //!   rather than varied and cheap.
+//! - [`layout`] — the square world tiles a render is *about*, and which one of
+//!   them is the subject. A composition request laid over continuous terrain,
+//!   never a generation boundary.
 //! - [`scene`] — the whole thing, and the builder that produces it.
 //!
 //! ## What may not live here
@@ -47,12 +50,16 @@
 
 pub mod ground;
 pub mod instance;
+pub mod layout;
 pub mod mark;
 pub mod projection;
 pub mod scene;
 
 pub use ground::{GroundMaterialChannel, GroundModifierChannel, GroundSurface};
 pub use instance::{PrototypeBinding, PrototypeIndex, PrototypeInstance};
+pub use layout::{
+    IsoTileLayout, LayoutError, TileLayoutPreset, TileRole, WorldTile, WorldTileCoord,
+};
 pub use mark::{
     Aabb3, AnalyticMark, CurveMark, MarkAttributes, MarkId, PainterOrder, RibbonGeometry,
     RibbonMark, SceneMark, SceneMaterialBinding, SceneMaterialIndex, StampMark, Stratum, TipShape,
