@@ -1,7 +1,7 @@
 """Discover what this Blender actually offers, rather than guessing.
 
 Run with:
-    blender --background --factory-startup --python tools/bw_cycles/probe.py
+    blender --background --factory-startup --python tools/blender_cycles/probe.py
 """
 
 import sys

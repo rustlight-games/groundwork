@@ -723,9 +723,9 @@ fn script_path() -> PathBuf {
     // `CARGO_MANIFEST_DIR` is this crate; the script is a workspace tool because
     // it is not Rust and does not belong inside a crate's source tree.
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tools/bw_cycles/render.py")
+        .join("../../tools/blender_cycles/render.py")
         .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from("tools/bw_cycles/render.py"))
+        .unwrap_or_else(|_| PathBuf::from("tools/blender_cycles/render.py"))
 }
 
 /// Where Blender is, honouring an override.

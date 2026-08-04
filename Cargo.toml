@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "tools/terrain_cli", "tools/terrain_preview"]
-# `tools/bw_cycles` is not a Rust crate — it is the Blender-side half of the
+# `tools/blender_cycles` is not a Rust crate — it is the Blender-side half of the
 # path-traced renderer, driven as a subprocess. It lives under `tools/` because
 # that is where a thing you run rather than link belongs, and Cargo has to be
 # told it is not a member.
-exclude = ["tools/bw_cycles"]
+exclude = ["tools/blender_cycles"]
 
 # Virtual, with no root package. There used to be one — the game binary — and its
 # absence is the point rather than a tidy-up: nothing in this repository is an

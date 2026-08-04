@@ -1,15 +1,31 @@
-"""Render an exported grass scene with Cycles.
+"""Render an exported terrain scene with Cycles.
 
     blender --background --factory-startup --python render.py -- scene.json out.png
 
 The Rust side owns every placement decision and hands this script an explicit
-list of curves in world metres. This script owns light transport and nothing
-else: it must never decide where a blade goes, because two pages that have never
-met agree along a shared edge only for as long as placement stays a pure function
-of a world coordinate. Blender's own scattering would break that quietly.
+list of geometry in world metres. This script owns light transport and nothing
+else: **it must never decide where anything goes.** Two pages that have never met
+agree along a shared edge only for as long as placement stays a pure function of
+a world coordinate, and Blender's own scattering would break that quietly — the
+seam would appear, nothing would report it, and the cause would be in a different
+language from the symptom.
 
-See `bw_grass::cycles` for the wire format and for why the camera is derived
-rather than authored.
+## Materials dispatch on appearance keys
+
+A scene names its materials by key — `plant.grass_blade`, `surface.dirt_compacted`
+— and `material_for` turns a key into a shader graph. That indirection is what
+lets the Rust side stay generic: adding wildflowers means adding a builder here
+and a binding there, not teaching the exporter that Blender has a flower shader.
+
+An appearance key is a renderer-side implementation id, **not** a material-weight
+identity. A blade of grass growing on ground that is seventy percent grass and
+thirty percent dirt is still made of grass, and the ground under it is separately
+seventy-thirty. Conflating the two is what produces transparent grass ghosts at a
+boundary.
+
+See `terrain_cycles::package` for the wire format and `terrain_scene::projection`
+for why the camera is derived rather than authored — and for why the world
+arrives reflected.
 """
 
 import json
@@ -195,6 +211,73 @@ def build_ground(scene_dir, spec):
     bpy.context.collection.objects.link(obj)
     obj.data.materials.append(ground_material())
     return obj
+
+
+
+# --------------------------------------------------------------------------
+# Material dispatch
+# --------------------------------------------------------------------------
+#
+# A scene names its materials by **appearance key** — `plant.grass_blade`,
+# `surface.dirt_compacted`, `rock.granite` — and this is where a key becomes a
+# shader graph.
+#
+# The indirection is the whole reason the exporter can stay generic. Without it,
+# adding wildflowers means teaching the Rust side that Blender has a flower
+# shader, and the scene format grows a section per plant. With it, the scene says
+# "this mark looks like `plant.wildflower_head`" and the two sides agree on a
+# string.
+#
+# An appearance key is a **renderer-side implementation id**, not a
+# material-weight identity. A blade of grass growing on ground that is seventy
+# percent grass and thirty percent dirt is still made of grass, and the ground
+# under it is separately seventy-thirty. Those are answers to different
+# questions, and conflating them is what makes a boundary produce transparent
+# grass ghosts.
+
+
+def appearance_builders(settings):
+    """Every appearance this build knows how to construct.
+
+    Explicit rather than discovered, for the same reason the Rust-side registry
+    is: with automatic registration, two builders claiming one key are resolved
+    by import order, and the same scene renders differently depending on how the
+    module happened to load.
+    """
+    return {
+        "plant.grass_blade": lambda: blade_material(settings),
+        "plant.broad_leaf": lambda: blade_material(settings),
+        "plant.thatch": lambda: blade_material(settings),
+        "plant.dry_stem": lambda: blade_material(settings),
+        "surface.grass_lush": ground_material,
+        "surface.bare_soil": ground_material,
+        "surface.dirt_compacted": ground_material,
+    }
+
+
+def material_for(appearance, settings, cache):
+    """The shader graph for one appearance key, built once per render.
+
+    An unknown key is a *reported* fallback rather than a silent one. A scene
+    that named `plant.wildflowe_head` and got grass would render perfectly and be
+    wrong, and nothing anywhere would say why — which is the same failure mode
+    `deny_unknown_fields` exists to prevent on the authoring side.
+    """
+    if appearance in cache:
+        return cache[appearance]
+
+    builders = appearance_builders(settings)
+    builder = builders.get(appearance)
+    if builder is None:
+        print(
+            f"[terrain_cycles] no builder for appearance '{appearance}'; "
+            f"falling back to a plain surface. Known: {sorted(builders)}"
+        )
+        builder = ground_material
+
+    material = builder()
+    cache[appearance] = material
+    return material
 
 
 # --------------------------------------------------------------------------
@@ -754,7 +837,7 @@ def configure_device(wanted, cycles):
     """Put the trace on the GPU when there is one, and say so when there is not."""
     if wanted != "GPU":
         cycles.device = "CPU"
-        print("[bw_cycles] device: CPU (requested)")
+        print("[blender_cycles] device: CPU (requested)")
         return
     try:
         prefs = bpy.context.preferences.addons["cycles"].preferences
@@ -770,12 +853,12 @@ def configure_device(wanted, cycles):
             for device in prefs.devices:
                 device.use = device.type == backend
             cycles.device = "GPU"
-            print(f"[bw_cycles] device: {backend} — {[d.name for d in usable]}")
+            print(f"[blender_cycles] device: {backend} — {[d.name for d in usable]}")
             return
     except Exception as error:  # noqa: BLE001
-        print(f"[bw_cycles] GPU setup failed ({error}); falling back to CPU")
+        print(f"[blender_cycles] GPU setup failed ({error}); falling back to CPU")
     cycles.device = "CPU"
-    print("[bw_cycles] device: CPU (no GPU backend available)")
+    print("[blender_cycles] device: CPU (no GPU backend available)")
 
 
 def enable_passes(scene):
@@ -822,7 +905,7 @@ def enable_passes(scene):
             continue
         setattr(layer, flag, value)
     if missing:
-        print(f"[bw_cycles] this Blender has no {', '.join(missing)} — skipped")
+        print(f"[blender_cycles] this Blender has no {', '.join(missing)} — skipped")
     layer.cycles.denoising_store_passes = True
 
 
@@ -845,21 +928,21 @@ def render_one(header_path, output):
 
     built = time.time()
     print(
-        f"[bw_cycles] built {spec['blades']['count']} curves "
+        f"[blender_cycles] built {spec['blades']['count']} curves "
         f"({spec['ground']['rows']}x{spec['ground']['columns']} ground) in {built - started:.1f}s"
     )
     if blades is None:
-        print("[bw_cycles] warning: no blades in this scene")
+        print("[blender_cycles] warning: no blades in this scene")
     _ = ground
 
     bpy.ops.render.render(write_still=True)
-    print(f"[bw_cycles] rendered in {time.time() - built:.1f}s -> {output}")
+    print(f"[blender_cycles] rendered in {time.time() - built:.1f}s -> {output}")
 
 
 def main():
     jobs = jobs_from_argv()
     if len(jobs) > 1:
-        print(f"[bw_cycles] manifest of {len(jobs)} pages in one process")
+        print(f"[blender_cycles] manifest of {len(jobs)} pages in one process")
     started = time.time()
     for index, (header_path, output) in enumerate(jobs):
         try:
@@ -867,11 +950,11 @@ def main():
         except Exception as error:  # noqa: BLE001
             # One bad page must not cost the whole manifest. The driver checks
             # for the file, so a page that fails here simply is not cached.
-            print(f"[bw_cycles] page {index} failed: {error}")
+            print(f"[blender_cycles] page {index} failed: {error}")
     if len(jobs) > 1:
         elapsed = time.time() - started
         print(
-            f"[bw_cycles] {len(jobs)} pages in {elapsed:.0f}s "
+            f"[blender_cycles] {len(jobs)} pages in {elapsed:.0f}s "
             f"({elapsed / max(len(jobs), 1):.1f}s each)"
         )
 

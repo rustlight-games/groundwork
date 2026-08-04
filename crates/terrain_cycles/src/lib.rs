@@ -31,8 +31,16 @@
 
 #![forbid(unsafe_code)]
 
+pub mod aov;
 pub mod cycles;
+pub mod export;
+pub mod package;
 pub mod plate;
 
+pub use aov::{OutputPass, OutputRequest};
 pub use cycles::{Camera, CyclesScene, RenderSettings, blender_path, render};
+pub use export::{RenderProfile, write_package};
+pub use package::{
+    GeometryKind, GeometryManifest, MaterialBindingManifest, PACKAGE_VERSION, ScenePackageManifest,
+};
 pub use plate::{Plate, PlatePlan, PlateRequest};
