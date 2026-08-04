@@ -59,6 +59,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bake;
+pub mod cache;
 pub mod compare;
 pub mod critique;
 pub mod cycles;

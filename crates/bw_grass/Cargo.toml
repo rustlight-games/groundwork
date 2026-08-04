@@ -54,6 +54,11 @@ path = "examples/grass_critique.rs"
 name = "grass_cycles"
 path = "examples/grass_cycles.rs"
 
+# Fill the page cache the game reads, so `./run` shows traced grass.
+[[example]]
+name = "grass_prebake"
+path = "examples/grass_prebake.rs"
+
 # The performance suite. `harness = false` because criterion supplies its own.
 [[bench]]
 name = "bake"

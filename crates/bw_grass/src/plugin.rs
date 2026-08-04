@@ -208,7 +208,22 @@ fn request_pages(
 }
 
 /// Bake a page straight to the bytes a texture wants.
+///
+/// Traced pages first, and rasterised only when there is not one.
+///
+/// This is where the two renderers meet. Cycles takes seconds a page and the
+/// game has a frame, so the path tracer can never run here — but it does not
+/// have to. A page is a *cache*, its content is a pure function of the world
+/// coordinate and the seed, and that means a page traced last week is exactly
+/// the page this function would produce if it had the time. So it is looked up
+/// on disk, and the rasteriser becomes the fallback for ground nobody has traced
+/// yet rather than the way the game is meant to look.
+///
+/// Pre-trace with `cargo run --release -p bw_grass --example grass_prebake`.
 fn bake_to_rgba(page: Page, params: &BakeParams) -> Vec<u8> {
+    if let Some(bytes) = crate::cache::load(&page, params) {
+        return bytes;
+    }
     let colours = bake(page, params);
     let mut bytes = Vec::with_capacity(colours.len() * 4);
     for colour in colours {
