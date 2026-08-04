@@ -40,9 +40,13 @@
 //! interior, which are precisely the failures this renderer was built to remove.
 //! [`crate::bake::Passes`] is the structure, exported beside the picture.
 
+use std::io;
+use std::path::Path;
+
 use bevy::prelude::*;
 
 use crate::bake::{BakeParams, Macro, Page, Passes, cast_shadows, lay_floor, resolve_passes};
+use crate::cycles::{self, CyclesScene, RenderSettings};
 use crate::field::WorldField;
 use crate::quality::GrassRenderQuality;
 use crate::scene::GrassScene;
@@ -133,6 +137,124 @@ impl Pair {
             out
         };
         (cut(&self.input.colour), cut(&self.target.colour), cw, ch)
+    }
+}
+
+/// A cheap raster render and the path-traced target of the same ground.
+///
+/// The pairing this corpus actually wants, and the reason is the whole hybrid
+/// split: the rasteriser is fast enough to run in a game and cannot integrate a
+/// hemisphere; Cycles integrates the hemisphere and takes seconds. Learning the
+/// second from the first is the point of the exercise, so the target has to be
+/// the *traced* image rather than an expensive rasterisation of the same
+/// approximations.
+///
+/// ## The "one meadow" rule survives, and gets stronger
+///
+/// [`Pair`] renders one [`GrassScene`] twice through one renderer. This renders
+/// one [`GrassScene`] through two *different* renderers, which sounds like it
+/// weakens the guarantee and does the opposite: both sides consume the identical
+/// `Vec<Stroke>`, and the Cycles export walks those strokes with the same
+/// [`crate::stroke::walk_blade`] the rasteriser draws them with. There is one
+/// geometry source and no second generation to drift.
+///
+/// ## Why the image is not read here
+///
+/// [`TracedPair::trace`] leaves a PNG on disk and stops. Decoding it would put
+/// an image codec in a crate the game links, to serve a path that only ever runs
+/// offline. The caller — an example, a corpus job — already has a decoder.
+pub struct TracedPair {
+    /// The cheap render, from the rasteriser.
+    pub input: Render,
+    /// The same scene, prepared for the path tracer.
+    pub scene: CyclesScene,
+    pub marks: usize,
+}
+
+impl TracedPair {
+    /// Grow one scene, rasterise it cheaply, and prepare it for tracing.
+    pub fn build(
+        page: Page,
+        params: &BakeParams,
+        input: GrassRenderQuality,
+        settings: RenderSettings,
+    ) -> Self {
+        let field = WorldField::lit_by(params.seed, params.light);
+        let lattice = Macro::build(&page, &field);
+        // Once. Both renderers read this and nothing regenerates it.
+        let grown = GrassScene::build(page, &field, params);
+
+        let cheap = BakeParams {
+            quality: input,
+            ..*params
+        };
+        let mut surface = Surface::at_supersample(page.width, page.height, input.supersample());
+        lay_floor(&mut surface, &page, &field, &lattice);
+        {
+            let mut painter =
+                Painter::at_scale(&mut surface, page.origin, cheap.light, page.px_per_metre)
+                    .with_ribs_per_pixel(input.ribs_per_pixel());
+            grown.draw(&mut painter);
+        }
+        let shadows = cast_shadows(&grown, &cheap);
+        let mut passes = Passes::default();
+        let colour = resolve_passes(
+            &surface,
+            &page,
+            &lattice,
+            &cheap,
+            shadows.as_deref(),
+            Some(&mut passes),
+        );
+
+        let marks = grown.len();
+        Self {
+            input: Render {
+                colour,
+                passes,
+                width: page.width,
+                height: page.height,
+            },
+            scene: CyclesScene::build(&grown, &field, settings),
+            marks,
+        }
+    }
+
+    /// Write the scene out and trace it, leaving a PNG at `output`.
+    ///
+    /// Blender exits zero when its Python raises, so a successful status proves
+    /// nothing on its own; the presence of the file is the only evidence a
+    /// render happened.
+    pub fn trace(&self, directory: &Path, output: &Path, blender: &Path) -> io::Result<()> {
+        let header = self.scene.write(directory)?;
+        let result = cycles::render(&header, output, blender)?;
+        let produced = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
+        if !result.status.success() || produced == 0 {
+            return Err(io::Error::other(format!(
+                "cycles produced no image at {}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                output.display(),
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr),
+            )));
+        }
+        Ok(())
+    }
+
+    /// Cut the middle out of the cheap render, matching [`Pair::crop`].
+    ///
+    /// The traced side is cropped by the caller once it has decoded it, from the
+    /// same margin — see [`Pair::crop`] for why a crop is taken from the middle
+    /// of a larger bake rather than baked at its own size.
+    pub fn crop_input(&self, margin: usize) -> (Vec<Vec3>, usize, usize) {
+        let (w, h) = (self.input.width, self.input.height);
+        let margin = margin.min(w / 2).min(h / 2);
+        let (cw, ch) = (w - margin * 2, h - margin * 2);
+        let mut out = Vec::with_capacity(cw * ch);
+        for row in 0..ch {
+            let start = (row + margin) * w + margin;
+            out.extend_from_slice(&self.input.colour[start..start + cw]);
+        }
+        (out, cw, ch)
     }
 }
 

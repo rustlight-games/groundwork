@@ -6,10 +6,18 @@
 //! cargo run --release -p bw_grass --example grass_dataset -- --out target/corpus
 //! ```
 //!
-//! Each shard is one patch of ground rendered twice — cheaply and expensively —
-//! from **one scene**, cropped to its middle, with the structure the cheap
-//! render cannot see written out beside it. See [`bw_grass::dataset`] for why
-//! each of those three things is a requirement rather than a convenience.
+//! Each shard is one patch of ground rendered twice from **one scene**, cropped
+//! to its middle, with the structure the cheap render cannot see written out
+//! beside it. See [`bw_grass::dataset`] for why each of those three things is a
+//! requirement rather than a convenience.
+//!
+//! The two renders are not two budgets of one renderer. The input is the
+//! rasteriser — fast enough for a game, and unable to integrate a hemisphere.
+//! The target is Cycles, which integrates it and takes seconds. Learning the
+//! second from the first is the entire point, so a corpus whose target was an
+//! expensive *rasterisation* would be teaching a network to reproduce the
+//! approximations rather than to replace them. `--raster` falls back to that
+//! older pairing for when Blender is not available.
 //!
 //! Shards land under `target/grass-dataset/` by default. They are working state:
 //! a corpus is regenerated from a seed and a renderer version, not archived.
@@ -18,7 +26,8 @@ use std::path::{Path, PathBuf};
 
 use bevy::prelude::*;
 use bw_grass::bake::{BakeParams, Page};
-use bw_grass::dataset::{Pair, ShardMetadata};
+use bw_grass::cycles::{self, RenderSettings};
+use bw_grass::dataset::{Pair, ShardMetadata, TracedPair};
 use bw_grass::quality::GrassRenderQuality;
 use rayon::prelude::*;
 
@@ -37,8 +46,13 @@ fn main() {
         options.page,
     );
     println!(
-        "  input {} · margin {} px · {} px/m",
+        "  input {} (raster) · target {} · margin {} px · {} px/m",
         options.input.name(),
+        if options.raster {
+            "raster".to_string()
+        } else {
+            format!("cycles {} spp", options.samples)
+        },
         options.margin(),
         options.px_per_metre,
     );
@@ -46,51 +60,106 @@ fn main() {
 
     #[allow(clippy::disallowed_types)]
     let started = std::time::Instant::now();
-    let done: usize = (0..options.shards)
-        .into_par_iter()
-        .map(|shard| {
-            let params = BakeParams {
-                seed: options.seed_for(shard),
-                quality: options.target,
-                ..default()
-            };
-            let page = Page::at_detail(
-                options.origin_for(shard),
-                options.page,
-                options.page,
-                options.px_per_metre / bw_grass::iso::PX_PER_METRE,
-            );
-            let pair = Pair::bake(page, &params, options.input);
-            let (input, target, w, h) = pair.crop(options.margin());
+    let blender = cycles::blender_path();
+    if !options.raster {
+        println!("  tracing with {}", blender.display());
+    }
 
-            let stem = options.out.join(format!("{shard:05}"));
-            let mut wrote = 0usize;
-            wrote += write_rgb(&stem, "input", &input, w, h);
-            wrote += write_rgb(&stem, "target", &target, w, h);
-            if options.aovs {
-                let passes = &pair.target.passes;
-                let margin = options.margin();
-                for (name, channel) in passes.scalars() {
-                    let cropped = crop_scalar(channel, options.page, margin);
-                    wrote += write_grey(&stem, name, &cropped, w, h);
-                }
-                for (name, channel) in passes.vectors() {
-                    let cropped = crop_vector(channel, options.page, margin);
-                    // Normals are signed; encoded the usual way so they can be
-                    // looked at as well as read back.
-                    let encoded: Vec<Vec3> = cropped
-                        .iter()
-                        .map(|n| *n * 0.5 + Vec3::splat(0.5))
-                        .collect();
-                    wrote += write_rgb(&stem, name, &encoded, w, h);
-                }
+    // Cycles renders on the GPU and Blender is a process, so shards are traced
+    // one at a time while the rasteriser's own work stays threaded inside each.
+    // Fanning out subprocesses here would contend for one device and make the
+    // whole job slower, not faster.
+    let trace_shard = |shard: usize| -> usize {
+        let params = BakeParams {
+            seed: options.seed_for(shard),
+            quality: options.target,
+            ..default()
+        };
+        let mut params = params;
+        params.tufts *= options.density;
+        params.fine *= options.density;
+        params.thatch *= options.density;
+        params.leaves *= options.density;
+        params.blade_length.0 *= options.length;
+        params.blade_length.1 *= options.length;
+
+        let page = Page::at_detail(
+            options.origin_for(shard),
+            options.page,
+            options.page,
+            options.px_per_metre / bw_grass::iso::PX_PER_METRE,
+        );
+        let settings = RenderSettings {
+            samples: options.samples,
+            passes: options.aovs,
+            ..default()
+        };
+        let pair = TracedPair::build(page, &params, options.input, settings);
+        let stem = options.out.join(format!("{shard:05}"));
+        let target_path = stem.with_file_name(format!("{shard:05}-target.png"));
+        let scene_dir = options.out.join(format!(".scene-{shard:05}"));
+        if let Err(error) = pair.trace(&scene_dir, &target_path, &blender) {
+            eprintln!("shard {shard}: {error}");
+            return 0;
+        }
+        let _ = std::fs::remove_dir_all(&scene_dir);
+
+        let margin = options.margin();
+        let (input, w, h) = pair.crop_input(margin);
+        let mut wrote = write_rgb(&stem, "input", &input, w, h);
+        // The traced target arrives full-page; crop it to match the input.
+        wrote += crop_png_in_place(&target_path, margin);
+
+        if options.aovs {
+            let passes = &pair.input.passes;
+            for (name, channel) in passes.scalars() {
+                let cropped = crop_scalar(channel, options.page, margin);
+                wrote += write_grey(&stem, name, &cropped, w, h);
             }
+            for (name, channel) in passes.vectors() {
+                let cropped = crop_vector(channel, options.page, margin);
+                let encoded: Vec<Vec3> =
+                    cropped.iter().map(|n| *n * 0.5 + Vec3::splat(0.5)).collect();
+                wrote += write_rgb(&stem, name, &encoded, w, h);
+            }
+        }
 
-            let meta = ShardMetadata::of(&page, &params, options.input, pair.marks);
-            let _ = std::fs::write(stem.with_extension("ron"), meta.to_ron());
-            wrote
-        })
-        .sum();
+        let meta = ShardMetadata::of(&page, &params, options.input, pair.marks);
+        let _ = std::fs::write(stem.with_extension("ron"), meta.to_ron());
+        wrote
+    };
+
+    let done: usize = if options.raster {
+        (0..options.shards)
+            .into_par_iter()
+            .map(|shard| {
+                let mut params = BakeParams {
+                    seed: options.seed_for(shard),
+                    quality: options.target,
+                    ..default()
+                };
+                params.tufts *= options.density;
+                params.fine *= options.density;
+                params.thatch *= options.density;
+                let page = Page::at_detail(
+                    options.origin_for(shard),
+                    options.page,
+                    options.page,
+                    options.px_per_metre / bw_grass::iso::PX_PER_METRE,
+                );
+                let pair = Pair::bake(page, &params, options.input);
+                let (input, target, w, h) = pair.crop(options.margin());
+                let stem = options.out.join(format!("{shard:05}"));
+                let mut wrote = write_rgb(&stem, "input", &input, w, h);
+                wrote += write_rgb(&stem, "target", &target, w, h);
+                let meta = ShardMetadata::of(&page, &params, options.input, pair.marks);
+                let _ = std::fs::write(stem.with_extension("ron"), meta.to_ron());
+                wrote
+            })
+            .sum()
+    } else {
+        (0..options.shards).map(trace_shard).sum()
+    };
 
     let elapsed = started.elapsed().as_secs_f64();
     println!(
@@ -128,6 +197,34 @@ fn crop_vector(source: &[Vec3], side: usize, margin: usize) -> Vec<Vec3> {
         out.extend_from_slice(&source[start..start + cw]);
     }
     out
+}
+
+/// Crop a written PNG to its middle, in place.
+///
+/// The traced target arrives at the full page size because Cycles photographs
+/// the whole camera frame, and the crop has to match the input's exactly — see
+/// `Pair::crop` for why a training crop is cut from the middle of a larger bake
+/// rather than baked at its own size.
+fn crop_png_in_place(path: &Path, margin: usize) -> usize {
+    let Ok(image) = image::open(path) else {
+        eprintln!("cannot reread {}", path.display());
+        return 0;
+    };
+    let image = image.to_rgb8();
+    let (w, h) = (image.width(), image.height());
+    let margin = margin as u32;
+    if margin * 2 >= w.min(h) {
+        return 1;
+    }
+    let cropped =
+        image::imageops::crop_imm(&image, margin, margin, w - margin * 2, h - margin * 2).to_image();
+    match cropped.save(path) {
+        Ok(()) => 1,
+        Err(error) => {
+            eprintln!("{}: {error}", path.display());
+            0
+        }
+    }
 }
 
 fn write_rgb(stem: &Path, name: &str, colours: &[Vec3], w: usize, h: usize) -> usize {
@@ -181,6 +278,10 @@ struct Options {
     target: GrassRenderQuality,
     input: GrassRenderQuality,
     aovs: bool,
+    raster: bool,
+    samples: u32,
+    density: f32,
+    length: f32,
     out: PathBuf,
 }
 
@@ -217,6 +318,12 @@ impl Options {
             target: GrassRenderQuality::Dataset,
             input: GrassRenderQuality::Preview,
             aovs: false,
+            raster: false,
+            samples: 192,
+            // The tuned canopy. See `grass_cycles` for why the rasteriser's own
+            // counts are the wrong quantity for a path tracer.
+            density: 8.0,
+            length: 1.6,
             out: PathBuf::from("target/grass-dataset"),
         };
         let mut arguments = std::env::args().skip(1);
@@ -237,13 +344,21 @@ impl Options {
                         .or_else(|| text.parse().ok())
                         .unwrap_or(options.seed);
                 }
-                "--reference" => options.target = GrassRenderQuality::Reference,
+                "--reference" => {
+                    options.target = GrassRenderQuality::Reference;
+                    options.samples = 512;
+                }
+                "--samples" => options.samples = value().parse().unwrap_or(options.samples),
+                "--density" => options.density = value().parse().unwrap_or(options.density),
+                "--length" => options.length = value().parse().unwrap_or(options.length),
+                "--raster" => options.raster = true,
                 "--aovs" => options.aovs = true,
                 "--out" => options.out = PathBuf::from(value()),
                 "--help" | "-h" => {
                     println!("grass_dataset [--shards N] [--page PX] [--crop PX]");
-                    println!("              [--px-per-metre N] [--seed N]");
-                    println!("              [--reference] [--aovs] [--out DIR]");
+                    println!("              [--px-per-metre N] [--seed N] [--samples N]");
+                    println!("              [--density N] [--length N]");
+                    println!("              [--reference] [--aovs] [--raster] [--out DIR]");
                     std::process::exit(0);
                 }
                 other => eprintln!("ignoring {other}"),
