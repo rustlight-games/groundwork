@@ -390,12 +390,48 @@ pub fn to_bytes(colour: Vec3) -> [u8; 3] {
     ]
 }
 
+/// The inverse of [`to_bytes`], over a whole packed plate.
+///
+/// Only a rescale, because [`to_bytes`] is only a quantise — the ramps are
+/// stored in the reference's own sRGB values and there is no gamma conversion in
+/// either direction. What this is for is a plate that arrived as bytes from
+/// somewhere else, usually Blender: an overlay drawn on it has to be drawn in
+/// the same space as one drawn on a raster plate, or the two annotations are
+/// different colours and read as meaning different things.
+pub fn from_bytes_rgb(bytes: &[u8]) -> Vec<Vec3> {
+    bytes
+        .chunks_exact(3)
+        .map(|pixel| {
+            Vec3::new(
+                pixel[0] as f32 / 255.0,
+                pixel[1] as f32 / 255.0,
+                pixel[2] as f32 / 255.0,
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn luma(c: Vec3) -> f32 {
         c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722
+    }
+
+    #[test]
+    fn packing_a_plate_and_unpacking_it_returns_the_plate() {
+        let colours: Vec<Vec3> = (0..64)
+            .map(|i| Vec3::splat(i as f32 / 63.0) * Vec3::new(1.0, 0.5, 0.25))
+            .collect();
+        let bytes: Vec<u8> = colours.iter().flat_map(|c| to_bytes(*c)).collect();
+        let back = from_bytes_rgb(&bytes);
+        assert_eq!(back.len(), colours.len());
+        for (a, b) in back.iter().zip(&colours) {
+            assert!(a.distance(*b) < 1.0 / 255.0, "{a:?} against {b:?}");
+        }
+        // A trailing partial pixel is dropped rather than half-decoded.
+        assert_eq!(from_bytes_rgb(&[0, 0, 0, 9]).len(), 1);
     }
 
     #[test]

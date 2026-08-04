@@ -32,7 +32,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use bevy::math::Vec2;
+use bevy::math::{Vec2, Vec3};
 use clap::{Args, Parser, Subcommand};
 use terrain_bake::bake::BakeParams;
 use terrain_core::{SampleFootprint, SampleQuery, WorldPoint};
@@ -44,6 +44,11 @@ use terrain_generators::page::Page;
 use terrain_generators::quality::GrassRenderQuality;
 use terrain_generators::scene::GrassScene;
 use terrain_generators::style::GrassParams;
+use terrain_scene::frame::{
+    IsoFrameOptions, RenderIdentity, RenderManifest, ResolvedRenderSample, resolve_render_sample,
+};
+use terrain_scene::layout::{TileLayoutPreset, WorldTileCoord};
+use terrain_scene::projection::Projection;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -93,52 +98,224 @@ struct InspectArgs {
 }
 
 /// The framing every raster path shares.
+///
+/// Two modes, and they are kept apart on purpose. The **tile layout** mode is
+/// what a render is: nine world tiles, a subject in the middle, fitted to the
+/// frame. The **manual** mode is the laboratory plate this used to be — an
+/// origin in cache pixels and a scale — and it survives because a diagnostic
+/// sometimes needs to photograph one exact patch of ground at one exact scale.
+///
+/// Options from one mode are *refused* in the other rather than ignored.
+/// Silent precedence is how a render comes out at a scale nobody asked for and
+/// then cannot be reproduced, because the command line that produced it does
+/// not say what actually happened.
 #[derive(Args, Debug, Clone)]
 struct Framing {
     /// Output width in pixels.
-    #[arg(long, default_value_t = 512)]
+    #[arg(long, default_value_t = 1920)]
     width: usize,
-    /// Output height in pixels. Defaults to the width.
-    #[arg(long)]
-    height: Option<usize>,
+    /// Output height in pixels.
+    #[arg(long, default_value_t = 1080)]
+    height: usize,
     /// Square output, setting both axes at once.
     #[arg(long)]
     size: Option<usize>,
-    /// Cache-pixel corner of the plate, as `X,Y`.
-    #[arg(long, value_name = "X,Y", default_value = "0,0")]
-    origin: String,
-    /// World metres visible vertically. Overrides `--px-per-metre`.
+    /// Which world. Sixteen hex digits; omitted picks a fresh one.
+    #[arg(long, value_parser = parse_seed)]
+    seed: Option<u64>,
+
+    // --- tile layout ------------------------------------------------------
+    /// The tile arrangement.
+    #[arg(long, value_parser = parse_preset)]
+    layout: Option<TileLayoutPreset>,
+    /// Side of one world tile, in metres.
+    #[arg(long, value_name = "METRES")]
+    tile_size_m: Option<f64>,
+    /// How much of the frame the layout fills, `0..1`.
+    #[arg(long, value_name = "FRACTION")]
+    layout_fill: Option<f64>,
+    /// Which tile is the subject, as `U,V`. Omitted derives it from the seed.
+    #[arg(long, value_name = "U,V", value_parser = parse_tile)]
+    centre_tile: Option<WorldTileCoord>,
+
+    // --- manual -----------------------------------------------------------
+    /// Frame by hand rather than by layout: a laboratory plate.
+    #[arg(long)]
+    manual: bool,
+    /// Cache-pixel corner of the plate, as `X,Y`. Manual framing only.
+    #[arg(long, value_name = "X,Y")]
+    origin: Option<String>,
+    /// World metres visible vertically. Manual framing only.
     #[arg(long)]
     view: Option<f32>,
-    /// Pixels per world metre the plate is shown at.
-    #[arg(long, default_value_t = 192.0)]
+    /// Pixels per world metre the plate is shown at. Manual framing only.
+    #[arg(long)]
+    px_per_metre: Option<f32>,
+}
+
+/// The seed a manual plate uses when none is given.
+///
+/// Seven, which is what it has always been. Manual framing is for a diagnostic
+/// that has to be the same twice, so it does **not** inherit the layout mode's
+/// fresh-every-time behaviour.
+const MANUAL_SEED: u64 = 7;
+
+/// What a framing came to, whichever mode produced it.
+///
+/// Both renderers take this, so a Cycles plate and a raster plate framed from
+/// the same command line are the same window on the same world.
+struct ResolvedFraming {
+    width: usize,
+    height: usize,
     px_per_metre: f32,
-    #[arg(long, default_value_t = 7)]
+    /// The plate's top-left corner, in cache pixels at `px_per_metre`.
+    origin: Vec2,
     seed: u64,
+    /// The layout this was framed from, or `None` for a manual plate.
+    sample: Option<ResolvedRenderSample>,
+    /// The preset and fill the layout was asked for, for the manifest.
+    preset: TileLayoutPreset,
+    fill: f64,
+}
+
+impl ResolvedFraming {
+    fn size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
 }
 
 impl Framing {
     fn size(&self) -> (usize, usize) {
         match self.size {
             Some(side) => (side, side),
-            None => (self.width, self.height.unwrap_or(self.width)),
+            None => (self.width, self.height),
         }
     }
 
-    fn origin(&self) -> Vec2 {
-        let mut parts = self.origin.split(',').map(|p| p.trim().parse::<f32>());
-        match (parts.next(), parts.next()) {
-            (Some(Ok(x)), Some(Ok(y))) => Vec2::new(x, y),
-            _ => Vec2::ZERO,
+    /// Which mode this is, and whether the options agree with it.
+    fn resolve(&self) -> Result<ResolvedFraming, String> {
+        let manual_named =
+            self.origin.is_some() || self.view.is_some() || self.px_per_metre.is_some();
+        let layout_named = self.layout.is_some()
+            || self.tile_size_m.is_some()
+            || self.layout_fill.is_some()
+            || self.centre_tile.is_some();
+
+        if self.manual || (manual_named && !layout_named) {
+            if layout_named {
+                return Err("manual framing takes --origin, --view and --px-per-metre; \
+                            --layout, --tile-size-m, --layout-fill and --centre-tile \
+                            belong to the tile layout"
+                    .into());
+            }
+            return Ok(self.manual_framing());
+        }
+        if manual_named {
+            return Err(
+                "tile-layout framing derives the origin and the scale from the \
+                        layout, so --origin, --view and --px-per-metre are refused. \
+                        Pass --manual for a hand-framed laboratory plate"
+                    .into(),
+            );
+        }
+        self.layout_framing()
+    }
+
+    fn manual_framing(&self) -> ResolvedFraming {
+        let (width, height) = self.size();
+        let px_per_metre = match self.view {
+            Some(metres) => height as f32 / metres.max(0.01),
+            None => self.px_per_metre.unwrap_or(192.0),
+        };
+        ResolvedFraming {
+            width,
+            height,
+            px_per_metre,
+            origin: parse_origin(self.origin.as_deref().unwrap_or("0,0")),
+            seed: self.seed.unwrap_or(MANUAL_SEED),
+            sample: None,
+            preset: TileLayoutPreset::default(),
+            fill: 1.0,
         }
     }
 
-    /// Pixels per metre the picture is actually shown at.
-    fn shown_px_per_metre(&self) -> f32 {
-        match self.view {
-            Some(metres) => self.size().1 as f32 / metres.max(0.01),
-            None => self.px_per_metre,
-        }
+    fn layout_framing(&self) -> Result<ResolvedFraming, String> {
+        let (width, height) = self.size();
+        let preset = self.layout.unwrap_or_default();
+        let fill = self.layout_fill.unwrap_or(0.90);
+        let seed = self.seed.unwrap_or_else(fresh_seed);
+        let identity = RenderIdentity::resolve(seed, self.centre_tile);
+        let sample = resolve_render_sample(
+            preset,
+            self.tile_size_m.unwrap_or(DEFAULT_TILE_SIDE_M),
+            identity,
+            Projection::DIMETRIC_2_1,
+            IsoFrameOptions {
+                output_size: [width as u32, height as u32],
+                fill,
+                subject_position: [0.5, 0.5],
+                halo_m: terrain_scene::frame::DEFAULT_HALO_M,
+            },
+        )
+        .map_err(|error| error.to_string())?;
+
+        Ok(ResolvedFraming {
+            width,
+            height,
+            px_per_metre: sample.frame.pixels_per_metre,
+            origin: Vec2::new(sample.frame.cache_origin[0], sample.frame.cache_origin[1]),
+            seed,
+            sample: Some(sample),
+            preset,
+            fill,
+        })
+    }
+}
+
+/// The tile side a layout uses when none is given, in metres.
+///
+/// Four, which at the default framing puts the subject tile at 576×288 pixels —
+/// large enough to judge and small enough that its eight neighbours are all in
+/// frame.
+const DEFAULT_TILE_SIDE_M: f64 = 4.0;
+
+/// A fresh seed, from the operating system.
+///
+/// `RandomState` is seeded from the system's own entropy and advances per call,
+/// which is exactly what is wanted and costs no dependency. Deliberately *not*
+/// the wall clock: two renders started in the same second would be the same
+/// meadow, and a corpus generated by a loop would be one place repeated.
+///
+/// It is also deliberately here, in the command line, rather than in terrain
+/// generation. Nothing below this binary may consult the world for a number —
+/// everything down there is a pure function of a seed, and it stays that way.
+fn fresh_seed() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u64(0x9e37_79b9_7f4a_7c15);
+    terrain_core::seed::mix(hasher.finish())
+}
+
+fn parse_seed(text: &str) -> Result<u64, String> {
+    text.parse::<terrain_core::seed::RootSeed>()
+        .map(|seed| seed.bits())
+        .map_err(|_| format!("a seed is up to sixteen hex digits, not `{text}`"))
+}
+
+fn parse_preset(text: &str) -> Result<TileLayoutPreset, String> {
+    text.parse()
+}
+
+fn parse_tile(text: &str) -> Result<WorldTileCoord, String> {
+    text.parse()
+}
+
+/// A cache-pixel origin, falling back to the world origin.
+fn parse_origin(text: &str) -> Vec2 {
+    let mut parts = text.split(',').map(|p| p.trim().parse::<f32>());
+    match (parts.next(), parts.next()) {
+        (Some(Ok(x)), Some(Ok(y))) => Vec2::new(x, y),
+        _ => Vec2::ZERO,
     }
 }
 
@@ -151,6 +328,9 @@ struct PreviewArgs {
     /// How hard the rasteriser is allowed to work.
     #[arg(long, value_parser = parse_quality, default_value = "dataset")]
     quality: GrassRenderQuality,
+    /// Write only the picture: no tile grid, no subject mask, no manifest.
+    #[arg(long)]
+    no_sidecars: bool,
 }
 
 #[derive(Args, Debug)]
@@ -171,12 +351,19 @@ struct RenderArgs {
     /// Write the AOVs beside the beauty pass.
     #[arg(long)]
     passes: bool,
-    /// Tiles on each axis. Zero derives it from the vertex budget.
+    /// How many slices Blender traces the plate in, on each axis.
+    ///
+    /// **Not** the world-tile layout. This is a memory split: one plate, traced
+    /// in pieces so the scene fits, with a guard band and a crop. Zero derives
+    /// it from the vertex budget. See `terrain_cycles::plate`.
     #[arg(long, default_value_t = 0)]
-    tiles: usize,
+    trace_tiles_across: usize,
     /// Zero derives it from the fixed trace resolution.
     #[arg(long, default_value_t = 0)]
     supersample: usize,
+    /// Write only the picture: no tile grid, no subject mask, no manifest.
+    #[arg(long)]
+    no_sidecars: bool,
     /// Keep the exported scene package after a successful trace.
     #[arg(long)]
     keep_scene: bool,
@@ -486,64 +673,205 @@ fn not_yet(command: &str, subject: &str, reason: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
+/// Say what a framing came to, in the terms a reader can check.
+fn report_framing(framing: &ResolvedFraming) {
+    let (width, height) = framing.size();
+    match &framing.sample {
+        Some(sample) => {
+            let layout = sample.layout();
+            println!(
+                "{width}x{height} — {} tiles of {} m, subject {}, seed {}",
+                layout.len(),
+                layout.tile_side_m(),
+                sample.identity.centre_tile,
+                sample.identity.seed_hex(),
+            );
+            let subject = sample.frame.subject_polygon().corners_px;
+            let span = |axis: usize| {
+                let values = subject.map(|corner| corner[axis]);
+                values.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+                    - values.iter().cloned().fold(f32::INFINITY, f32::min)
+            };
+            println!(
+                "  {:.0} px/m, subject diamond {:.0}x{:.0} px, layout fills {:.0}%",
+                framing.px_per_metre,
+                span(0),
+                span(1),
+                framing.fill * 100.0,
+            );
+        }
+        None => println!(
+            "{width}x{height} at {:.0} px/m ({:.1}x{:.1} m of ground), manual framing",
+            framing.px_per_metre,
+            width as f32 / framing.px_per_metre,
+            height as f32 / framing.px_per_metre,
+        ),
+    }
+}
+
+/// Where a sidecar lands, given the picture's own path.
+fn beside(out: &Path, suffix: &str, extension: &str) -> PathBuf {
+    let stem = out
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "render".into());
+    out.with_file_name(format!("{stem}{suffix}.{extension}"))
+}
+
+/// Write the tile grid, the subject mask and the manifest beside a picture.
+///
+/// The beauty render has no visible tile boundaries — that is the point — so
+/// nothing in it says whether the framing came out right. These three say.
+fn write_sidecars(
+    out: &Path,
+    colours: &[Vec3],
+    sample: &ResolvedRenderSample,
+    manifest: &RenderManifest,
+) -> std::io::Result<Vec<PathBuf>> {
+    let frame = &sample.frame;
+    let (width, height) = (frame.output_size[0] as usize, frame.output_size[1] as usize);
+    let style = terrain_bake::overlay::GridStyle::default();
+    let mut written = Vec::new();
+
+    let mut annotated = colours.to_vec();
+    terrain_bake::overlay::draw_tile_grid(&mut annotated, width, height, frame, &style);
+    terrain_bake::overlay::draw_caption(
+        &mut annotated,
+        width,
+        height,
+        &[
+            format!("SEED {}", sample.identity.seed_hex().to_uppercase()),
+            format!("SUBJECT {}", sample.identity.centre_tile),
+            format!(
+                "{:.1} PX/M  TILE {} M",
+                frame.pixels_per_metre,
+                frame.layout.tile_side_m()
+            ),
+        ],
+        &style,
+    );
+    let grid = beside(out, "-tiles", "png");
+    save_rgb(
+        &grid,
+        &terrain_bake::surface::to_rgb8(&annotated),
+        width,
+        height,
+    )?;
+    written.push(grid);
+
+    let mask = beside(out, "-subject-mask", "png");
+    let bytes = terrain_bake::overlay::mask_to_gray8(&terrain_bake::overlay::subject_mask(frame));
+    image::save_buffer(
+        &mask,
+        &bytes,
+        width as u32,
+        height as u32,
+        image::ColorType::L8,
+    )
+    .map_err(std::io::Error::other)?;
+    written.push(mask);
+
+    let record = beside(out, "", "ron");
+    std::fs::write(&record, manifest.to_ron())?;
+    written.push(record);
+    Ok(written)
+}
+
+fn save_rgb(path: &Path, bytes: &[u8], width: usize, height: usize) -> std::io::Result<()> {
+    image::save_buffer(
+        path,
+        bytes,
+        width as u32,
+        height as u32,
+        image::ColorType::Rgb8,
+    )
+    .map_err(std::io::Error::other)
+}
+
 /// Bake a plate through the cheap rasteriser.
 fn preview_export(args: &PreviewArgs) -> ExitCode {
-    let (width, height) = args.framing.size();
-    let px_per_metre = args.framing.shown_px_per_metre();
+    let framing = match args.framing.resolve() {
+        Ok(framing) => framing,
+        Err(problem) => {
+            eprintln!("terrain preview-export: {problem}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let (width, height) = framing.size();
     let params = BakeParams {
-        seed: args.framing.seed,
+        seed: framing.seed,
         quality: args.quality,
         ..BakeParams::default()
     };
     let page = Page::at_detail(
-        args.framing.origin(),
+        framing.origin,
         width,
         height,
-        px_per_metre / terrain_generators::iso::PX_PER_METRE,
+        framing.px_per_metre / terrain_generators::iso::PX_PER_METRE,
     );
 
-    println!(
-        "{width}x{height} at {px_per_metre:.0} px/m ({:.1}x{:.1} m of ground), {} tier",
-        width as f32 / px_per_metre,
-        height as f32 / px_per_metre,
-        args.quality.name(),
-    );
+    report_framing(&framing);
+    println!("  {} tier", args.quality.name());
 
     // Padded, so every neighbourhood-reading shading term sees the ground that
     // is actually there rather than whatever part of it fell inside the
     // rectangle. See `bake_padded`.
     let colours = terrain_bake::bake::bake_padded(page, &params);
-    let bytes = terrain_bake::surface::to_rgb8(&colours);
-    if let Err(error) = image::save_buffer(
+    if let Err(error) = save_rgb(
         &args.out,
-        &bytes,
-        width as u32,
-        height as u32,
-        image::ColorType::Rgb8,
+        &terrain_bake::surface::to_rgb8(&colours),
+        width,
+        height,
     ) {
         eprintln!("cannot write {}: {error}", args.out.display());
         return ExitCode::FAILURE;
     }
     println!("wrote {}", args.out.display());
+
+    if let (Some(sample), false) = (&framing.sample, args.no_sidecars) {
+        let manifest = sample.manifest("preview-export", framing.preset, framing.fill);
+        match write_sidecars(&args.out, &colours, sample, &manifest) {
+            Ok(paths) => {
+                for path in paths {
+                    println!("wrote {}", path.display());
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "cannot write a sidecar beside {}: {error}",
+                    args.out.display()
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+        println!("\nreplay:\n  {}", manifest.replay);
+    }
     ExitCode::SUCCESS
 }
 
 /// Trace a plate through Cycles.
 fn render(args: &RenderArgs) -> ExitCode {
-    let (width, height) = args.framing.size();
-    let px_per_metre = args.framing.shown_px_per_metre();
+    let framing = match args.framing.resolve() {
+        Ok(framing) => framing,
+        Err(problem) => {
+            eprintln!("terrain render: {problem}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let (width, height) = framing.size();
+    let px_per_metre = framing.px_per_metre;
     let params = plate::cycles_params(&GrassParams {
-        seed: args.framing.seed,
+        seed: framing.seed,
         ..GrassParams::default()
     });
 
     let request = PlateRequest {
         width,
         height,
-        origin: args.framing.origin(),
+        origin: framing.origin,
         px_per_metre,
         supersample: args.supersample,
-        tiles: args.tiles,
+        tiles: args.trace_tiles_across,
         blade_width: 0.0,
         settings: RenderSettings {
             samples: args.samples,
@@ -557,11 +885,7 @@ fn render(args: &RenderArgs) -> ExitCode {
     };
 
     let plan = PlatePlan::resolve(&request, &params);
-    println!(
-        "{width}x{height} shown at {px_per_metre:.0} px/m ({:.1}x{:.1} m of ground)",
-        width as f32 / px_per_metre,
-        height as f32 / px_per_metre,
-    );
+    report_framing(&framing);
     println!(
         "  tracing at {:.0} px/m ({}x), {} ribs, {:.2} width, ~{:.1}M blades",
         plan.trace_px_per_metre,
@@ -572,7 +896,7 @@ fn render(args: &RenderArgs) -> ExitCode {
     );
     if plan.tiles_across > 1 {
         println!(
-            "  {0}x{0} tiles of {1}x{2}, {3} px guard",
+            "  traced in {0}x{0} slices of {1}x{2}, {3} px guard",
             plan.tiles_across, plan.tile_width, plan.tile_height, plan.guard
         );
     }
@@ -603,7 +927,7 @@ fn render(args: &RenderArgs) -> ExitCode {
         }
     };
     println!(
-        "  {} blades over {} tiles, traced in {:.0} s",
+        "  {} blades over {} slices, traced in {:.0} s",
         plate.blades,
         plate.plan.tiles(),
         started.elapsed().as_secs_f64()
@@ -614,6 +938,32 @@ fn render(args: &RenderArgs) -> ExitCode {
         return ExitCode::FAILURE;
     }
     println!("wrote {}", args.out.display());
+
+    if let (Some(sample), false) = (&framing.sample, args.no_sidecars) {
+        // Unpacked so the overlay is drawn the same way on both plates. The
+        // grid on a traced render and the grid on a raster preview have to be
+        // the same colour, or a reader comparing them sees a difference that is
+        // in the annotation rather than in the picture.
+        let colours = terrain_bake::palette::from_bytes_rgb(&plate.pixels);
+        let mut manifest = sample.manifest("render", framing.preset, framing.fill);
+        manifest.samples = Some(args.samples);
+        manifest.marks = Some(plate.blades);
+        match write_sidecars(&args.out, &colours, sample, &manifest) {
+            Ok(paths) => {
+                for path in paths {
+                    println!("wrote {}", path.display());
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "cannot write a sidecar beside {}: {error}",
+                    args.out.display()
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+        println!("\nreplay:\n  {}", manifest.replay);
+    }
     ExitCode::SUCCESS
 }
 
@@ -704,65 +1054,175 @@ mod tests {
         Cli::command().debug_assert();
     }
 
+    /// The default command line, which is a nine-tile layout at 1920×1080.
+    fn framing() -> Framing {
+        Framing {
+            width: 1920,
+            height: 1080,
+            size: None,
+            seed: None,
+            layout: None,
+            tile_size_m: None,
+            layout_fill: None,
+            centre_tile: None,
+            manual: false,
+            origin: None,
+            view: None,
+            px_per_metre: None,
+        }
+    }
+
     #[test]
     fn a_square_size_sets_both_axes() {
         let framing = Framing {
-            width: 512,
-            height: None,
             size: Some(768),
-            origin: "0,0".into(),
-            view: None,
-            px_per_metre: 192.0,
-            seed: 7,
+            ..framing()
         };
         assert_eq!(framing.size(), (768, 768));
     }
 
     #[test]
-    fn a_framing_overrides_the_pixel_scale() {
-        // The two ways of saying how much ground a plate covers, and the one
-        // that has to win. `--view` is how a camera is set; `--px-per-metre` is
-        // how a texture is. Asking for both and getting the texture answer is
-        // how a render silently comes out at the wrong scale.
-        let framing = Framing {
-            width: 1920,
-            height: Some(1080),
-            size: None,
-            origin: "0,0".into(),
-            view: Some(27.0),
-            px_per_metre: 192.0,
-            seed: 7,
+    fn the_default_framing_is_the_nine_tile_layout() {
+        // The change this whole migration is about: an ordinary invocation with
+        // nothing on the command line is nine world tiles, not an arbitrary
+        // rectangle at the world origin.
+        let resolved = framing().resolve().expect("a default framing resolves");
+        let sample = resolved.sample.expect("the default is layout-framed");
+        assert_eq!(sample.layout().len(), 9);
+        assert_eq!(sample.layout().tile_side_m(), DEFAULT_TILE_SIDE_M);
+        assert!((resolved.px_per_metre - 72.0).abs() < 1.0e-3);
+    }
+
+    #[test]
+    fn an_ordinary_invocation_is_somewhere_new_every_time() {
+        // Random means every run produces something different. It must not mean
+        // the result is unrecoverable, which is what the manifest is for.
+        let first = framing().resolve().expect("resolves");
+        let second = framing().resolve().expect("resolves");
+        assert_ne!(first.seed, second.seed, "two runs drew the same seed");
+    }
+
+    #[test]
+    fn a_named_seed_reproduces_the_frame_exactly() {
+        let framed = || {
+            Framing {
+                seed: Some(0x5a17_e33b_0c9d_2f14),
+                ..framing()
+            }
+            .resolve()
+            .expect("resolves")
         };
-        assert_eq!(framing.shown_px_per_metre(), 40.0);
+        let (a, b) = (framed(), framed());
+        assert_eq!(a.origin, b.origin);
+        assert_eq!(a.px_per_metre, b.px_per_metre);
+        assert_eq!(
+            a.sample.unwrap().identity.centre_tile,
+            b.sample.unwrap().identity.centre_tile
+        );
+    }
+
+    #[test]
+    fn a_named_centre_tile_frames_that_tile() {
+        let wanted = WorldTileCoord::new(-713, 284);
+        let resolved = Framing {
+            seed: Some(1),
+            centre_tile: Some(wanted),
+            ..framing()
+        }
+        .resolve()
+        .expect("resolves");
+        let sample = resolved.sample.expect("layout-framed");
+        assert_eq!(sample.layout().subject(), wanted);
+        assert_eq!(sample.identity.centre_tile, wanted);
+    }
+
+    #[test]
+    fn the_two_framing_modes_refuse_each_others_options() {
+        // Silent precedence is how a render comes out at a scale nobody asked
+        // for, and then cannot be reproduced because the command line that
+        // produced it does not say what happened.
+        let layout_with_manual = Framing {
+            layout: Some(TileLayoutPreset::Nine),
+            px_per_metre: Some(96.0),
+            ..framing()
+        };
+        assert!(layout_with_manual.resolve().is_err());
+
+        let manual_with_layout = Framing {
+            manual: true,
+            tile_size_m: Some(4.0),
+            ..framing()
+        };
+        assert!(manual_with_layout.resolve().is_err());
+
+        // And the plain forms of each are fine.
+        assert!(
+            Framing {
+                manual: true,
+                px_per_metre: Some(96.0),
+                ..framing()
+            }
+            .resolve()
+            .is_ok()
+        );
+        assert!(
+            Framing {
+                layout: Some(TileLayoutPreset::Nine),
+                tile_size_m: Some(6.0),
+                ..framing()
+            }
+            .resolve()
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_manual_plate_is_the_laboratory_plate_it_always_was() {
+        // Including the fixed seed: a diagnostic that changed every run would be
+        // no use as a diagnostic.
+        let resolved = Framing {
+            manual: true,
+            size: Some(1080),
+            view: Some(27.0),
+            origin: Some("-724, -543".into()),
+            ..framing()
+        }
+        .resolve()
+        .expect("resolves");
+        assert!(resolved.sample.is_none());
+        assert_eq!(resolved.seed, MANUAL_SEED);
+        assert_eq!(resolved.px_per_metre, 40.0);
+        assert_eq!(resolved.origin, Vec2::new(-724.0, -543.0));
     }
 
     #[test]
     fn an_origin_that_will_not_parse_falls_back_to_the_world_origin() {
-        let framing = Framing {
-            width: 64,
-            height: None,
-            size: None,
-            origin: "not a point".into(),
-            view: None,
-            px_per_metre: 96.0,
-            seed: 7,
-        };
-        assert_eq!(framing.origin(), Vec2::ZERO);
+        assert_eq!(parse_origin("not a point"), Vec2::ZERO);
+        assert_eq!(parse_origin("-724, -543"), Vec2::new(-724.0, -543.0));
+        assert_eq!(parse_origin("4800,2600"), Vec2::new(4800.0, 2600.0));
     }
 
     #[test]
-    fn origins_parse_including_negative_ones() {
-        let framing = |origin: &str| Framing {
-            width: 64,
-            height: None,
-            size: None,
-            origin: origin.into(),
-            view: None,
-            px_per_metre: 96.0,
-            seed: 7,
-        };
-        assert_eq!(framing("-724, -543").origin(), Vec2::new(-724.0, -543.0));
-        assert_eq!(framing("4800,2600").origin(), Vec2::new(4800.0, 2600.0));
+    fn a_seed_is_read_as_hex_the_way_it_is_printed() {
+        // The round trip a replay command depends on. A seed printed as hex and
+        // read back as decimal would send every replay somewhere else.
+        assert_eq!(parse_seed("5a17e33b0c9d2f14"), Ok(0x5a17_e33b_0c9d_2f14));
+        assert_eq!(parse_seed("0x7"), Ok(7));
+        assert_eq!(
+            parse_seed(&RenderIdentity::from_seed(11).seed_hex()),
+            Ok(11)
+        );
+        assert!(parse_seed("not a seed").is_err());
+    }
+
+    #[test]
+    fn sidecars_land_beside_the_picture_they_describe() {
+        let out = Path::new("target/corpus/plate.png");
+        assert_eq!(
+            beside(out, "-tiles", "png"),
+            Path::new("target/corpus/plate-tiles.png")
+        );
+        assert_eq!(beside(out, "", "ron"), Path::new("target/corpus/plate.ron"));
     }
 
     #[test]

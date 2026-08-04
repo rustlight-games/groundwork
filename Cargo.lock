@@ -5036,6 +5036,7 @@ dependencies = [
  "terrain_bench",
  "terrain_core",
  "terrain_generators",
+ "terrain_scene",
 ]
 
 [[package]]

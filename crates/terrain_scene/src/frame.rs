@@ -369,6 +369,25 @@ impl ResolvedRenderSample {
             self.identity.centre_tile,
         )
     }
+
+    /// The manifest for this render, before the renderer fills in its own half.
+    pub fn manifest(&self, renderer: &str, preset: TileLayoutPreset, fill: f64) -> RenderManifest {
+        RenderManifest {
+            renderer: renderer.to_string(),
+            identity: self.identity,
+            preset,
+            tile_side_m: self.frame.layout.tile_side_m(),
+            visible_bounds_m: self.frame.visible_bounds(),
+            output_size: self.frame.output_size,
+            pixels_per_metre: self.frame.pixels_per_metre,
+            layout_fill: fill,
+            halo_m: self.scene_request.halo_m,
+            scene_fingerprint: None,
+            marks: None,
+            samples: None,
+            replay: self.replay_command(&format!("terrain {renderer}"), preset),
+        }
+    }
 }
 
 /// Resolve a whole render: identity, layout, frame and scene request.
@@ -391,6 +410,94 @@ pub fn resolve_render_sample(
         frame,
         scene_request,
     })
+}
+
+/// The version this manifest's shape is at.
+pub const RENDER_MANIFEST_VERSION: u32 = 1;
+
+/// What a render was, written beside it.
+///
+/// Random renders are only useful if they can be got back. Every ordinary
+/// invocation picks a fresh seed, which means every ordinary invocation would be
+/// a one-off without this: a picture with something interesting or something
+/// wrong in it is worth nothing if the next run is of somewhere else entirely.
+///
+/// Hand-written RON rather than `serde`, for the same reason the Cycles package
+/// header is: it is small, it is fixed, and the file is read by a person far
+/// more often than by a program.
+#[derive(Clone, Debug)]
+pub struct RenderManifest {
+    /// Which renderer produced the picture. `"raster"` or `"cycles"`.
+    pub renderer: String,
+    pub identity: RenderIdentity,
+    pub preset: TileLayoutPreset,
+    pub tile_side_m: f64,
+    pub visible_bounds_m: WorldRect,
+    pub output_size: [u32; 2],
+    pub pixels_per_metre: f32,
+    pub layout_fill: f64,
+    pub halo_m: f64,
+    /// The scene's exact fingerprint, when the caller has one.
+    pub scene_fingerprint: Option<String>,
+    /// How many marks the scene held.
+    pub marks: Option<usize>,
+    /// Path-tracing samples per pixel, for a traced plate.
+    pub samples: Option<u32>,
+    /// The command that reproduces this render.
+    pub replay: String,
+}
+
+impl RenderManifest {
+    pub fn to_ron(&self) -> String {
+        let bounds = self.visible_bounds_m;
+        let optional = |name: &str, value: Option<String>| match value {
+            Some(text) => format!("    {name}: {text},\n"),
+            None => String::new(),
+        };
+        format!(
+            "// What this render was. Everything needed to produce it again.\n\
+             (\n\
+             \x20   manifest_version: {version},\n\
+             \x20   renderer: \"{renderer}\",\n\
+             \x20   render_seed: \"{seed}\",\n\
+             \x20   centre_tile: ({cu}, {cv}),\n\
+             \x20   layout: \"{layout}\",\n\
+             \x20   tile_side_m: {side},\n\
+             \x20   visible_bounds_m: (({min_u:.4}, {min_v:.4}), ({max_u:.4}, {max_v:.4})),\n\
+             \x20   output_size: ({width}, {height}),\n\
+             \x20   pixels_per_metre: {ppm:.4},\n\
+             \x20   layout_fill: {fill},\n\
+             \x20   halo_m: {halo},\n\
+             \x20   projection: \"dimetric_2_1\",\n\
+             \x20   subject_tile: ({cu}, {cv}),\n\
+             {fingerprint}{marks}{samples}\
+             \x20   replay: \"{replay}\",\n\
+             )\n",
+            version = RENDER_MANIFEST_VERSION,
+            renderer = self.renderer,
+            seed = self.identity.seed_hex(),
+            cu = self.identity.centre_tile.u,
+            cv = self.identity.centre_tile.v,
+            layout = self.preset.name(),
+            side = self.tile_side_m,
+            min_u = bounds.min.u_m,
+            min_v = bounds.min.v_m,
+            max_u = bounds.max.u_m,
+            max_v = bounds.max.v_m,
+            width = self.output_size[0],
+            height = self.output_size[1],
+            ppm = self.pixels_per_metre,
+            fill = self.layout_fill,
+            halo = self.halo_m,
+            fingerprint = optional(
+                "scene_fingerprint",
+                self.scene_fingerprint.as_ref().map(|f| format!("\"{f}\"")),
+            ),
+            marks = optional("marks", self.marks.map(|m| m.to_string())),
+            samples = optional("samples", self.samples.map(|s| s.to_string())),
+            replay = self.replay,
+        )
+    }
 }
 
 /// The ground under a pixel centre, for a resolved frame.
@@ -732,6 +839,58 @@ mod tests {
             sample(1).scene_request.bounds,
             sample(2).scene_request.bounds
         );
+    }
+
+    #[test]
+    fn a_manifest_names_everything_a_repeat_needs() {
+        // The file that turns a random render into a reproducible one. Every
+        // field a replay depends on is checked, because a manifest missing one
+        // is worse than no manifest: it looks like a record.
+        let sample = resolve_render_sample(
+            TileLayoutPreset::Nine,
+            4.0,
+            RenderIdentity::from_seed(0x5a17_e33b_0c9d_2f14),
+            Projection::DIMETRIC_2_1,
+            IsoFrameOptions::default(),
+        )
+        .expect("well formed");
+        let mut manifest = sample.manifest("cycles", TileLayoutPreset::Nine, 0.90);
+        manifest.samples = Some(256);
+        manifest.marks = Some(8_889);
+        manifest.scene_fingerprint = Some("d228cb69101a8caf".into());
+        let ron = manifest.to_ron();
+
+        for needle in [
+            "manifest_version: 1",
+            "renderer: \"cycles\"",
+            "render_seed: \"5a17e33b0c9d2f14\"",
+            "layout: \"nine\"",
+            "tile_side_m: 4",
+            "output_size: (1920, 1080)",
+            "pixels_per_metre: 72",
+            "layout_fill: 0.9",
+            "projection: \"dimetric_2_1\"",
+            "samples: 256",
+            "marks: 8889",
+            "scene_fingerprint: \"d228cb69101a8caf\"",
+            "--seed 5a17e33b0c9d2f14",
+        ] {
+            assert!(ron.contains(needle), "no `{needle}` in\n{ron}");
+        }
+        assert!(
+            ron.contains(&format!(
+                "centre_tile: ({}, {})",
+                sample.identity.centre_tile.u, sample.identity.centre_tile.v
+            )),
+            "{ron}"
+        );
+
+        // The optional half is genuinely optional rather than written as null.
+        let bare = sample
+            .manifest("raster", TileLayoutPreset::Nine, 0.90)
+            .to_ron();
+        assert!(!bare.contains("samples"), "{bare}");
+        assert!(!bare.contains("scene_fingerprint"), "{bare}");
     }
 
     #[test]

@@ -8,6 +8,7 @@ description = "The cheap raster tier: a page of ground, composited by depth"
 [dependencies]
 terrain_core.workspace = true
 terrain_generators.workspace = true
+terrain_scene.workspace = true
 glam.workspace = true
 rayon.workspace = true
 
