@@ -35,6 +35,7 @@ pub mod critique;
 pub mod fingerprint;
 pub mod fixtures;
 pub mod generic;
+pub mod iso;
 pub mod lab;
 pub mod metrics;
 pub mod report;
@@ -42,6 +43,7 @@ pub mod scenarios;
 pub mod seams;
 
 pub use fixtures::SEEDS;
+pub use iso::{ISO_SCENARIOS, IsoReport, IsoScenario, iso_scenario, join_visibility};
 pub use metrics::{
     Point, blue_noise_score, compactness, convexity, luminance_spread, silhouette_variety,
 };
