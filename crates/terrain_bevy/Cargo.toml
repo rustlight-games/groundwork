@@ -1,0 +1,25 @@
+[package]
+name = "terrain_bevy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The Bevy integration: page cache, material, and the plugin that draws"
+
+# The only crate in the framework that takes Bevy.
+[dependencies]
+terrain_core.workspace = true
+terrain_generators.workspace = true
+terrain_bake.workspace = true
+bevy.workspace = true
+
+[dev-dependencies]
+# The pre-baker fills this crate's page cache with traced plates, so it needs
+# the path tracer and the parameters the baker takes.
+terrain_cycles.workspace = true
+glam.workspace = true
+image.workspace = true
+rayon.workspace = true
+
+[[example]]
+name = "grass_prebake"
+path = "examples/grass_prebake.rs"

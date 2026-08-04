@@ -23,8 +23,11 @@ terrain_core = { path = "crates/terrain_core" }
 terrain_format = { path = "crates/terrain_format" }
 terrain_scene = { path = "crates/terrain_scene" }
 terrain_generators = { path = "crates/terrain_generators" }
-bw_bench = { path = "crates/bw_bench" }
-bw_grass = { path = "crates/bw_grass" }
+terrain_bake = { path = "crates/terrain_bake" }
+terrain_cycles = { path = "crates/terrain_cycles" }
+terrain_dataset = { path = "crates/terrain_dataset" }
+terrain_bevy = { path = "crates/terrain_bevy" }
+terrain_bench = { path = "crates/terrain_bench" }
 
 # --- bevy -------------------------------------------------------------------
 # Only the preview backend and the tool that opens a window take Bevy. Every

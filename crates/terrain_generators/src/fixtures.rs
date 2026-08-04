@@ -1,6 +1,6 @@
 //! The fixed inputs the grass is measured against.
 //!
-//! Mirrors [`bw_bench::fixtures`](../../bw_bench/fixtures/index.html) and obeys
+//! Mirrors [`terrain_bench::fixtures`](../../terrain_bench/fixtures/index.html) and obeys
 //! the same rule: **append only, never reorder, never edit**. A benchmark
 //! history means something only if place three is the same patch of ground it
 //! was last month, and a zoom level that shifts by a metre makes every snapshot

@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 # Transitional. The Bevy integration moves to `terrain_bevy`, and this becomes a
 # thin shell over it.
-bw_grass.workspace = true
+terrain_bevy.workspace = true
 bevy.workspace = true
 
 [features]

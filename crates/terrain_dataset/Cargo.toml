@@ -1,0 +1,19 @@
+[package]
+name = "terrain_dataset"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Paired renders: one scene, a cheap renderer and an expensive one"
+
+[dependencies]
+terrain_core.workspace = true
+terrain_generators.workspace = true
+terrain_bake.workspace = true
+terrain_cycles.workspace = true
+glam.workspace = true
+image.workspace = true
+rayon.workspace = true
+
+[[example]]
+name = "grass_dataset"
+path = "examples/grass_dataset.rs"

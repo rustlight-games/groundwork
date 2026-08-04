@@ -34,7 +34,7 @@ use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use bevy::window::WindowResolution;
-use bw_grass::{GrassPlugin, plugin::grass_camera};
+use terrain_bevy::{GrassPlugin, plugin::grass_camera};
 
 /// The framings the preview offers, in world metres visible vertically.
 ///

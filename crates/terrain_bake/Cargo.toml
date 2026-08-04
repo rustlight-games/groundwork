@@ -1,0 +1,29 @@
+[package]
+name = "terrain_bake"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The cheap raster tier: a page of ground, composited by depth"
+
+[dependencies]
+terrain_core.workspace = true
+terrain_generators.workspace = true
+glam.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+image.workspace = true
+# One test measures a coarse bake against a shrunk fine one, which is the
+# comparison tool's job rather than the baker's.
+terrain_bench.workspace = true
+
+[[example]]
+name = "grass_bake"
+path = "examples/grass_bake.rs"
+
+# The performance suite. `harness = false` because criterion supplies its own.
+[[bench]]
+name = "bake"
+path = "benches/bake.rs"
+harness = false

@@ -33,16 +33,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use bevy::math::Vec2;
-use bw_grass::bake::BakeParams;
-use bw_grass::cycles::RenderSettings;
-use bw_grass::dataset::{self, CorpusRequest};
-use bw_grass::plate::{self, PlatePlan, PlateRequest, Progress};
 use clap::{Args, Parser, Subcommand};
+use terrain_bake::bake::BakeParams;
 use terrain_core::{SampleFootprint, SampleQuery, WorldPoint};
+use terrain_cycles::cycles::RenderSettings;
+use terrain_cycles::plate::{self, PlatePlan, PlateRequest, Progress};
+use terrain_dataset::dataset::{self, CorpusRequest};
 use terrain_generators::field::WorldField;
 use terrain_generators::page::Page;
 use terrain_generators::quality::GrassRenderQuality;
 use terrain_generators::scene::GrassScene;
+use terrain_generators::style::GrassParams;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -456,8 +457,8 @@ fn preview_export(args: &PreviewArgs) -> ExitCode {
     // Padded, so every neighbourhood-reading shading term sees the ground that
     // is actually there rather than whatever part of it fell inside the
     // rectangle. See `bake_padded`.
-    let colours = bw_grass::bake::bake_padded(page, &params);
-    let bytes = bw_grass::surface::to_rgb8(&colours);
+    let colours = terrain_bake::bake::bake_padded(page, &params);
+    let bytes = terrain_bake::surface::to_rgb8(&colours);
     if let Err(error) = image::save_buffer(
         &args.out,
         &bytes,
@@ -476,9 +477,9 @@ fn preview_export(args: &PreviewArgs) -> ExitCode {
 fn render(args: &RenderArgs) -> ExitCode {
     let (width, height) = args.framing.size();
     let px_per_metre = args.framing.shown_px_per_metre();
-    let params = plate::cycles_params(&BakeParams {
+    let params = plate::cycles_params(&GrassParams {
         seed: args.framing.seed,
-        ..BakeParams::default()
+        ..GrassParams::default()
     });
 
     let request = PlateRequest {
@@ -634,7 +635,7 @@ fn describe(page: Page, params: &BakeParams) -> String {
         "{} marks, canopy ceiling {:.3} m, fingerprint {}",
         scene.len(),
         scene.canopy_ceiling(),
-        bw_grass::fingerprint::fingerprint(&scene, params.seed, &field),
+        terrain_bench::fingerprint::fingerprint(&scene, params.seed, &field),
     )
 }
 

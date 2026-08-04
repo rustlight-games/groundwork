@@ -1,0 +1,18 @@
+[package]
+name = "terrain_cycles"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Handing an explicit scene to Blender's path tracer"
+
+[dependencies]
+terrain_core.workspace = true
+terrain_generators.workspace = true
+terrain_scene.workspace = true
+glam.workspace = true
+image.workspace = true
+
+[[example]]
+name = "grass_cycles"
+path = "examples/grass_cycles.rs"
+
