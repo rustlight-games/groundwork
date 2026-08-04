@@ -213,6 +213,15 @@ impl DiagnosticReport {
         &self.entries
     }
 
+    /// The diagnostic most recently pushed.
+    ///
+    /// For attaching a "did you mean" to something already reported, where
+    /// working out the suggestion needs a second pass over the candidates and is
+    /// not worth threading through the reporting call.
+    pub fn last_mut(&mut self) -> Option<&mut Diagnostic> {
+        self.entries.last_mut()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

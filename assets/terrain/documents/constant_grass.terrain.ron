@@ -1,0 +1,80 @@
+// The smallest document that says anything.
+//
+// One material, one source, one layer: grass, everywhere, at full strength.
+// It is the base case the whole pipeline is measured against — a document that
+// loads, validates, canonicalises to a stable digest, and describes exactly the
+// meadow the generator has been producing all along.
+//
+// Every richer document is this plus statements. See blend_lab.terrain.ron for
+// what the second one looks like.
+(
+    format: "terrain-document",
+    format_version: 1,
+    document: (
+        coordinate_system: "PlanarMetres",
+        root_seed: "8df782f95ce1a4d4",
+
+        metadata: (
+            name: "Constant grass",
+            description: "Lush grass everywhere, at full density. The base case.",
+        ),
+
+        materials: [
+            (
+                key: "grass_lush",
+                display_name: "Lush Grass",
+                // The renderer-side binding, and deliberately a separate key
+                // from the material's own. Two documents can share a look
+                // without sharing a meaning, and a look can be swapped without
+                // touching a weight.
+                appearance: "surface.grass_lush",
+            ),
+        ],
+
+        modifier_channels: [
+            (
+                key: "vegetation_density",
+                display_name: "Vegetation density",
+                range: (0.0, 1.5),
+                default_value: 1.0,
+                // Multiply, so two suppressions compound rather than fighting.
+                composition: "Multiply",
+                unit: "Unitless",
+            ),
+        ],
+
+        sources: [
+            (
+                key: "everywhere",
+                source: Constant((value: 1.0)),
+            ),
+        ],
+
+        layers: [
+            (
+                key: "base_grass",
+                // Through the source rather than the bare `Everywhere` mask.
+                // They mean the same thing here, and going through a source is
+                // the shape every richer document takes — so the base case
+                // exercises the path the others use rather than a shortcut only
+                // it can take.
+                mask: Source("everywhere"),
+                operation: Material((
+                    material: "grass_lush",
+                    mode: "Replace",
+                    amount: 1.0,
+                )),
+            ),
+        ],
+
+        populations: [
+            (
+                key: "grass_population",
+                recipe: "population.grass_lush",
+                seed_stream: "grass",
+                material_affinity: [("grass_lush", 1.0)],
+                abundance_channel: Some("vegetation_density"),
+            ),
+        ],
+    ),
+)

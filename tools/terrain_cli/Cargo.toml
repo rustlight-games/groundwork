@@ -16,6 +16,8 @@ path = "src/main.rs"
 # Transitional. Every headless path here goes through the grass crate today and
 # will go through `terrain_core`, `terrain_scene` and `terrain_cycles` once those
 # exist — see the migration note in `main.rs`.
+terrain_core.workspace = true
+terrain_format.workspace = true
 bw_grass.workspace = true
 bevy.workspace = true
 clap.workspace = true

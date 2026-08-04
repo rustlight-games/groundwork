@@ -1,0 +1,12 @@
+[package]
+name = "terrain_format"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Reading, migrating and writing versioned terrain documents"
+
+[dependencies]
+terrain_core.workspace = true
+serde.workspace = true
+ron.workspace = true
+thiserror.workspace = true

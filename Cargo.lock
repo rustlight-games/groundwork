@@ -5053,6 +5053,8 @@ dependencies = [
  "bw_grass",
  "clap",
  "image",
+ "terrain_core",
+ "terrain_format",
 ]
 
 [[package]]
@@ -5060,6 +5062,16 @@ name = "terrain_core"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "terrain_format"
+version = "0.1.0"
+dependencies = [
+ "ron",
+ "serde",
+ "terrain_core",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

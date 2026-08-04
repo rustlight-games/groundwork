@@ -50,8 +50,11 @@
 pub mod coords;
 pub mod diagnostics;
 pub mod digest;
+pub mod document;
+mod document_digest;
 pub mod ids;
 pub mod seed;
+pub mod validate;
 
 pub use coords::{
     CellCoord, CellGrid, Footprint, RasterTransform, RowOrder, TexelAnchor, WorldPoint, WorldRect,
@@ -59,6 +62,12 @@ pub use coords::{
 };
 pub use diagnostics::{Diagnostic, DiagnosticReport, Location, Severity};
 pub use digest::{DIGEST_ALGORITHM_VERSION, Digest, Digestible, Fingerprint};
+pub use document::{
+    AssetPath, CoordinateSystem, DocumentMetadata, LayerDef, LayerOperation, Mask, MaterialDef,
+    MaterialLayer, MaterialMode, ModifierChannelDef, ModifierComposition, ModifierLayer,
+    ModifierUnit, ParameterObject, ParameterValue, PopulationDef, Profile, Source, SourceDef,
+    TerrainDocument, ValueRange,
+};
 pub use ids::{
     AppearanceKey, KeyError, LayerKey, MaterialIndex, MaterialKey, ModifierIndex, ModifierKey,
     PopulationIndex, PopulationKey, RecipeKey, SourceIndex, SourceKey, StreamKey,
@@ -66,3 +75,4 @@ pub use ids::{
 pub use seed::{
     CandidateId, PopulationHash, RandomAddress, RootSeed, SEED_ALGORITHM_VERSION, SeedContext,
 };
+pub use validate::{KnownRecipes, validate, validate_against};

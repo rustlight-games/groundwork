@@ -17,12 +17,11 @@
 //!
 //! ## What is a stub, and why it says so loudly
 //!
-//! `validate` and `inspect` take an authored terrain document, and the document
-//! format does not exist yet — it arrives with `terrain_format`. They are here
-//! because the command surface is part of the design and worth fixing early, and
-//! they exit non-zero with the reason rather than printing something reassuring.
-//! A command that quietly succeeds while doing nothing is worse than one that is
-//! missing, because the first thing built on top of it will be built on sand.
+//! `inspect` needs continuous world-space sampling, which arrives with
+//! `PreparedTerrain`. It exits non-zero with the reason rather than printing
+//! something reassuring: a command that quietly succeeds while doing nothing is
+//! worse than one that is missing, because the first thing built on top of it
+//! will be built on sand.
 //!
 //! ## Transitional dependencies
 //!
@@ -227,11 +226,7 @@ fn parse_quality(text: &str) -> Result<GrassRenderQuality, String> {
 
 fn main() -> ExitCode {
     match Cli::parse().command {
-        Command::Validate(args) => not_yet(
-            "validate",
-            &format!("would read {}", args.document.display()),
-            "the authored terrain document format arrives with `terrain_format`",
-        ),
+        Command::Validate(args) => validate(&args),
         Command::Inspect(args) => not_yet(
             "inspect",
             &format!("would sample {}", args.document.display()),
@@ -246,6 +241,58 @@ fn main() -> ExitCode {
             "the terrain fixtures and metrics arrive with `terrain_bench`",
         ),
     }
+}
+
+/// Load a document and report everything wrong with it.
+///
+/// Exits non-zero when the document has errors, so this is usable as a CI gate.
+/// Warnings are printed and do not fail: a warning that stopped a build would be
+/// silenced within a week, and then it would stop being read.
+fn validate(args: &DocumentArgs) -> ExitCode {
+    match terrain_format::load(&args.document) {
+        Ok(loaded) => {
+            let document = &loaded.document;
+            if loaded.migration.migrated() {
+                println!(
+                    "migrated from format version {} to {}",
+                    loaded.migration.from_version, loaded.migration.to_version
+                );
+                for step in &loaded.migration.steps {
+                    println!("  {step}");
+                }
+            }
+            if !loaded.report.is_empty() {
+                print!("{}", loaded.report);
+                println!();
+            }
+            println!(
+                "ok: {} — {} material{}, {} channel{}, {} source{}, {} layer{}, \
+                 {} population{}",
+                args.document.display(),
+                document.materials.len(),
+                plural(document.materials.len()),
+                document.modifier_channels.len(),
+                plural(document.modifier_channels.len()),
+                document.sources.len(),
+                plural(document.sources.len()),
+                document.layers.len(),
+                plural(document.layers.len()),
+                document.populations.len(),
+                plural(document.populations.len()),
+            );
+            println!("  digest {}", document.digest());
+            println!("  seed   {}", document.root_seed);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn plural(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
 }
 
 /// Report a command that exists in the design and not yet in the binary.

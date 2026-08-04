@@ -19,6 +19,8 @@ rust-version = "1.95"
 
 [workspace.dependencies]
 # --- internal ---------------------------------------------------------------
+terrain_core = { path = "crates/terrain_core" }
+terrain_format = { path = "crates/terrain_format" }
 bw_bench = { path = "crates/bw_bench" }
 bw_grass = { path = "crates/bw_grass" }
 
