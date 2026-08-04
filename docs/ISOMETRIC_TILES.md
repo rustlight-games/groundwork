@@ -127,7 +127,8 @@ different reason:
   diagonal is a staircase — on the one edge in the frame that has to read as a
   clean isometric silhouette.
 - The **canopy over it** lets a blade rooted in an outer tile lean past that shape
-  and stay in frame. Measured, that is a fringe of about a tenth, not a halo.
+  and stay in frame. Measured on the pinned fixture the silhouette comes out 13%
+  larger than the bare ground — a rim of blades, not a halo.
 
 Grass rooted *outside* the layout is a different case, and it is drawn rather
 than dropped:
