@@ -35,9 +35,14 @@ pub mod bake;
 pub mod lighting;
 pub mod painter;
 pub mod palette;
+pub mod request;
 pub mod shadow;
 pub mod surface;
 
 pub use bake::{BakeParams, BakeRegion, Passes, PreviewRasterStyle, bake, bake_padded};
 pub use painter::Painter;
+pub use request::{
+    BakeManifest, BakeOutput, BakeRequest, BakeResolution, MANIFEST_VERSION, MipPolicy, PageLayout,
+    PageRecord,
+};
 pub use surface::Surface;

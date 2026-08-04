@@ -25,5 +25,9 @@
 #![forbid(unsafe_code)]
 
 pub mod dataset;
+pub mod shard;
 
 pub use dataset::{CorpusReport, CorpusRequest, Pair, Render, ShardMetadata, TracedPair, generate};
+pub use shard::{
+    ArtifactFile, RenderArtifact, RenderPair, SHARD_MANIFEST_VERSION, ShardLayout, ShardManifest,
+};

@@ -8,6 +8,7 @@ description = "Paired renders: one scene, a cheap renderer and an expensive one"
 [dependencies]
 terrain_core.workspace = true
 terrain_generators.workspace = true
+terrain_scene.workspace = true
 terrain_bake.workspace = true
 terrain_cycles.workspace = true
 glam.workspace = true

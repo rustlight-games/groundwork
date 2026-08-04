@@ -5114,6 +5114,7 @@ dependencies = [
  "terrain_core",
  "terrain_cycles",
  "terrain_generators",
+ "terrain_scene",
 ]
 
 [[package]]
