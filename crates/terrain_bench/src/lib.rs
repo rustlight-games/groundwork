@@ -38,9 +38,13 @@ pub mod generic;
 pub mod lab;
 pub mod metrics;
 pub mod report;
+pub mod scenarios;
+pub mod seams;
 
 pub use fixtures::SEEDS;
 pub use metrics::{
     Point, blue_noise_score, compactness, convexity, luminance_spread, silhouette_variety,
 };
 pub use report::{Measurement, Report, ReportError, Unit};
+pub use scenarios::{SCENARIOS, Scenario, scenario};
+pub use seams::{SeamError, compare as compare_seam};

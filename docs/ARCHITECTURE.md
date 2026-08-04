@@ -1,333 +1,164 @@
 # Architecture
 
-Backseat Warlord is a 2D auto-battler whose units learn to fight via a Deep
-Q-Network, set in a heavily procedural world.
+## The pipeline
 
-This document explains why the workspace is split the way it is. The short
-version: two properties drive nearly every structural decision, and both are
-expensive to retrofit.
-
-1. **The simulation must be bit-deterministic and runnable headless.** Training
-   plays millions of ticks with no window and no GPU, and the policy learned
-   there has to behave identically in the game.
-2. **Content volume must not equal code volume.** Hundreds of units and
-   abilities only work if abilities are composed from data rather than written
-   one Rust type at a time.
-
-## Crate map
-
-```
-crates/
-  bw_core      fixed-point maths, deterministic RNG, ids, ticks, grid, hashing
-  bw_content   RON schemas, ContentDb, validation, generator registries
-  bw_nav       flow-field pathfinding, local avoidance
-  bw_sim       the battle simulation            (bevy_ecs only — no renderer)
-  bw_ai        observation encoding, DQN, policies
-  bw_bench     benchmark fixtures, metrics, reporting
-  bw_render    presentation: interpolation, camera, debug overlays
-  bw_grass     grass: a baked ground-surface cache and its renderer
-  bw_ui        screens and HUD, plus GameState
-  bw_app       composition root
-
-plugins/
-  bw_fx_abilities   spell and ability primitives
-  bw_fx_terrain     terrain generators, terrain effects, prop scatter
-  bw_fx_rocks       procedural 2D rock artwork
-
-tools/
-  bw_train     headless DQN trainer
-  bw_forge     content validation and generator scoring
+```text
+Authored terrain document
+    │  parse · migrate · validate                  terrain_format
+    ▼
+TerrainDocument            semantic, validated, digestible
+    │  prepare                                     terrain_core
+    ▼
+PreparedTerrain            immutable · Send + Sync · sampling cannot fail
+    │  sample                                      terrain_core
+    ▼
+TerrainScene               built once, reused by every renderer
+    │                                              terrain_scene
+    ├────────► Cycles                              terrain_cycles
+    ├────────► cheap rasteriser                    terrain_bake
+    ├────────► debug plates                        terrain_bake
+    └────────► paired corpus                       terrain_dataset
 ```
 
-Dependencies point downward. `bw_app` is the only crate that knows about all the
-others.
+Four decisions are non-negotiable, and the rest of the design is consequences.
 
-## The split that matters most
+## 1. Terrain is a continuous function of world position
 
-`bw_sim` depends on `bevy_ecs` and `bevy_app` — never on `bevy`. That single
-line in its `Cargo.toml` is what makes the trainer possible: pulling in the
-`bevy` facade would drag in the renderer, a window, and a GPU requirement, and
-every headless battle would need all three.
+Not a grid, not tiles, not pages. Those are ways of *addressing* or *presenting*
+terrain; making any of them the identity gives the framework a preferred
+resolution and a preferred origin, and then two pages that have never met stop
+agreeing along their shared edge.
 
-It also enforces the second half of the rule. A renderer that cannot be reached
-from simulation code cannot accidentally influence a battle's outcome.
+Three consequences, each of which costs something that is easy to mistake for
+waste:
 
-The plugin crates follow the same rule for the same reason. `bw_fx_abilities`
-has no Bevy dependency at all, so the trainer runs against exactly the effect
-handlers the game does. If those two lists ever diverged, a policy would be
-trained against rules the player never sees.
+- **World positions are `f64`.** An `f32` at ten kilometres out has about a
+  millimetre of spacing — coarser than a close-up render resolves. `f32` only
+  after subtracting a stable local origin.
+- **Rectangles and cells are half-open**, so tiling is a partition and no
+  quantity is computed twice along a seam.
+- **Division floors.** Truncation puts −0.5 and +0.5 in the same cell, making
+  cell zero twice as wide as every other and drawing a stripe through the world
+  origin in every population keyed on it.
 
-## How a battle runs
+## 2. Rust owns semantics and placement; Cycles owns light
 
-`BattleSim` owns a `World` and a `Schedule`, and exposes four operations: step,
-observe, check for an outcome, and hash. There is deliberately no `App` and no
-main loop — the trainer runs battles as fast as the CPU allows, the game runs
-one tick per frame, and neither should have to accommodate the other.
+Blender receives explicit geometry and never scatters. See
+[CYCLES_BACKEND.md](CYCLES_BACKEND.md).
 
-A tick executes these phases in a fixed, explicit chain:
+## 3. One scene is reused for every renderer
 
+A training pair must never be produced by generating the terrain twice. The API
+makes the wrong thing hard to write: `RenderPair` takes an `Arc<TerrainScene>`
+and two closures. See [DATASETS.md](DATASETS.md).
+
+## 4. Composition happens before rendering
+
+Material blending, path depression, vegetation suppression and rock abundance
+all affect *procedural decisions* before any RGB exists. See
+[MATERIAL_BLENDING.md](MATERIAL_BLENDING.md).
+
+## Why the document is compiled rather than sampled
+
+A `TerrainDocument` is a good thing to author, edit, diff and validate, and a bad
+thing to evaluate ten million times: every layer names its source by string, and
+every sample would carry the possibility of a reference that does not resolve.
+
+So `prepare` compiles it once. Keys become dense indices, sources become fields,
+layers become an evaluation order, and **anything unsupported is rejected before
+any sampling happens**.
+
+That last part is the design, not an optimisation. A sampler that can fail is a
+sampler whose caller has to decide what to do about a failure ten million times,
+inside a scatter, with no sensible answer available. Moving every failure to one
+fallible step at the front makes `sample` total.
+
+`PreparedTerrain` is immutable and `Send + Sync`, asserted rather than assumed,
+because baking is embarrassingly parallel only for as long as the thing every
+thread reads is genuinely read-only.
+
+## Why the scene is a separate thing from the generator
+
+Three consumers read what a generator produces — the cheap rasteriser, the
+Cycles exporter, the shadow pass — and none is more canonical than the others. A
+description living inside one of its consumers quietly becomes that consumer's
+private format.
+
+The scene carries four primitives: ribbons, curves, analytic shapes and stamps,
+plus prototype instances. It has no `render_grass` and no `render_wildflowers`,
+because a method per content type is a renderer that grows one per ecological
+category, each duplicating most of the last.
+
+A mark carries how *old* it is and how *wet* its ground is — intrinsic
+properties — and nothing about the current light. That is what lets a scene
+survive a lighting change without being regenerated.
+
+## Painter order is semantic and total
+
+```text
+ bits 62..64   stratum          ground · canopy · emergent
+ bits 22..62   quantised depth  nearer is larger
+ bits 16..22   sublayer
+ bits  0..16   stable id        the tie-break
 ```
-Begin → Perception → Decision → Movement → Combat → Effects → Status → Death → Cleanup
+
+Never derived from generation order. The tie-break is easy to omit and expensive
+to add: a fork's two children and a tuft's blades tie exactly, and without a
+deterministic break they resolve by whatever order a threaded sort left them in.
+
+## Two hashes, kept apart
+
+`terrain_core::seed` decides **where things go**. `terrain_core::digest` decides
+**whether two things are equal**. They look alike and do opposite jobs: improving
+the second is maintenance with no visible consequence; changing the first
+relocates every plant in every world.
+
+Merged, the first kind of change silently becomes the second. Separate modules,
+separate version constants.
+
+## Randomness is addressed
+
+```text
+seed algorithm version · root seed · recipe version · population key
+    · integer world cell · candidate rank · named stream · child path
 ```
 
-Spelled out rather than inferred from data access. Bevy can order systems
-automatically from their queries, but that ordering shifts when a system's
-parameters change — and a battle's outcome would shift with it.
+Every one knowable without having generated anything else. Streams are *named*
+rather than positional, which costs a hash per draw and buys the property that
+inserting a `sway` between `bend` and `twist` does not move every subsequent
+parameter of every mark in the world.
 
-The order encodes real rules. `Effects` follows `Combat` so a hit and the status
-it inflicts land together. `Death` follows both, so two units that kill each
-other on the same tick both connect; resolving death immediately would give the
-earlier-iterated unit an advantage that depends on entity layout.
+## Candidates, not counts
 
-Simulation runs at 64 Hz. Decisions run at 8 Hz — a Q-network forward pass per
-unit per tick is neither affordable nor useful.
+A recipe does not decide how many things to make. It walks the candidates its
+cells offer — each with an identity that exists whether or not anything grows
+there — and accepts or rejects each. So an abundance change moves the acceptance
+rate and none of the survivors.
 
-## Abilities are data
+That is also the mechanism that will let two materials share one candidate field
+instead of each generating a full set and doubling the marks through a
+transition.
 
-An ability is a tree of registered primitives, authored in RON:
+## Crate boundaries
 
-```ron
-(kind: "damage",
- targeting: Some((shape: Cone(radius: 2.5, arc_degrees: 110.0), filter: Enemies, ...)),
- params: { "amount": Num(18.0) })
+```text
+terrain_core        ← nothing but serde
+terrain_format      ← terrain_core
+terrain_scene       ← terrain_core
+terrain_generators  ← terrain_core, terrain_scene
+terrain_bake        ← terrain_core, terrain_generators
+terrain_cycles      ← terrain_core, terrain_generators, terrain_scene
+terrain_dataset     ← terrain_bake, terrain_cycles
+terrain_bench       ← terrain_core, terrain_generators, terrain_scene, terrain_bake
+terrain_bevy        ← terrain_core, terrain_generators, terrain_bake, bevy
 ```
 
-Targeting is separated from payload, so one `damage` primitive serves a cone, a
-chain, and a single-target nuke. Adding a spell is a file, not a code change.
+**Only `terrain_bevy` takes Bevy**, and the compiler enforces it rather than a
+convention. Everything upstream has to be usable from a command line, a test, a
+benchmark and a dataset job.
 
-See [CONTENT.md](CONTENT.md).
-
-## Plugins are compile-time crates
-
-Rust has no stable ABI, so runtime-loaded plugins would require every plugin to
-be built with a byte-identical compiler and dependency graph. Compile-time
-crates registering into string-keyed registries give the same modularity with
-none of that fragility — and content *data* stays hot-reloadable, which is where
-iteration speed actually matters.
-
-## Grass is a cached surface, not a field of objects
-
-`bw_grass` does not draw grass. It bakes it: a page of already-composited ground
-is generated from world coordinates, cached, and then drawn as one opaque
-texture. Roughly nine tenths of the grass pixels on screen therefore cost what a
-background costs, and the detail in them is paid for once rather than every
-frame.
-
-Four rules there are expensive to retrofit.
-
-**Place in world space; project only when baking.** A clump placed by screen
-position slides when the camera moves, and a mound shaped in screen space changes
-shape as the view scrolls. Everything in `bw_grass::field` is a pure function of
-a world coordinate — which is also the property that lets two pages that have
-never met agree along a shared edge, with no neighbour lookups and no seams to
-hide.
-
-**Shade through a ramp, never by multiplying.** Multiplying an albedo by a
-lambert term produces grey-green shadows. The reference art's darkest pixels are
-still saturated green and its brightest are yellow-green paint. `bw_grass::palette`
-encodes that directly, measured from the art rather than derived.
-
-**Composite by isometric depth, not by draw order.** Alpha-over produces a
-collage of decals stacked on one another. A depth test — using
-`bw_grass::iso::depth`, the same ordering the renderer uses against units — is
-what gives the cache an inside, because a stroke that loses its pixel still
-counts as occlusion.
-
-**Bake at the scale the camera will show, not at the scale the art was drawn.**
-`iso::PX_PER_METRE` is where the reference art is authored, and for a long time
-it was also the only scale anything was baked at. It should never have been. At
-the height this game ships at the ground is presented at about a fifth, so a page
-baked at the authoring scale spends twenty-four pixels of work on every pixel the
-player sees and then discards twenty-three of them in the minification filter.
-
-`Page::at_detail` makes the bake scale a parameter and `Page::for_view` picks it
-from the camera. What makes it a level of *detail* rather than a smaller picture
-is that the art scales with it. Lengths already in metres — blade length, tuft
-radius, mound spacing — scale themselves because the projection does it for them.
-Lengths the art states in **cache pixels** do not, and every one of them has to
-be carried through by hand: stroke widths, under-strokes, the guard band, the
-macro lattice stride, every blur radius in `resolve`. Miss one and the field
-shrinks while its brush marks keep their pixel size, which is the difference
-between distant grass and a page of bristles. `Page::detail` is the list.
-
-Two things are deliberately *not* scaled. Canopy height stays in reference pixels
-everywhere, so a shading term keyed on how tall the grass stands means the same
-thing at every level. And the composition fields are read on a world-anchored
-lattice (`field::GroundCache`) whose spacing comes from the page's scale rather
-than its position — which is what keeps two neighbouring coarse pages quantising
-every point identically, and is measured by `coarse_pages_meet_without_a_seam`.
-
-The correctness bar is not "does the coarse page look nice". It is **"is it where
-the minification filter would have landed"**, and
-`a_coarse_page_agrees_with_a_minified_fine_one` asks exactly that — including
-`detail_ratio`, because a cheap page that is cheap because it is blurrier passes
-every test of tone.
-
-**Where a page's time goes is not guessable, and every guess so far has been
-wrong.** `benches/bake.rs` exists because of this and its `page_stage` group is
-the first thing to read. Three findings from taking it seriously, none of which
-were visible from the source:
-
-- The stroke pass was 93% of a page, and most of *that* was not pixels. It was
-  four `powf` and two `sin_cos` calls per rib, and marks rasterised in full
-  before the guard band discovered they never touched the page. Neither shows up
-  as a hot line; both show up as a stage that costs more than it should.
-- `Ground::slope` was four extra evaluations of the mound window — the most
-  expensive function in the crate — computed for every blade of grass considered,
-  stored, and read by nothing in the workspace.
-- `bake_grid` parallelised over bands of rows, which is one task per page *row*.
-  A view five pages tall used five cores of sixteen, and the narrower the view the
-  worse it got. Page count and task count should be the same number.
-
-The pattern is the same each time: the cost was in something structural — an
-order of evaluation, a dead field, a task granularity — rather than in the code
-that looked expensive. Measure the stage, then look.
-
-**Detail belongs to the mound, not to the pixel.** The art is not uniformly
-detailed: bright crowns, dark backs and dark interiors are organised by a mound
-field, and grass that is uniformly busy everywhere reads as carpet however good
-the individual marks are.
-
-**Relief is a rhythm, and a rhythm is not round.** Two failures sit either side
-of this. Shade the mound field hard and every swell becomes a cushion — crowned,
-ringed, and roughly the size of its neighbours — and the surface reads as
-upholstery whatever the marks on it are. Shade it softly and take nothing else
-in exchange and the plate goes flat at every radius, not just the one that was
-shouting. So the mounds are drawn as elongated ridges oriented along a shared
-local flow rather than as discs, the directional term on them is restrained, and
-the structure they used to carry is supplied instead by fields that have nothing
-to do with height: regional colour, three scales of clump density, and how far a
-bunch of grass stands above the ground beside it. The last of those is measured
-against a blur a third of a metre wide and applied *signed* — a term that only
-ever darkens the shortfall draws a ring at the foot of every bright mass, which
-is the cushion reading arriving by a different route.
-
-**Light may be broad; dark may not.** The single least symmetric rule here, and
-the one that most changes how a generated field reads. A broad bright area is a
-place the sun is reaching and the eye accepts one at any size. A broad *dark*
-area is not a shadow — shadows have a caster, and nothing in a flat meadow casts
-one metres across — so it reads as a patch of grass that has simply been dimmed,
-a stain on the texture rather than an event in the world. It gives itself away
-worst where the canopy is open, since there is not even any thickness to explain
-it. So every slowly varying lighting term gets its negative half compressed hard
-(`bake::BROAD_DARK`) and the fast ones — micro-occlusion at three pixels, the
-under-stroke on each mark, the mat below the canopy — keep theirs in full. Dark
-then only ever appears as a narrow thing between two lit things, which is the
-only place it is legible as depth. There is a corollary that took a round of
-tuning to find: a broad dark area is only wrong while it is *featureless*. A
-handful of lit tufts scattered through one turn the same darkness back into
-depth, because there is finally something in front for it to be behind — so the
-baker seeds bright accents at a rate that deliberately rises where the ground is
-dim and loosely described, against the grain of every other term.
-
-**A hue shift is not an exposure shift.** Three terms push a resolved colour
-toward a different green — canopy-depth cooling, chroma calming, regional drift
-— and each answers "*which* green is this", never "how much light is on it".
-Written by hand they fail that: dropping red by a fifth takes real luminance with
-it. `bake::hue_only` renormalises each shift back to the luminance it started
-from. It matters most for the regional drift, because that one keys on position:
-a hue shift that also darkens turns "this part of the meadow is a different
-green" into "this part of the meadow is dimmer", whole regions lose light, and
-the ten seeded worlds spread apart in mean luminance. A compensating lift
-elsewhere restores the mean and leaves the spread exactly where it was, which is
-why the fix belongs at the shift rather than after it.
-
-**Volume is amplitude, not vocabulary.** The field carries a `resolution` term —
-how finely a passage of ground is described — and for a long time it decided only
-*which* marks grew there: broad strokes and buried fragments where it was low,
-legible blades where it was high. That is half a mechanism, and the missing half
-is the one the eye actually reads. A quiet passage drawn with soft marks at full
-length, full contrast and the ordinary rate of tip glints is not quiet; it has
-exactly as much light and dark per square inch as the passage beside it and
-merely spends it on rounder shapes. So the same field now also shortens the
-blades, drains the under-strokes, narrows the blade-to-blade scatter and thins
-the highlights, and the ground divides into roughly a quarter quiet, half
-ordinary, a fifth hero. `grass_bake` prints that split, because it is invisible
-in every descriptor — a plate with no quiet ground and a plate with plenty
-measure almost identically on any ladder that sums over the whole image.
-
-Two things about it are worth keeping. Getting the *proportions* wrong is
-expensive and silent: the first attempt put half the field in the quiet class,
-which cost a tenth of the plate's contrast at every small radius and read as
-mush. And the field has to ladder — its broadest octave is at ten metres, which
-is most of a screen, so on its own it moves whole plates rather than organising
-any one of them.
-
-**Isotropy is a look, and it is the wrong one.** Grass with a uniformly random
-heading looks the same in every direction, so nothing at the middle scale
-survives except the outline of each clump. One low-frequency flow field orients
-the ridges, the tuft headings, the mat and the worn openings, loosely and with a
-minority ignoring it — enough to give the eye somewhere to travel, not enough to
-comb.
-
-**Shade the shapes you know, do not differentiate the shape you built.** The
-mounds are domes, and a dome's normal is known in closed form, so each one shades
-itself analytically and the results are averaged where they overlap. The obvious
-alternative — finite-difference the composited height field and treat the
-gradient as a normal — works and is quietly wrong: the composite is read back off
-a lattice, so its *slope* is piecewise constant and jumps at every lattice line,
-which shows up as faint creases in the one thing that must not have any. The
-canopy is also translucent rather than opaque, so its shaded side falls away at
-about half the rate its lit side climbs and picks up a transmitted term where the
-grass is thinnest. That is what makes a mound read as lit rather than cut out.
-
-**Page independence has exactly one leak, and it is measurable.** Placement is a
-pure function of world coordinates, so two pages agree on *what grows* along a
-shared edge by construction. Lighting is not: three terms read a neighbourhood of
-the rasterised canopy, and near a page edge that neighbourhood is cropped. Only
-one of them matters. Micro-occlusion reads three pixels and the self-shadow about
-twelve; the bunch-relief term reads fifty-two, and measured against a
-single-page bake of the same ground it accounts for essentially the whole
-disagreement — scaling its weight by a third scaled the edge error by a third.
-The symptom is not a line but a soft brightness ramp over the outermost fifty
-pixels of every page, which at a 256-pixel page is a good third of it.
-
-That makes the term's weight a *budget* rather than a free knob, and it is the
-strongest lever the baker has on large-radius structure, so the two pull against
-each other. Buying structure from the mound and regional fields instead costs
-nothing here, because both are read off a world-space lattice and are exactly
-page-independent. Closing the leak properly means rasterising into a margin and
-cropping, which roughly doubles the fill per page; that trade has not been taken.
-
-**A guard band is an assumption about the mark vocabulary.** `bake::footprint`
-is asymmetric — the band above a page is a third of the one below it — because
-grass grows up the screen and only a curled tip ever descends. That is a fact
-about the marks, not about the geometry, and it silently stops being true when
-the vocabulary changes. It nearly did when a minority of each tuft's blades were
-turned down-screen to lay a near-side skirt. The failure would have been the
-worst kind this design has: not a shading difference but a tuft rooted off the
-top of a page, leaning into it, whose cell is never *visited* — a stroke present
-on one side of a join and absent on the other. The page-join test cannot see it,
-because it splits left from right and gives both halves the same top edge. So the
-bands are measured by sweeping the vocabulary rather than reasoned about, per
-direction. (The assumption survived, as it happens: a blade laid over travels
-down-screen and loses height doing it, and in a dimetric projection those two
-nearly cancel.)
-
-There is no simulation here yet. Wind, trampling and the animated crown layer
-that would carry them are the next piece of work; today the surface is static.
-
-## Learning
-
-`bw_ai` is generic over the Burn backend. The game runs CPU inference; training
-happens out of process in `tools/bw_train`.
-
-Observations are `f32`, which looks like a violation of the no-floats rule but
-is not: the flow is one-way. The simulation produces an observation, the network
-returns a discrete action *index*, and the simulation acts on that integer. No
-float re-enters simulation state.
-
-`OBS_VERSION` and the action space form a contract between trainer and game,
-recorded in a `ModelManifest` beside the weights. A model trained against one
-encoding and run against another does not crash — it produces confident
-nonsense, which is worse. The manifest refuses to load on a mismatch.
-
-Bevy and Burn coexist in one build. Both want `wgpu 29`, verified by resolving
-and compiling them together, so an in-process GPU training mode stays available
-even though the game does not use one.
-
-## Reading order
-
-New to the codebase: [DETERMINISM.md](DETERMINISM.md), then `bw_core`, then
-`bw_sim`'s crate docs, then `crates/bw_sim/tests/determinism.rs` — which is the
-most valuable test in the repository.
+The boundary that made this possible was splitting the parameter block: the
+generator takes a `GrassParams` — which world, how hard to work, where the sun
+is, what the grass is made of — and the rasteriser's twenty-three shading terms
+stayed with the rasteriser. While placement took the whole block, every module
+that decided where a blade goes depended on the module that drew one.

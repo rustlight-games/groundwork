@@ -55,41 +55,54 @@ on where its edges were.
 
 ## Status
 
-**Mid-migration, and the honest summary is: the grass works, the framework
-around it is being built.**
+**The pipeline above exists end to end. Most of the content does not.**
 
-This repository began as a game. The game is gone — simulation, learned policy,
-navigation, UI, content, all of it — and what remains is being restructured into
-the pipeline above. Follow the commit history; each step keeps the workspace
-compiling and ends with the evidence that it changed nothing it should not have.
+This repository began as a game. The game is gone, and the framework around the
+grass is built: a document loads, validates, compiles into a sampler, samples
+continuously in metres, and produces a scene that Cycles and the rasteriser both
+consume.
 
 Working today:
 
-- A procedural grass generator of some depth: world fields, tuft and colony
-  structure, blade morphology, and a measured palette.
-- The Cycles backend, including the tiling, guard bands and derived trace
-  resolution that a wide view needs.
+- The authored document: versioned, migratable, validated in one pass with
+  paths and did-you-mean suggestions, digested stably.
+- `PreparedTerrain`: continuous world-space sampling with normalised material
+  weights, elevation, microrelief and declared modifier channels.
+- Sources: constant, world-space noise, and spline distance.
+- Layers: material, elevation, microrelief and modifier, with smooth-band,
+  ramp and threshold profiles.
+- A generic scene IR — ribbons, curves, analytic shapes, stamps, instances —
+  with a total painter order and an exact fingerprint.
+- The Cycles backend: a generic scene package, appearance-key material
+  dispatch, tiling, guard bands and the derived trace resolution a wide view
+  needs.
 - The cheap rasteriser, as the preview tier and the neural network's input.
-- Paired dataset export with AOVs.
-- `terrain_core`: world coordinates, stable keys, addressed seed derivation and
-  canonical digests, with pinned test vectors.
+- Paired dataset export with AOVs, and a shard manifest pinning every version.
+- Four population recipes. One is finished.
 
 Not built yet:
 
-- The authored terrain document, and everything downstream of it — validation,
-  `PreparedTerrain`, continuous sampling, the generic scene IR.
-- Any material other than grass. Dirt, wildflowers and rocks are planned as
-  content and recipes rather than as another architectural rewrite.
-- Terrain blending, which is reserved but deliberately unimplemented. It must
-  compose *material weights* before anything is rendered, never alpha-blend two
-  finished images.
-- The neural renderer. It becomes a consumer of this corpus once the input and
-  target contract has stabilised, and it lives in its own repository.
+- **Raster and shape-distance sources.** They need an image decoder and a
+  polygon index; `prepare` refuses them with a message rather than silently
+  sampling zero.
+- **Finished dirt, wildflowers and rocks.** They validate, emit, and are
+  honestly minimal — a wildflower is a curve and a disc.
+- **Terrain blending.** Reserved, and deliberately unimplemented: the weights
+  compose, and the shared candidate field that stops a transition doubling its
+  marks does not exist yet.
+- **The neural renderer.** It becomes a consumer of this corpus once the
+  input/target contract has stabilised, and it lives in its own repository.
 
 ## Running it
 
 ```sh
 cargo run -p terrain_cli -- --help
+
+# Read a document, and report everything wrong with it in one pass.
+cargo run -p terrain_cli -- validate assets/terrain/documents/blend_lab.terrain.ron
+
+# What is the ground here, and why?
+cargo run -p terrain_cli -- inspect assets/terrain/documents/blend_lab.terrain.ron --at 0,5
 
 # A plate through the cheap rasteriser: no window, no GPU.
 cargo run --release -p terrain_cli -- preview-export --size 1024 --out target/preview.png
@@ -115,19 +128,27 @@ found. Pinned to 5.2 LTS.
 
 ```text
 crates/
-  terrain_core   world coordinates, stable keys, seed derivation, digests
-  bw_grass       the grass generator and the renderers, mid-split
-  bw_bench       seeds, aesthetic metrics, report comparison
+  terrain_core        coordinates, keys, seeds, digests, the document,
+                      validation, PreparedTerrain, sampling, built-in sources
+  terrain_format      the versioned file: envelope, migration, RON
+  terrain_scene       projection, ground, marks, instances, painter order
+  terrain_generators  what grows: fields, candidates, blades, recipes
+  terrain_bake        the cheap raster tier, bake requests and manifests
+  terrain_cycles      the scene package, the tiled plate driver, Blender
+  terrain_dataset     paired renders and shards
+  terrain_bevy        page cache, material, plugin — the only Bevy crate
+  terrain_bench       seeds, scenarios, metrics, seams, comparison
 
 tools/
-  terrain_cli       the command line: validate, inspect, render, dataset
+  terrain_cli       the `terrain` binary
   terrain_preview   the terrain live, in a window
-  bw_cycles         the Blender half of the path tracer (Python, not a crate)
+  blender_cycles    the Blender half of the path tracer (Python, not a crate)
 ```
 
-The `bw_` names are the game's, and they are on their way out — each is renamed
-as the code inside it is split into its destination crate, rather than in one
-sweep that would move twenty thousand lines and prove nothing.
+Dependencies point downward, and `terrain_core` depends on nothing but serde.
+Only `terrain_bevy` links Bevy — the compiler enforces that rather than a
+convention, because everything upstream has to be usable from a command line, a
+test, a benchmark and a dataset job.
 
 ## Measuring it
 
@@ -137,11 +158,11 @@ the output just looks worse, which no correctness test notices.
 
 Three instruments, answering different questions:
 
-- **`cargo test -p bw_grass --test refactor_fingerprints`** — *is it the same
+- **`cargo test -p terrain_bench --test refactor_fingerprints`** — *is it the same
   meadow?* Hashes the generated scene itself: every mark, its shape, its
   material, and the ground beneath. No renderer in the loop, so it survives a
   refactor that moves the renderer. Runs in a tenth of a second.
-- **`cargo bench -p bw_grass`** — *what did it cost?* Deliberately granular: the
+- **`cargo bench -p terrain_bake`** — *what did it cost?* Deliberately granular: the
   bake is five stages and each is timed separately, because a single number for
   "a page costs 100 ms" tells an optimiser nothing about which fifth to attack.
 - **`grass_snapshot`** — *did the picture move?* Photographs three places at four
