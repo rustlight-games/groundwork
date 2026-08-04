@@ -29,7 +29,7 @@
 //! entry points move first, the implementations follow, and the two are never
 //! broken at the same time.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bevy::math::Vec2;
@@ -307,6 +307,43 @@ fn validate(args: &DocumentArgs) -> ExitCode {
     }
 }
 
+/// Assets, resolved beside the document that names them.
+///
+/// Relative to the document's own directory rather than to the working
+/// directory, so `terrain inspect` works from anywhere — and so a document is a
+/// self-contained thing you can move.
+struct BesideDocument {
+    root: PathBuf,
+}
+
+impl terrain_core::AssetResolver for BesideDocument {
+    fn read(&self, path: &str) -> Result<Vec<u8>, terrain_core::AssetError> {
+        std::fs::read(self.root.join(path)).map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => terrain_core::AssetError::NotFound,
+            _ => terrain_core::AssetError::Unreadable(error.to_string()),
+        })
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        self.root.join(path).exists()
+    }
+}
+
+/// Where a document's assets live: beside it, one level up from `documents/`.
+///
+/// A document sits in `assets/terrain/documents/` and names
+/// `features/main_path.spline.ron`, which is `assets/terrain/features/…`. So
+/// the asset root is the document's parent's parent, and a document outside
+/// that layout resolves against its own directory.
+fn asset_root(document: &Path) -> PathBuf {
+    let directory = document.parent().unwrap_or(Path::new("."));
+    if directory.file_name().and_then(|n| n.to_str()) == Some("documents") {
+        directory.parent().unwrap_or(directory).to_path_buf()
+    } else {
+        directory.to_path_buf()
+    }
+}
+
 /// Compile a document and print what the terrain is at a point.
 ///
 /// The instrument for the question "why is the ground like that here", and the
@@ -322,9 +359,12 @@ fn inspect(args: &InspectArgs) -> ExitCode {
         }
     };
 
+    let assets = BesideDocument {
+        root: asset_root(&args.document),
+    };
     let terrain = match terrain_core::prepare(
         &loaded.document,
-        &terrain_core::NoAssets,
+        &assets,
         &terrain_core::SourceRegistry::new(),
         &terrain_core::PrepareOptions::default(),
     ) {

@@ -57,6 +57,7 @@ pub mod prepare;
 pub mod registry;
 pub mod sample;
 pub mod seed;
+pub mod sources;
 pub mod validate;
 
 pub use coords::{
@@ -86,4 +87,5 @@ pub use sample::{
 pub use seed::{
     CandidateId, PopulationHash, RandomAddress, RootSeed, SEED_ALGORITHM_VERSION, SeedContext,
 };
+pub use sources::{NoiseField, Spline, SplineDistanceField};
 pub use validate::{KnownRecipes, validate, validate_against};

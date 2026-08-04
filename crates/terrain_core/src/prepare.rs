@@ -32,10 +32,13 @@
 //!
 //! ## What is not built yet
 //!
-//! Rasters, splines and shapes compile to a reported error rather than a field.
-//! They need an image decoder and a spatial index, which are their own commit;
-//! what matters now is that the *shape* is right — a document naming one gets a
-//! diagnostic saying so, rather than silently sampling zero.
+//! Rasters compile to a reported error rather than a field: they need an image
+//! decoder, which is a dependency this crate does not have and should not grow.
+//! Shape distance likewise awaits a polygon index. What matters is that a
+//! document naming one gets a diagnostic saying so, rather than silently
+//! sampling zero and describing a meadow with nothing in it.
+//!
+//! Constants, noise and spline distance are compiled.
 
 use std::sync::Arc;
 
@@ -205,7 +208,14 @@ pub fn prepare(
     let mut field_keys: Vec<SourceKey> = Vec::with_capacity(document.sources.len());
     for (index, definition) in document.sources.iter().enumerate() {
         let at = Location::at(format!("sources[{index}]"));
-        let field = compile_source(definition, &at, resolver, registry, &mut diagnostics);
+        let field = compile_source(
+            definition,
+            &at,
+            resolver,
+            registry,
+            document.root_seed.bits(),
+            &mut diagnostics,
+        );
         // A source that failed still occupies its slot, holding a field that
         // reads zero — so every later index stays correct and the diagnostics
         // stay aligned with the document. Without it, one bad source would
@@ -328,12 +338,69 @@ fn compile_source(
     at: &Location,
     resolver: &dyn AssetResolver,
     registry: &SourceRegistry,
+    root_seed: u64,
     diagnostics: &mut DiagnosticReport,
 ) -> Option<Box<dyn ScalarField>> {
     match &definition.source {
         Source::Constant(constant) => Some(Box::new(ConstantField {
             value: constant.value,
         })),
+        Source::Noise(noise) => Some(Box::new({
+            let field = crate::sources::NoiseField::new(
+                noise.frequency_per_m,
+                noise.octaves,
+                noise.lacunarity,
+                noise.gain,
+                noise.stream.as_str(),
+                root_seed,
+            );
+            // Layers shape a source through a profile, and every profile clamps
+            // to `0..1`. Signed noise would therefore lose its whole lower half
+            // to the clamp before an author saw it, so a noise source hands back
+            // `0..1` and a `Ramp` is what selects a band of it.
+            field.unsigned()
+        })),
+        Source::SplineDistance(spline) => {
+            let bytes = match resolver.read(spline.asset.as_str()) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    diagnostics.error(
+                        "missing_asset",
+                        at.clone(),
+                        format!(
+                            "`{}` cannot read `{}`: {error}",
+                            definition.key, spline.asset
+                        ),
+                    );
+                    return None;
+                }
+            };
+            let text = match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(_) => {
+                    diagnostics.error(
+                        "invalid_asset",
+                        at.clone(),
+                        format!("`{}` is not text", spline.asset),
+                    );
+                    return None;
+                }
+            };
+            match crate::sources::Spline::parse(&text) {
+                Ok(parsed) => Some(Box::new(crate::sources::SplineDistanceField::new(
+                    parsed,
+                    spline.max_distance_m,
+                ))),
+                Err(error) => {
+                    diagnostics.error(
+                        "invalid_asset",
+                        at.clone(),
+                        format!("`{}`: {error}", spline.asset),
+                    );
+                    None
+                }
+            }
+        }
         Source::Custom(custom) => match registry.get(&custom.recipe) {
             Some(recipe) => {
                 let mut context = SourceContext {
@@ -940,11 +1007,17 @@ mod tests {
     }
 
     #[test]
-    fn missing_assets_are_only_checked_when_asked_for() {
-        // The common caller is CI validation with no assets checked out.
+    fn a_source_that_needs_its_asset_reports_when_it_is_absent() {
+        // Two different things, and the distinction is worth keeping straight.
+        //
+        // A spline *cannot compile* without its asset — there is no field to
+        // build — so it reports whether or not assets were asked about.
+        // `require_assets` is about reporting every missing asset up front,
+        // including for sources that would otherwise compile, so an author
+        // learns about six missing masks at once rather than one per run.
         let mut document = constant_grass();
         document.sources.push(SourceDef {
-            key: SourceKey::new("spline").expect("valid"),
+            key: SourceKey::new("main_path").expect("valid"),
             source: Source::SplineDistance(SplineDistanceSource {
                 asset: AssetPath::new("features/main_path.spline.ron").expect("valid"),
                 max_distance_m: 5.0,
@@ -953,7 +1026,7 @@ mod tests {
         document.layers.push(LayerDef {
             key: LayerKey::new("path").expect("valid"),
             enabled: true,
-            mask: Mask::Source(SourceKey::new("spline").expect("valid")),
+            mask: Mask::Source(SourceKey::new("main_path").expect("valid")),
             operation: LayerOperation::Modifier(ModifierLayer {
                 channel: ModifierKey::new("vegetation_density").expect("valid"),
                 mode: ModifierComposition::Multiply,
@@ -961,39 +1034,100 @@ mod tests {
             }),
         });
 
-        let without = prepare(
+        let report = prepare(
             &document,
             &NoAssets,
             &SourceRegistry::new(),
             &PrepareOptions::default(),
         )
-        .expect_err("splines are not compiled yet");
+        .expect_err("a spline cannot compile without its asset");
         assert!(
-            !without
+            report
                 .diagnostics
                 .entries()
                 .iter()
                 .any(|e| e.code == "missing_asset"),
-            "assets were checked without being asked for"
+            "{report}"
         );
 
-        let with = prepare(
+        // And with the asset present, it compiles.
+        let assets = crate::registry::MemoryAssets::new()
+            .with("features/main_path.spline.ron", "0 0\n10 0\n10 10\n");
+        let terrain = prepare(
             &document,
-            &NoAssets,
+            &assets,
             &SourceRegistry::new(),
-            &PrepareOptions {
-                require_assets: true,
-                ..PrepareOptions::default()
-            },
+            &PrepareOptions::default(),
         )
-        .expect_err("refused");
+        .expect("the spline compiles");
+        // And the spline's reach becomes the terrain's halo.
+        assert_eq!(terrain.reach_m(), 5.0);
+    }
+
+    #[test]
+    fn a_spline_reaches_the_sample() {
+        // The end-to-end claim of the layer model: one spline, read through a
+        // profile, changes a modifier channel on the ground beside it.
+        let mut document = constant_grass();
+        document.sources.push(SourceDef {
+            key: SourceKey::new("main_path").expect("valid"),
+            source: Source::SplineDistance(SplineDistanceSource {
+                asset: AssetPath::new("path.spline").expect("valid"),
+                max_distance_m: 6.0,
+            }),
+        });
+        document.layers.push(LayerDef {
+            key: LayerKey::new("suppression").expect("valid"),
+            enabled: true,
+            mask: Mask::Profile {
+                source: SourceKey::new("main_path").expect("valid"),
+                shape: Profile::SmoothBand {
+                    inner_m: 1.4,
+                    outer_m: 2.8,
+                },
+            },
+            operation: LayerOperation::Modifier(ModifierLayer {
+                channel: ModifierKey::new("vegetation_density").expect("valid"),
+                mode: ModifierComposition::Multiply,
+                value: 0.15,
+            }),
+        });
+
+        // A path along the u axis.
+        let assets = crate::registry::MemoryAssets::new().with("path.spline", "-50 0\n50 0\n");
+        let terrain = prepare(
+            &document,
+            &assets,
+            &SourceRegistry::new(),
+            &PrepareOptions::default(),
+        )
+        .expect("compiles");
+
+        let density = |v: f64| {
+            terrain
+                .sample(&SampleQuery::at(WorldPoint::new(0.0, v)))
+                .modifiers
+                .get(ModifierIndex(0))
+                .expect("declared")
+        };
+
+        // On the path: fully suppressed.
         assert!(
-            with.diagnostics
-                .entries()
-                .iter()
-                .any(|e| e.code == "missing_asset"),
-            "{with}"
+            (density(0.0) - 0.15).abs() < 1.0e-5,
+            "on the path: {}",
+            density(0.0)
         );
+        // Well outside the band: untouched.
+        assert!(
+            (density(5.0) - 1.0).abs() < 1.0e-5,
+            "off the path: {}",
+            density(5.0)
+        );
+        // In the transition: between the two, and monotone across it.
+        let edge = density(2.1);
+        assert!(edge > 0.15 && edge < 1.0, "in the band: {edge}");
+        assert!(density(1.6) < density(2.1), "the band is not monotone");
+        assert!(density(2.1) < density(2.6));
     }
 
     #[test]

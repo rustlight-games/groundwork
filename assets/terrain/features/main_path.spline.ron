@@ -1,0 +1,20 @@
+# The main path through the blend laboratory.
+#
+# One `u v` pair per line, in metres. `#` comments, `closed` on its own line to
+# join the ends. Deliberately not RON, despite the extension the document names:
+# a path is dozens to hundreds of points produced by a tool, and a line-based
+# format diffs one point per line — so a version-control history shows *which
+# part of the path moved*, where a RON array reflows and shows the whole thing.
+#
+# It also keeps the parser inside `terrain_core`, which takes no deserialiser,
+# so sampling a spline does not drag a format crate into every consumer.
+
+-40   -18
+-28   -12
+-16    -4
+ -6     2
+  4     5
+ 14     6
+ 24     4
+ 33    -1
+ 40    -9
