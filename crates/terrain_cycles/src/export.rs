@@ -179,6 +179,14 @@ pub fn write_package(
 }
 
 /// The camera that photographs a scene exactly as its projection would draw it.
+///
+/// Framed from [`terrain_scene::scene::SceneRequest::viewport`] rather than from
+/// the ground bounds, and that is the whole difference between "this render is
+/// of that ground" and "this render is composed like this". A ground rectangle
+/// projects to a diamond; deriving the frame from its bounding box means the
+/// camera always tightly encloses the diamond, so there is no way to ask for
+/// margins, and no way to put the subject tile anywhere but dead centre. The
+/// viewport is the rectangle a caller actually wants photographed.
 fn camera_for(scene: &TerrainScene) -> CameraManifest {
     let projection = scene.request.projection;
     // A physical right-handed camera above the ground. The world arrives
@@ -187,14 +195,11 @@ fn camera_for(scene: &TerrainScene) -> CameraManifest {
     let up = normalise([-1.0, -1.0, 2.0]);
     let backward = normalise(cross(right, up));
 
-    let bounds = scene.request.bounds;
-    let (low, high) = projection.screen_bounds(bounds);
-    let screen_width = high.x_m - low.x_m;
-    let screen_height = high.y_m - low.y_m;
+    let viewport = scene.request.viewport;
     // `screen.x` is a dot with `r`, whose length is √2, so a screen-metre span
     // of `s` is a world span of `s / √2` along `r̂`.
-    let world_width = screen_width / 2.0f64.sqrt();
-    let world_height = screen_height / (6.0f64.sqrt() / 2.0);
+    let world_width = viewport.width_m() / 2.0f64.sqrt();
+    let world_height = viewport.height_m() / (6.0f64.sqrt() / 2.0);
 
     let resolution = scene.request.output_size;
     // Blender derives the vertical extent from the horizontal one as
@@ -205,7 +210,8 @@ fn camera_for(scene: &TerrainScene) -> CameraManifest {
     let pixel_aspect_y =
         (world_height * resolution[0] as f64) / (world_width * resolution[1] as f64);
 
-    let centre = bounds.centre();
+    // The ground under the middle of the frame, reflected like everything else.
+    let centre = projection.unproject_ground(viewport.centre());
     let target = [centre.v_m, centre.u_m, 0.0];
     let distance = 40.0 + scene.canopy_ceiling_m() * 4.0;
 

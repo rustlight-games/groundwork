@@ -65,5 +65,5 @@ pub use mark::{
     RibbonMark, SceneMark, SceneMaterialBinding, SceneMaterialIndex, StampMark, Stratum, TipShape,
     WidthProfile,
 };
-pub use projection::{Projection, ScenePoint, ScreenPoint};
+pub use projection::{Projection, ScenePoint, ScreenPoint, ScreenRect};
 pub use scene::{SCENE_DIGEST_DOMAIN, SceneBuilder, SceneRequest, StampBinding, TerrainScene};

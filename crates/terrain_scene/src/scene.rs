@@ -34,7 +34,7 @@ use terrain_core::digest::{Digest, Digestible, Fingerprint};
 use crate::ground::GroundSurface;
 use crate::instance::PrototypeInstance;
 use crate::mark::{Aabb3, SceneMark, SceneMaterialBinding};
-use crate::projection::Projection;
+use crate::projection::{Projection, ScenePoint, ScreenRect};
 
 /// What was asked for.
 ///
@@ -43,11 +43,32 @@ use crate::projection::Projection;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SceneRequest {
     /// The ground the output covers, not counting the halo.
+    ///
+    /// What is *visible*, in world terms. For a tile layout it is exactly the
+    /// union of the tiles.
     pub bounds: WorldRect,
+    /// The camera's window on the screen plane, in screen metres.
+    ///
+    /// Separate from [`SceneRequest::bounds`] because the two answer different
+    /// questions and are not the same shape. `bounds` says which ground the
+    /// render is *about*; the viewport says what rectangle the camera
+    /// photographs. A ground rectangle projects to a diamond, so a frame derived
+    /// from the ground bounds can only ever be that diamond's bounding box —
+    /// which leaves no way to say "put the subject tile in the middle and leave
+    /// five percent of background around the outside".
+    ///
+    /// Both renderers read this, so the cheap plate and the traced plate
+    /// register pixel for pixel.
+    pub viewport: ScreenRect,
     pub projection: Projection,
     /// The output raster's size, in pixels.
     pub output_size: [u32; 2],
     /// Pixels per world metre the output is shown at.
+    ///
+    /// Redundant with [`SceneRequest::viewport`] and the output size, and kept
+    /// because a great deal of downstream code asks for a scale rather than for
+    /// a window. [`SceneRequest::viewport_pixels_per_metre`] is the number the
+    /// viewport implies; the two agreeing is asserted rather than assumed.
     pub pixels_per_metre: f32,
     /// Level of detail: zero is full, each step is half the linear resolution.
     pub lod: u8,
@@ -61,17 +82,48 @@ pub struct SceneRequest {
 
 impl SceneRequest {
     /// A request over a square of ground at a chosen scale.
+    ///
+    /// A square *window*, on the ground point at the centre — which is not the
+    /// same as the square of ground's own projected extent, and deliberately
+    /// so: this is the laboratory plate it always was, and its framing has not
+    /// moved. A caller that wants the diamond to fill the frame asks the frame
+    /// resolver for it.
     pub fn square(centre: WorldPoint, side_m: f64, pixels_per_metre: f32) -> Self {
         let bounds = WorldRect::centred(centre, side_m);
+        let projection = Projection::default();
         let pixels = (side_m * pixels_per_metre as f64).round().max(1.0) as u32;
         Self {
             bounds,
-            projection: Projection::default(),
+            viewport: ScreenRect::around(
+                projection.project(ScenePoint::on_ground(centre)),
+                side_m,
+                side_m,
+            ),
+            projection,
             output_size: [pixels, pixels],
             pixels_per_metre,
             lod: 0,
             halo_m: 0.0,
         }
+    }
+
+    /// The scale the viewport and the output size imply.
+    ///
+    /// Should equal [`SceneRequest::pixels_per_metre`]. Two ways of saying the
+    /// same thing is a place for them to drift, so this is what a test compares
+    /// against rather than a number anyone maintains by hand.
+    pub fn viewport_pixels_per_metre(&self) -> f32 {
+        let width = self.viewport.width_m();
+        if width <= 0.0 {
+            return 0.0;
+        }
+        self.output_size[0] as f32 / width as f32
+    }
+
+    /// A request framed by an explicit camera window.
+    pub fn with_viewport(mut self, viewport: ScreenRect) -> Self {
+        self.viewport = viewport;
+        self
     }
 
     pub fn with_halo(mut self, halo_m: f64) -> Self {
@@ -102,6 +154,10 @@ impl Digestible for SceneRequest {
             .f64(self.bounds.min.v_m)
             .f64(self.bounds.max.u_m)
             .f64(self.bounds.max.v_m)
+            .f64(self.viewport.min.x_m)
+            .f64(self.viewport.min.y_m)
+            .f64(self.viewport.max.x_m)
+            .f64(self.viewport.max.y_m)
             .f64(self.projection.half_width)
             .f64(self.projection.half_height)
             .f64(self.projection.height_scale)
@@ -359,7 +415,7 @@ impl SceneBuilder {
 mod tests {
     use super::*;
     use crate::mark::*;
-    use crate::projection::ScenePoint;
+    use crate::projection::ScreenPoint;
     use terrain_core::ids::AppearanceKey;
 
     fn appearance(key: &str) -> AppearanceKey {
@@ -447,6 +503,10 @@ mod tests {
         let mut moved = base.clone();
         moved.request.halo_m = 0.5;
         assert_ne!(reference, moved.fingerprint(), "request");
+
+        let mut reframed = base.clone();
+        reframed.request.viewport = ScreenRect::around(ScreenPoint::new(1.0, 2.0), 3.0, 4.0);
+        assert_ne!(reference, reframed.fingerprint(), "viewport");
 
         let mut reground = base.clone();
         reground.ground.elevation[0] += 1.0;
@@ -557,6 +617,19 @@ mod tests {
         let request = request().with_halo(0.5);
         assert_eq!(request.bounds.width_m(), 4.0);
         assert_eq!(request.generated_bounds().width_m(), 5.0);
+    }
+
+    #[test]
+    fn the_viewport_and_the_pixel_scale_say_the_same_thing() {
+        // Two ways of writing one number, which is a place for them to drift.
+        // Every request the resolver builds is checked against this.
+        let request = request();
+        assert!(
+            (request.viewport_pixels_per_metre() - request.pixels_per_metre).abs() < 1.0e-3,
+            "{} against {}",
+            request.viewport_pixels_per_metre(),
+            request.pixels_per_metre
+        );
     }
 
     #[test]

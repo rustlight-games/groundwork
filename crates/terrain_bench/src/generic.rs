@@ -241,11 +241,27 @@ pub fn request_for_page(page: &Page) -> SceneRequest {
         high = high.max(ground);
     }
 
+    // The page's own rectangle, in screen metres. Cache pixels count +Y down and
+    // screen metres count +Y up, so the vertical span comes out negated and
+    // `ScreenRect::new` puts the corners back in order.
+    let scale = 1.0 / page.px_per_metre as f64;
+    let viewport = terrain_scene::projection::ScreenRect::new(
+        terrain_scene::projection::ScreenPoint::new(
+            page.origin.x as f64 * scale,
+            -(page.origin.y as f64) * scale,
+        ),
+        terrain_scene::projection::ScreenPoint::new(
+            (page.origin.x as f64 + page.width as f64) * scale,
+            -(page.origin.y as f64 + page.height as f64) * scale,
+        ),
+    );
+
     SceneRequest {
         bounds: WorldRect::new(
             WorldPoint::new(low.x as f64, low.y as f64),
             WorldPoint::new(high.x as f64, high.y as f64),
         ),
+        viewport,
         projection: terrain_scene::projection::Projection::default(),
         output_size: [page.width as u32, page.height as u32],
         pixels_per_metre: page.px_per_metre,

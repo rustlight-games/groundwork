@@ -87,8 +87,86 @@ pub struct ScreenPoint {
 }
 
 impl ScreenPoint {
+    pub const ORIGIN: Self = Self { x_m: 0.0, y_m: 0.0 };
+
     pub const fn new(x_m: f64, y_m: f64) -> Self {
         Self { x_m, y_m }
+    }
+}
+
+/// A rectangle on the screen plane, in screen metres.
+///
+/// The camera's window, and it is a genuinely different thing from a rectangle
+/// of ground. Ground rectangles project to *diamonds*; a camera photographs a
+/// rectangle. Deriving the frame from the ground bounds — which is what the
+/// scene request used to do — therefore leaves the framing implicit: you cannot
+/// say "put the subject tile here and leave that much background around the
+/// diamond" without naming the rectangle you want to end up with.
+///
+/// `min.y_m` is the *bottom*, because [`ScreenPoint`] counts positive up the
+/// screen. A raster's origin is the other way round, and the conversion happens
+/// once, where the raster is.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct ScreenRect {
+    pub min: ScreenPoint,
+    pub max: ScreenPoint,
+}
+
+impl ScreenRect {
+    /// The rectangle spanned by two corners, in any order.
+    pub fn new(a: ScreenPoint, b: ScreenPoint) -> Self {
+        Self {
+            min: ScreenPoint::new(a.x_m.min(b.x_m), a.y_m.min(b.y_m)),
+            max: ScreenPoint::new(a.x_m.max(b.x_m), a.y_m.max(b.y_m)),
+        }
+    }
+
+    /// A rectangle of a given size, around a point.
+    pub fn around(centre: ScreenPoint, width_m: f64, height_m: f64) -> Self {
+        let (half_w, half_h) = (width_m.abs() * 0.5, height_m.abs() * 0.5);
+        Self {
+            min: ScreenPoint::new(centre.x_m - half_w, centre.y_m - half_h),
+            max: ScreenPoint::new(centre.x_m + half_w, centre.y_m + half_h),
+        }
+    }
+
+    pub fn width_m(self) -> f64 {
+        self.max.x_m - self.min.x_m
+    }
+
+    pub fn height_m(self) -> f64 {
+        self.max.y_m - self.min.y_m
+    }
+
+    pub fn centre(self) -> ScreenPoint {
+        ScreenPoint::new(
+            (self.min.x_m + self.max.x_m) * 0.5,
+            (self.min.y_m + self.max.y_m) * 0.5,
+        )
+    }
+
+    pub fn contains(self, point: ScreenPoint) -> bool {
+        point.x_m >= self.min.x_m
+            && point.x_m < self.max.x_m
+            && point.y_m >= self.min.y_m
+            && point.y_m < self.max.y_m
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            min: ScreenPoint::new(
+                self.min.x_m.min(other.min.x_m),
+                self.min.y_m.min(other.min.y_m),
+            ),
+            max: ScreenPoint::new(
+                self.max.x_m.max(other.max.x_m),
+                self.max.y_m.max(other.max.y_m),
+            ),
+        }
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.width_m() <= 0.0 || self.height_m() <= 0.0
     }
 }
 
@@ -180,7 +258,13 @@ impl Projection {
     /// ground rectangle does **not** project to a screen rectangle — it projects
     /// to a diamond — so this is the bounding box of that diamond and is
     /// genuinely larger than the ground it came from.
-    pub fn screen_bounds(self, ground: WorldRect) -> (ScreenPoint, ScreenPoint) {
+    ///
+    /// Computed from the corners rather than from a closed form, so a layout
+    /// that is not a filled square and a projection that is not the default
+    /// both still frame correctly. The `6S × 3S` a nine-tile layout comes to is
+    /// a *consequence* of this, and a test pins it; it is deliberately not the
+    /// formula.
+    pub fn screen_bounds(self, ground: WorldRect) -> ScreenRect {
         let corners = [
             ScenePoint::new(ground.min.u_m, ground.min.v_m, 0.0),
             ScenePoint::new(ground.max.u_m, ground.min.v_m, 0.0),
@@ -196,7 +280,10 @@ impl Projection {
             high.x_m = high.x_m.max(screen.x_m);
             high.y_m = high.y_m.max(screen.y_m);
         }
-        (low, high)
+        ScreenRect {
+            min: low,
+            max: high,
+        }
     }
 
     /// The anisotropy, as a pixel taller than it is wide.
@@ -447,14 +534,58 @@ mod tests {
         // bounds is how a bake clips its own corners.
         let projection = Projection::default();
         let ground = WorldRect::new(WorldPoint::new(0.0, 0.0), WorldPoint::new(4.0, 4.0));
-        let (low, high) = projection.screen_bounds(ground);
-        assert_eq!(low.x_m, -4.0);
-        assert_eq!(high.x_m, 4.0);
-        assert_eq!(low.y_m, -4.0);
-        assert_eq!(high.y_m, 0.0);
+        let screen = projection.screen_bounds(ground);
+        assert_eq!(screen.min.x_m, -4.0);
+        assert_eq!(screen.max.x_m, 4.0);
+        assert_eq!(screen.min.y_m, -4.0);
+        assert_eq!(screen.max.y_m, 0.0);
         assert!(
-            high.x_m - low.x_m > ground.width_m(),
+            screen.width_m() > ground.width_m(),
             "the diamond is not wider"
         );
+    }
+
+    #[test]
+    fn a_square_tile_projects_to_a_diamond_twice_as_wide_as_it_is_tall() {
+        // The number the whole nine-tile framing rests on: `2S × S` for one
+        // tile, so `6S × 3S` for three by three, which is why a nine-tile
+        // layout sits comfortably inside a 16:9 frame.
+        let projection = Projection::default();
+        for side in [1.0, 4.0, 7.5] {
+            let tile = WorldRect::new(WorldPoint::ORIGIN, WorldPoint::new(side, side));
+            let screen = projection.screen_bounds(tile);
+            assert!(close(screen.width_m(), 2.0 * side), "{side}");
+            assert!(close(screen.height_m(), side), "{side}");
+
+            let three = WorldRect::new(WorldPoint::ORIGIN, WorldPoint::new(side * 3.0, side * 3.0));
+            let across = projection.screen_bounds(three);
+            assert!(close(across.width_m(), 6.0 * side), "{side}");
+            assert!(close(across.height_m(), 3.0 * side), "{side}");
+        }
+    }
+
+    #[test]
+    fn a_screen_rectangle_normalises_its_corners() {
+        // Taken in either order, because the projection sends +v to −y and a
+        // caller working from world corners routinely produces them upside down.
+        let a = ScreenPoint::new(3.0, -1.0);
+        let b = ScreenPoint::new(-2.0, 4.0);
+        assert_eq!(ScreenRect::new(a, b), ScreenRect::new(b, a));
+        let rect = ScreenRect::new(a, b);
+        assert_eq!(rect.width_m(), 5.0);
+        assert_eq!(rect.height_m(), 5.0);
+        assert_eq!(rect.centre(), ScreenPoint::new(0.5, 1.5));
+        assert!(rect.contains(ScreenPoint::ORIGIN));
+        assert!(!rect.contains(ScreenPoint::new(9.0, 0.0)));
+    }
+
+    #[test]
+    fn a_screen_rectangle_around_a_point_is_centred_on_it() {
+        let rect = ScreenRect::around(ScreenPoint::new(2.0, -3.0), 8.0, 4.0);
+        assert_eq!(rect.centre(), ScreenPoint::new(2.0, -3.0));
+        assert_eq!(rect.width_m(), 8.0);
+        assert_eq!(rect.height_m(), 4.0);
+        assert!(!rect.is_empty());
+        assert!(ScreenRect::around(ScreenPoint::ORIGIN, 0.0, 1.0).is_empty());
     }
 }
