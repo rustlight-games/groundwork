@@ -1,0 +1,11 @@
+[package]
+name = "terrain_scene"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The renderer-independent scene: ground, marks, instances and their order"
+
+# No Bevy, no Blender, no GPU. A scene that knew about any renderer would stop
+# being the thing all of them consume.
+[dependencies]
+terrain_core.workspace = true

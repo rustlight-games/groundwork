@@ -6,6 +6,10 @@ rust-version.workspace = true
 description = "Isometric grass: a baked ground-surface cache and its renderer"
 
 [dependencies]
+# The generic scene IR, so the grass can be expressed in it before the generator
+# itself moves. See `src/generic.rs`.
+terrain_core.workspace = true
+terrain_scene.workspace = true
 bevy.workspace = true
 # Pages are independent of one another by construction — every placement decision
 # is a pure function of world coordinates — so baking them is embarrassingly

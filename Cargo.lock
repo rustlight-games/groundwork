@@ -1958,6 +1958,8 @@ dependencies = [
  "criterion",
  "image",
  "rayon",
+ "terrain_core",
+ "terrain_scene",
 ]
 
 [[package]]
@@ -5080,6 +5082,13 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bw_grass",
+]
+
+[[package]]
+name = "terrain_scene"
+version = "0.1.0"
+dependencies = [
+ "terrain_core",
 ]
 
 [[package]]
