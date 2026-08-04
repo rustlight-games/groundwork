@@ -456,6 +456,39 @@ mod tests {
     }
 
     #[test]
+    fn a_manifest_replays_to_the_same_picture() {
+        // The end of the reproduction chain. Every other test checks that the
+        // *framing* comes back; this checks that the pixels do, which is the
+        // claim a replay command actually makes to somebody who found something
+        // wrong in a render and wants to look at it again.
+        //
+        // Small on purpose: two full bakes in a unit test is a slow suite, and
+        // determinism does not need resolution to fail.
+        let scenario = IsoScenario {
+            name: "iso_nine.replay",
+            seed: 0x5a17_e33b_0c9d_2f14,
+            centre_tile: WorldTileCoord::new(-713, 284),
+            tile_side_m: 2.0,
+            output_size: [160, 90],
+            fill: 0.90,
+        };
+        let (_, first) = scenario.bake(&BakeParams::default());
+        let (_, again) = scenario.bake(&BakeParams::default());
+        assert_eq!(first.colour, again.colour, "the colour moved");
+        assert_eq!(first.alpha, again.alpha, "the silhouette moved");
+
+        // And a different seed is a different picture rather than the same one
+        // relabelled.
+        let elsewhere = IsoScenario {
+            seed: scenario.seed ^ 1,
+            centre_tile: WorldTileCoord::new(-713, 285),
+            ..scenario
+        };
+        let (_, other) = elsewhere.bake(&BakeParams::default());
+        assert_ne!(first.colour, other.colour);
+    }
+
+    #[test]
     fn a_join_measurement_ignores_the_background() {
         // A control band that fell off the diamond would report the difference
         // between grass and nothing, which is enormous and meaningless.
