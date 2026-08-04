@@ -37,7 +37,7 @@ crates/
   bw_ai        observation encoding, DQN, policies
   bw_bench     benchmark fixtures, metrics, reporting
   bw_render    presentation: interpolation, camera, debug overlays
-  bw_grass     grass: an offline reference renderer and a baked page cache
+  bw_grass     grass: procedural placement, and a Cycles path-traced renderer
   bw_ui        screens and HUD, plus GameState
   bw_app       composition root
 
@@ -49,6 +49,7 @@ plugins/
 tools/
   bw_train     headless DQN trainer
   bw_forge     content validation and generator scoring
+  bw_cycles    the Blender half of the grass renderer (Python, not a crate)
 
 assets/content/   RON: characters, abilities, status, terrain, rocks, props,
                   encounters — loaded in sorted filename order
@@ -138,6 +139,12 @@ world-coordinate purity, stable streams, and the laboratory plate.
   places at four camera heights, compares each against the last accepted set
   pixel for pixel, and prints a verdict from `identical` to `changed`. See
   `bw_grass::compare`.
+- `cargo run --release -p bw_grass --example grass_critique` — the **look gate**,
+  and the counterpart to the snapshot rather than a replacement. The snapshot
+  answers "did the picture move"; a deliberate look change moves it entirely and
+  the answer stops meaning anything. This answers "is the picture the one we are
+  aiming at", against `docs/art/grass-target.png`, in six bands that need no
+  pixel correspondence at all. See `bw_grass::critique`.
 
 Snapshots are working state and live under `target/`. The timings go to
 `benchmarks/grass.ron` against the committed `benchmarks/baseline/grass.ron`.
@@ -171,6 +178,9 @@ Task-oriented rather than an index of everything:
 - [docs/CONTENT.md](docs/CONTENT.md) — authoring characters, abilities, terrain,
   rocks, props; how effect trees compose.
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — the measurement standard.
+- [docs/GRASS_CYCLES.md](docs/GRASS_CYCLES.md) — how the grass is rendered: what
+  stays in Rust, what goes to Cycles, and the several things about the camera and
+  the geometry that each cost a wasted render to discover.
 - Crate-level `//!` docs carry the reasoning for each crate. They are written to
   be read, not skimmed — `bw_core`, `bw_sim`, `bw_ai`, and `bw_nav` in
   particular explain decisions that are not obvious from the code.
@@ -207,9 +217,14 @@ rtk cargo run --release -p bw_grass --example grass_snapshot # photograph, compa
 rtk cargo run --release -p bw_grass --example grass_sandbox  # the live renderer
 rtk cargo bench -p bw_grass                                  # where the time goes
 
-./run                  # the game, debug
+./render               # one whole scene, path-traced by Cycles. 1920x1080
+BW_SAMPLES=512 ./render
+BW_DETAIL=96 ./render  # pixels per metre; lower shows more ground
+
+./run                  # the game, debug. Rasterised — Cycles cannot run in a frame
 BW_DEV=1 ./run         # dynamic Bevy linking, much faster incremental builds
 BW_RELEASE=1 ./run     # optimised
+BW_GRASS_TRACED=1 ./run  # read pre-traced pages where they exist
 ```
 
 Always benchmark in `--release`, and never while another build or training run
@@ -297,10 +312,21 @@ Real, currently true, and worth knowing before you trip over them:
   couple of hundred draws rather than the handful an atlas-packed cache would
   need. `Page::for_view` would cut this by the square of the camera's display
   scale and `bw_grass::plugin` still does not call it. **This is deliberately
-  parked**: the streaming renderer is now a development tier only — see
-  [docs/GRASS_REFERENCE_RENDERER.md](docs/GRASS_REFERENCE_RENDERER.md) — and
-  optimising a runtime that is being replaced by a neural renderer is work with
-  no destination.
+  parked**: the rasteriser is now the cheap input tier only — see
+  [docs/GRASS_CYCLES.md](docs/GRASS_CYCLES.md) — and optimising a runtime whose
+  output is not the shipping picture is work with no destination.
+- `lighting.rs`, `shadow.rs` and the five darkness terms in `bake.rs` now serve
+  only that cheap tier. They are not wrong, but they are no longer how the grass
+  is meant to look, and several crate-level doc comments still read as though
+  they are.
+- `dataset.rs` exports the *rasteriser's* `Passes` alongside a Cycles target.
+  Cycles' own render passes and cryptomatte would give per-blade IDs and
+  physically consistent channels by configuration rather than by hand-plumbing
+  ten of them.
+- `grass_prebake` starts a Blender process per page, and startup is several
+  seconds against about one second of tracing. `tools/bw_cycles/render.py`
+  already accepts a manifest of many pages in one invocation; the pre-baker does
+  not use it yet.
 - A page's bake scale is now a parameter (`Page::at_detail`), and the art
   constants scale with it — see `Page::detail` for what does and does not. Pages
   still have no mip chain, so a page is only sampled cleanly near the scale it

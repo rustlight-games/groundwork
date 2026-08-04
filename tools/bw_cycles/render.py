@@ -298,10 +298,36 @@ def blade_material(settings):
     #
     # Kept deliberately narrow: grass that varies its hue widely reads as several
     # species, and the reference is one species in several moods.
-    shade = nodes.new("ShaderNodeAttribute")
-    shade.attribute_name = "moisture"
-    shade.attribute_type = "GEOMETRY"
-    shade.location = (-1100, 320)
+    # Driven by **world-space noise**, not by a per-blade attribute.
+    #
+    # A per-blade value was tried first and is the obvious thing to reach for. It
+    # is also the wrong shape: hue that varies blade-to-blade is salt and pepper,
+    # and at canopy density the eye averages it straight back to one green. What
+    # the reference actually has is *regional* hue — a stretch of olive here, a
+    # cooler damp green there, each running across many plants — which is a low
+    # frequency, and only a world-space field has one.
+    #
+    # Two octaves at about a metre and a half. Slower than a tuft and faster than
+    # the mound field, so it cuts across both instead of agreeing with either,
+    # which is what stops it reading as another consequence of the terrain.
+    coordinate = nodes.new("ShaderNodeTexCoord")
+    coordinate.location = (-1500, 320)
+    drift = nodes.new("ShaderNodeTexNoise")
+    drift.location = (-1300, 320)
+    drift.inputs["Scale"].default_value = 0.65
+    drift.inputs["Detail"].default_value = 2.0
+    drift.inputs["Roughness"].default_value = 0.5
+
+    # Pushed to the ends of its range: raw fractal noise spends most of its life
+    # near the middle, which would leave the tints barely used.
+    spread = nodes.new("ShaderNodeMapRange")
+    spread.location = (-1120, 320)
+    spread.inputs["From Min"].default_value = 0.32
+    spread.inputs["From Max"].default_value = 0.68
+    spread.clamp = True
+
+    links.new(coordinate.outputs["Object"], drift.inputs["Vector"])
+    links.new(drift.outputs["Fac"], spread.inputs["Value"])
 
     # Tints rather than colours — multiplied, so they ride on the value ramp
     # instead of replacing it. Two of them, so the axis runs both ways from the
@@ -311,14 +337,14 @@ def blade_material(settings):
     warm.blend_type = "MULTIPLY"
     warm.location = (-330, 150)
     live(warm.inputs, "Factor").default_value = 1.0
-    live(warm.inputs, "B").default_value = (2.10, 0.94, 1.05, 1.0)
+    live(warm.inputs, "B").default_value = (2.35, 0.96, 1.05, 1.0)
 
     cool = nodes.new("ShaderNodeMix")
     cool.data_type = "RGBA"
     cool.blend_type = "MULTIPLY"
     cool.location = (-330, -70)
     live(cool.inputs, "Factor").default_value = 1.0
-    live(cool.inputs, "B").default_value = (0.55, 1.03, 1.75, 1.0)
+    live(cool.inputs, "B").default_value = (0.50, 1.04, 1.90, 1.0)
 
     graded = nodes.new("ShaderNodeMix")
     graded.data_type = "RGBA"
@@ -329,7 +355,7 @@ def blade_material(settings):
     links.new(mix_out, live(cool.inputs, "A"))
     links.new(live(cool.outputs, "Result"), live(graded.inputs, "A"))
     links.new(live(warm.outputs, "Result"), live(graded.inputs, "B"))
-    links.new(shade.outputs["Fac"], live(graded.inputs, "Factor"))
+    links.new(spread.outputs["Result"], live(graded.inputs, "Factor"))
     links.new(live(graded.outputs, "Result"), principled.inputs["Base Color"])
 
     # ## Why the specular lobe is kept small

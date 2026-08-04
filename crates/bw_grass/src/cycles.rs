@@ -840,6 +840,86 @@ mod tests {
     }
 
     #[test]
+    fn the_same_scene_exports_the_same_bytes_twice() {
+        // The property the whole pipeline rests on, and the one a path tracer
+        // could quietly take away: a scene is reproducible, so the picture can
+        // be rebuilt from a seed rather than archived.
+        use crate::bake::BakeParams;
+        use crate::field::WorldField;
+
+        let params = BakeParams::default();
+        let page = Page::new(Vec2::new(37.0, -19.0), 96, 96);
+        let field = WorldField::lit_by(params.seed, params.light);
+
+        let build = || {
+            let grown = GrassScene::build(page, &field, &params);
+            CyclesScene::build(&grown, &field, RenderSettings::default())
+        };
+        let (first, second) = (build(), build());
+
+        assert_eq!(first.blades(), second.blades());
+        assert_eq!(
+            first.points, second.points,
+            "the geometry moved between runs"
+        );
+        assert_eq!(first.attributes, second.attributes);
+        assert_eq!(first.ground, second.ground);
+    }
+
+    #[test]
+    fn two_pages_that_overlap_agree_about_the_ground_they_share() {
+        // Page independence, checked through the export rather than through the
+        // rasteriser. The ground grid is a pure function of world position, so
+        // two pages covering overlapping world must report the same heights
+        // where they overlap — if they did not, a traced page would disagree
+        // with its neighbour along their shared edge and no guard band could
+        // hide it.
+        use crate::bake::BakeParams;
+        use crate::field::WorldField;
+
+        let params = BakeParams::default();
+        let field = WorldField::lit_by(params.seed, params.light);
+        let here = Page::new(Vec2::ZERO, 128, 128);
+        let there = Page::new(Vec2::new(64.0, 0.0), 128, 128);
+
+        let sample = |page: Page| {
+            let grown = GrassScene::build(page, &field, &params);
+            CyclesScene::build(&grown, &field, RenderSettings::default())
+        };
+        let (a, b) = (sample(here), sample(there));
+
+        // Probe world points inside both footprints and confirm the two grids
+        // interpolate to the same height.
+        let low = a.footprint.0.max(b.footprint.0);
+        let high = a.footprint.1.min(b.footprint.1);
+        assert!(low.x < high.x && low.y < high.y, "the pages do not overlap");
+
+        let height_at = |scene: &CyclesScene, world: Vec2| -> f32 {
+            let (lo, hi) = scene.footprint;
+            let u = ((world.x - lo.x) / (hi.x - lo.x) * (scene.ground_columns - 1) as f32)
+                .round()
+                .clamp(0.0, (scene.ground_columns - 1) as f32) as usize;
+            let v = ((world.y - lo.y) / (hi.y - lo.y) * (scene.ground_rows - 1) as f32)
+                .round()
+                .clamp(0.0, (scene.ground_rows - 1) as f32) as usize;
+            scene.ground[v * scene.ground_columns + u]
+        };
+
+        for step in 0..8 {
+            let t = (step as f32 + 0.5) / 8.0;
+            let world = low.lerp(high, t);
+            let (mine, theirs) = (height_at(&a, world), height_at(&b, world));
+            // Loose, because the two grids land on different sample points; what
+            // is being checked is that they describe one surface, not that they
+            // sampled it identically.
+            assert!(
+                (mine - theirs).abs() < 0.02,
+                "at {world:?} one page says {mine} and the other {theirs}"
+            );
+        }
+    }
+
+    #[test]
     fn a_ribbon_is_folded_so_its_two_facets_face_different_ways() {
         // The property the whole mesh export exists for. A flat ribbon presents
         // one normal and shades uniformly; this checks the fold is real by

@@ -298,6 +298,23 @@ impl Band {
 /// The bands, measured from the target art and widened to where a different but
 /// equally correct plate would still land.
 ///
+/// ## They are a floor, not a destination
+///
+/// Worth stating plainly, because it changed once the renderer caught up. These
+/// numbers were calibrated to *converge on* the reference, and convergence is
+/// only the right goal while the reference is the ceiling. It no longer is —
+/// the path-traced field has real inter-blade scattering, real contact shadows
+/// and a colony structure the painting only implies, and in several respects it
+/// is simply better than what it was measured against.
+///
+/// So read a band as "at least as good as the art, and recognisably the same
+/// kind of picture", never as "identical to it". A plate that sits at the top of
+/// the highlight band is not failing to match; it is brighter than the painting
+/// and has earned the right to be. What the bands still catch — and the reason
+/// they are kept — is the *direction* of a regression: a field that goes flat,
+/// grey, black-crushed or incoherent leaves them, and it leaves them long before
+/// anyone notices by eye.
+///
 /// The centre of each is a real measurement of `docs/art/grass-target.png` over
 /// a 1024² crop, not a number chosen to be achievable:
 ///

@@ -256,7 +256,8 @@ impl Options {
             match argument.as_str() {
                 "--radius" => options.radius = value().parse().unwrap_or(options.radius),
                 "--supersample" => {
-                    options.supersample = value().parse().unwrap_or(options.supersample).clamp(1, 6);
+                    options.supersample =
+                        value().parse().unwrap_or(options.supersample).clamp(1, 6);
                 }
                 "--seed" => options.seed = value().parse().unwrap_or(options.seed),
                 "--samples" => options.samples = value().parse().unwrap_or(options.samples),
