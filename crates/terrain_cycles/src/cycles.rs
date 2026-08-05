@@ -407,7 +407,19 @@ impl Default for RenderSettings {
             // camera, redistributed between the two paths.
             sun_strength: 14.0,
             sun_colour: [1.0, 0.92, 0.72],
-            sky_strength: 1.15,
+            // ## Lowered, because ambient fill is what makes dirt look flat
+            //
+            // A uniform sky lights every crevice as well as every crest, so it
+            // is the one term that directly cancels contact darkening — and
+            // contact darkening is most of what makes ground read as dense
+            // rather than as a painted plane. Measured on the comparison card,
+            // dry ground came back with a dynamic range of 1.84x while the
+            // occlusion term feeding it was varying the albedo by four; the
+            // difference was sky filling the hollows back in.
+            //
+            // Three quarters keeps the shadowed side of a blade from going to
+            // black, which is what the fill is actually for.
+            sky_strength: 0.75,
             sky_colour: [0.30, 0.44, 0.72],
             passes: false,
             ribs: 0,

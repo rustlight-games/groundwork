@@ -1266,7 +1266,7 @@ WET_BITE = 0.35
 # nothing — see the note in `soil_branch`. What lives below it is roughness.
 GRAIN_FLOOR_M = 0.011
 
-CAVITY_OCCLUSION = 0.75
+CAVITY_OCCLUSION = 0.80
 
 # Where the cavity signal starts and finishes counting.
 #
@@ -1274,8 +1274,8 @@ CAVITY_OCCLUSION = 0.75
 # nominal range for the reason above, so a transfer that starts at zero spends
 # most of its slope on values that never occur. These bounds put the full swing
 # across the band that is actually populated.
-CAVITY_LOW = 0.42
-CAVITY_HIGH = 0.62
+CAVITY_LOW = 0.34
+CAVITY_HIGH = 0.68
 
 CAVITY_TONE_FINE = 0.70
 
@@ -1380,7 +1380,43 @@ def ground_material(materials=None):
         rough_sum = accumulate_float(nodes, links, rough_sum, roughness, weight, y - 200)
         height_sum = accumulate_float(nodes, links, height_sum, height, weight, y - 400)
 
-    links.new(colour_sum, principled.inputs["Base Color"])
+    # ## Occlusion, applied once to the blended colour
+    #
+    # A crevice in bare earth reads many times darker than the crest beside it,
+    # and that is occlusion rather than pigment — which is why the deepest fifth
+    # of a photograph of soil is nearly neutral in hue while its median is a
+    # warm brown. Sky lights a hole; sun lights a crest.
+    #
+    # It lives here rather than inside `soil_branch` for two reasons. It is a
+    # property of the *point* and not of the soil, so running it per branch was
+    # computing one answer several times and blending it with itself. And a
+    # multiply buried in a per-soil chain is very hard to prove is connected:
+    # four renders went past in which driving it to full strength — crevices to
+    # zero light — changed the picture not at all, and no amount of reading the
+    # graph found the break. One node on the output is a thing a single render
+    # can confirm.
+    occlusion = nodes.new("ShaderNodeMapRange")
+    occlusion.location = (-140, -260)
+    live(occlusion.inputs, "From Min").default_value = CAVITY_LOW
+    live(occlusion.inputs, "From Max").default_value = CAVITY_HIGH
+    live(occlusion.inputs, "To Min").default_value = 1.0
+    live(occlusion.inputs, "To Max").default_value = 1.0 - CAVITY_OCCLUSION
+    occlusion.clamp = True
+    links.new(cavity.outputs["Fac"], live(occlusion.inputs, "Value"))
+
+    occlusion_grey = nodes.new("ShaderNodeCombineColor")
+    occlusion_grey.location = (-140, -420)
+    for channel in ("Red", "Green", "Blue"):
+        links.new(live(occlusion.outputs, "Result"), occlusion_grey.inputs[channel])
+
+    occluded = nodes.new("ShaderNodeMix")
+    occluded.data_type = "RGBA"
+    occluded.blend_type = "MULTIPLY"
+    occluded.location = (-140, -100)
+    live(occluded.inputs, "Factor").default_value = 1.0
+    links.new(colour_sum, live(occluded.inputs, "A"))
+    links.new(occlusion_grey.outputs["Color"], live(occluded.inputs, "B"))
+    links.new(live(occluded.outputs, "Result"), principled.inputs["Base Color"])
     links.new(rough_sum, principled.inputs["Roughness"])
 
     # One Bump for the whole surface. See the docstring: blending perturbed
@@ -1580,12 +1616,12 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
 
     grain_fade = nodes.new("ShaderNodeMapRange")
     grain_fade.location = (-1600, y + 60)
-    grain_fade.inputs["To Min"].default_value = optics["grain_strength"]
-    grain_fade.inputs["To Max"].default_value = optics["grain_strength"] * (
+    live(grain_fade.inputs, "To Min").default_value = optics["grain_strength"]
+    live(grain_fade.inputs, "To Max").default_value = optics["grain_strength"] * (
         1.0 - entry["wet"]["flattening"]
     )
     grain_fade.clamp = True
-    links.new(moisture.outputs["Fac"], grain_fade.inputs["Value"])
+    links.new(moisture.outputs["Fac"], live(grain_fade.inputs, "Value"))
 
     if grain_wavelength is None:
         grained = palette
@@ -1600,7 +1636,7 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
         grained.data_type = "RGBA"
         grained.blend_type = "MULTIPLY"
         grained.location = (-1450, y + 300)
-        links.new(grain_fade.outputs["Result"], live(grained.inputs, "Factor"))
+        links.new(live(grain_fade.outputs, "Result"), live(grained.inputs, "Factor"))
         links.new(live(palette.outputs, "Color"), live(grained.inputs, "A"))
         links.new(grain_grey.outputs["Color"], live(grained.inputs, "B"))
 
@@ -1649,15 +1685,15 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     # One at the mid, above one below it, below one above it.
     tilt = nodes.new("ShaderNodeMapRange")
     tilt.location = (-1250, y + 40)
-    tilt.inputs["To Min"].default_value = 1.0 + WET_BITE
-    tilt.inputs["To Max"].default_value = 1.0 - WET_BITE
+    live(tilt.inputs, "To Min").default_value = 1.0 + WET_BITE
+    live(tilt.inputs, "To Max").default_value = 1.0 - WET_BITE
     tilt.clamp = True
-    links.new(tone_norm.outputs["Result"], tilt.inputs["Value"])
+    links.new(live(tone_norm.outputs, "Result"), live(tilt.inputs, "Value"))
 
     tilt_grey = nodes.new("ShaderNodeCombineColor")
     tilt_grey.location = (-1150, y + 40)
     for channel in ("Red", "Green", "Blue"):
-        links.new(tilt.outputs["Result"], tilt_grey.inputs[channel])
+        links.new(live(tilt.outputs, "Result"), tilt_grey.inputs[channel])
 
     ratio = nodes.new("ShaderNodeMix")
     ratio.data_type = "RGBA"
@@ -1753,28 +1789,6 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     # Applied *after* the wet mix, because a wet hollow is a dark hollow too:
     # water changes what the surface returns, occlusion changes how much of it
     # gets out, and multiplying them is the correct composition of the two.
-    occlusion = nodes.new("ShaderNodeMapRange")
-    occlusion.location = (-900, y + 80)
-    occlusion.inputs["From Min"].default_value = CAVITY_LOW
-    occlusion.inputs["From Max"].default_value = CAVITY_HIGH
-    occlusion.inputs["To Min"].default_value = 1.0
-    occlusion.inputs["To Max"].default_value = 1.0 - CAVITY_OCCLUSION
-    occlusion.clamp = True
-    links.new(cavity.outputs["Fac"], occlusion.inputs["Value"])
-
-    occlusion_grey = nodes.new("ShaderNodeCombineColor")
-    occlusion_grey.location = (-760, y + 80)
-    for channel in ("Red", "Green", "Blue"):
-        links.new(occlusion.outputs["Result"], occlusion_grey.inputs[channel])
-
-    occluded = nodes.new("ShaderNodeMix")
-    occluded.data_type = "RGBA"
-    occluded.blend_type = "MULTIPLY"
-    occluded.location = (-620, y + 300)
-    live(occluded.inputs, "Factor").default_value = 1.0
-    links.new(live(wetted.outputs, "Result"), live(occluded.inputs, "A"))
-    links.new(occlusion_grey.outputs["Color"], live(occluded.inputs, "B"))
-
     # The bands the mesh could not carry make hollows too, at grain scale, and
     # they are already summed for the Bump node. Reusing that sum rather than
     # sampling a fresh field is what keeps the fine shading registered with the
@@ -1793,7 +1807,7 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
         shaded.blend_type = "MULTIPLY"
         shaded.location = (-820, y + 300)
         live(shaded.inputs, "Factor").default_value = 1.0
-        links.new(live(occluded.outputs, "Result"), live(shaded.inputs, "A"))
+        links.new(live(wetted.outputs, "Result"), live(shaded.inputs, "A"))
 
         lift = nodes.new("ShaderNodeMath")
         lift.operation = "ADD"
@@ -1809,7 +1823,7 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
         links.new(grey.outputs["Color"], live(shaded.inputs, "B"))
         colour_out = live(shaded.outputs, "Result")
     else:
-        colour_out = live(occluded.outputs, "Result")
+        colour_out = live(wetted.outputs, "Result")
 
     return (
         colour_out,
