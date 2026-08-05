@@ -742,6 +742,8 @@ mod tests {
             key: MaterialKey::new(key).expect("valid"),
             display_name: key.into(),
             appearance: AppearanceKey::new(format!("surface.{key}")).expect("valid"),
+            profile: None,
+            vegetation_affinity: None,
         }
     }
 
@@ -901,6 +903,7 @@ mod tests {
             default_value: 1.0,
             composition: ModifierComposition::Multiply,
             unit: ModifierUnit::Unitless,
+            role: None,
         });
         document.layers.push(LayerDef {
             key: LayerKey::new("suppression").expect("valid"),
@@ -925,6 +928,7 @@ mod tests {
             default_value: 2.0,
             composition: ModifierComposition::Max,
             unit: ModifierUnit::Unitless,
+            role: None,
         });
         assert!(codes(&validate(&document)).contains(&"default_outside_range"));
     }

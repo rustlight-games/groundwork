@@ -1737,12 +1737,18 @@ pub fn resolve_passes(
                     // `Soil` ramp its bare patches were tuned against; a
                     // document that declared a track gets measured earth,
                     // wetted by what the matrix says collects there.
-                    let earth = field.earth_share(ground_here);
+                    let earth = field.exposed_share(ground_here);
                     let bare = if earth > 0.0 {
-                        palette::shade(Tone::Soil, q).lerp(
-                            palette::shade_earth(q, field.earth_wetness(ground_here)),
-                            earth,
-                        )
+                        // One number, where the Cycles path now reads a weight
+                        // per soil and a profile per weight. This tier cannot
+                        // use that — it has one hardcoded ramp — which is one
+                        // more reason it is on its way out under issue #1.
+                        let wetness = field
+                            .ground()
+                            .map(|ground| ground.state(ground_here).moisture)
+                            .unwrap_or(0.0);
+                        palette::shade(Tone::Soil, q)
+                            .lerp(palette::shade_earth(q, wetness), earth)
                     } else {
                         palette::shade(Tone::Soil, q)
                     };

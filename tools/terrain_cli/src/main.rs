@@ -138,6 +138,14 @@ struct CompileArgs {
     /// Supersample factor for the trace.
     #[arg(long, default_value_t = 2)]
     supersample: usize,
+    /// How high the sun sits, in degrees.
+    ///
+    /// Thirty-five is what the grass was tuned under. Bare ground wants less:
+    /// high light hides shallow relief, and a clod two centimetres tall throws
+    /// no shadow worth seeing from overhead. Fifteen or twenty is where a soil
+    /// plate shows what its surface actually is.
+    #[arg(long, default_value_t = 35.0)]
+    sun_elevation_deg: f32,
 }
 
 #[derive(Args, Debug)]
@@ -606,6 +614,32 @@ fn validate(args: &DocumentArgs) -> ExitCode {
     }
 }
 
+/// Read every ground profile a document's materials name.
+///
+/// Loaded here rather than inside `prepare`, because parsing them means RON and
+/// `terrain_core` depends on nothing but `serde` — the same reason documents
+/// themselves arrive already parsed.
+fn load_profiles(
+    document: &terrain_core::document::TerrainDocument,
+    assets: &dyn terrain_core::AssetResolver,
+) -> Result<terrain_core::GroundProfileLibrary, String> {
+    let named = document
+        .materials
+        .iter()
+        .filter_map(|material| material.profile.clone());
+    let (library, problems) = terrain_format::load_library(named, assets);
+    if problems.is_empty() {
+        return Ok(library);
+    }
+    // Every problem, in one pass. An author with three broken profiles should be
+    // told about three.
+    Err(problems
+        .iter()
+        .map(|problem| problem.to_string())
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
 /// Assets, resolved beside the document that names them.
 ///
 /// Relative to the document's own directory rather than to the working
@@ -661,11 +695,21 @@ fn inspect(args: &InspectArgs) -> ExitCode {
     let assets = BesideDocument {
         root: asset_root(&args.document),
     };
+    let profiles = match load_profiles(&loaded.document, &assets) {
+        Ok(profiles) => profiles,
+        Err(problems) => {
+            eprintln!("{problems}");
+            return ExitCode::FAILURE;
+        }
+    };
     let terrain = match terrain_core::prepare(
         &loaded.document,
         &assets,
         &terrain_core::SourceRegistry::new(),
-        &terrain_core::PrepareOptions::default(),
+        &terrain_core::PrepareOptions {
+            profiles,
+            ..terrain_core::PrepareOptions::default()
+        },
     ) {
         Ok(terrain) => terrain,
         Err(report) => {
@@ -1436,11 +1480,21 @@ fn compile(args: &CompileArgs) -> ExitCode {
     let assets = BesideDocument {
         root: asset_root(&args.document),
     };
+    let profiles = match load_profiles(&loaded.document, &assets) {
+        Ok(profiles) => profiles,
+        Err(problems) => {
+            eprintln!("{problems}");
+            return ExitCode::FAILURE;
+        }
+    };
     let terrain = match terrain_core::prepare(
         &loaded.document,
         &assets,
         &terrain_core::SourceRegistry::new(),
-        &terrain_core::PrepareOptions::default(),
+        &terrain_core::PrepareOptions {
+            profiles,
+            ..terrain_core::PrepareOptions::default()
+        },
     ) {
         Ok(terrain) => terrain,
         Err(report) => {
@@ -1514,17 +1568,48 @@ fn compile(args: &CompileArgs) -> ExitCode {
     // depth composition, the whole palette — and a from-scratch generic renderer
     // is a regression however clean its architecture is. What the document
     // controls is `SemanticOverlay`: how much grows, and where the earth shows.
-    let overlay = std::sync::Arc::new(terrain_generators::SemanticOverlay {
-        fields: compiled.fields.clone(),
+    // One evaluator, shared by everything that asks about the ground: the mesh
+    // that carries its relief, the shader that colours it, and the overlay that
+    // decides how much grass grows on it. See `terrain_generators::ground`.
+    //
+    // The lattice it splits its relief bands at is chosen by the soils in play,
+    // so a document of hardpan and beach sand gets a finer mesh than one of
+    // turned farm soil rather than both getting a constant that suits neither.
+    let spacing = terrain_generators::ground::BandSplit::spacing_for(
+        (0..terrain.materials().len())
+            .filter_map(|index| {
+                terrain.material_profile(terrain_core::MaterialIndex(index as u16))
+            })
+            .map(|profile| profile.as_ref()),
+    )
+    .unwrap_or(0.04);
+    let evaluator = std::sync::Arc::new(terrain_generators::ground::GroundEvaluator::new(
+        &terrain,
+        compiled.fields.clone(),
         transition,
-        root_seed: terrain.root_seed().bits(),
-        vegetated: vegetated_materials(&terrain),
-        density_channel: terrain
-            .channel_index(&terrain_core::ModifierKey::new("vegetation_density").expect("valid")),
-        moisture_channel: terrain
-            .channel_index(&terrain_core::ModifierKey::new("soil_moisture").expect("valid")),
-        compaction_channel: terrain
-            .channel_index(&terrain_core::ModifierKey::new("soil_compaction").expect("valid")),
+        spacing,
+    ));
+    for (key, bands) in &evaluator.band_split().geometry {
+        let shader = evaluator
+            .band_split()
+            .shader
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, bands)| bands.len())
+            .unwrap_or(0);
+        println!(
+            "  {key:<18} {} band(s) in the mesh, {shader} in the shader",
+            bands.len()
+        );
+    }
+
+    // The tuned generator, driven by the document.
+    //
+    // Deliberately *not* a fresh renderer over the generic scene. What the
+    // document controls is `SemanticOverlay`: how much grows, and where the
+    // earth shows. Every style field stays exactly as tuned.
+    let overlay = std::sync::Arc::new(terrain_generators::SemanticOverlay {
+        ground: std::sync::Arc::clone(&evaluator),
     });
 
     // Cycles, and only Cycles. See CLAUDE.md: this framework builds geometry and
@@ -1555,10 +1640,11 @@ fn compile(args: &CompileArgs) -> ExitCode {
             samples: args.samples,
             device: if args.cpu { "CPU" } else { "GPU" }.to_string(),
             view_transform: "AgX".to_string(),
+            sun_elevation: args.sun_elevation_deg.to_radians(),
             ..RenderSettings::default()
         },
         scene_dir: std::env::temp_dir().join("terrain-compile-scene"),
-        keep_scene: false,
+        keep_scene: std::env::var_os("TERRAIN_KEEP_SCENE").is_some(),
     };
 
     let plan = PlatePlan::resolve(&request, &params);
@@ -1644,30 +1730,4 @@ fn compile(args: &CompileArgs) -> ExitCode {
         identity.centre_tile.v
     );
     ExitCode::SUCCESS
-}
-
-/// Which substrates count as ground that grass grows on.
-///
-/// Every material whose key does not name bare earth. A crude rule and an honest
-/// one for now: the alternative is a per-material `vegetated` flag in the
-/// document, which is the right answer and a schema change — and until the set
-/// of materials is larger than two, a schema change would be guessing at what
-/// authors need rather than responding to it.
-fn vegetated_materials(
-    terrain: &terrain_core::PreparedTerrain,
-) -> Vec<terrain_core::MaterialIndex> {
-    terrain
-        .materials()
-        .iter()
-        .enumerate()
-        .filter(|(_, material)| {
-            let key = material.key.as_str();
-            !(key.contains("dirt")
-                || key.contains("mud")
-                || key.contains("rock")
-                || key.contains("sand")
-                || key.contains("gravel"))
-        })
-        .map(|(index, _)| terrain_core::MaterialIndex(index as u16))
-        .collect()
 }

@@ -1,0 +1,65 @@
+// Dry directional sand: broad smooth forms under long coherent ripples.
+//
+// Dunes are **not** here. A dune alters the silhouette and the gameplay shape of
+// a tile, so it belongs in terrain elevation; what belongs in a surface profile
+// is the ripple pattern that lies across one. Putting dunes in a material would
+// mean two systems arguing about the same metre of height.
+(
+    format: "ground-material",
+    format_version: 1,
+    material: (
+        key: "desert_sand",
+        display_name: "Desert sand",
+
+        optics: (
+            dry_palette: (
+                low:  (0.1650, 0.1200, 0.0760),
+                mid:  (0.3000, 0.2250, 0.1450),
+                high: (0.4600, 0.3550, 0.2350),
+            ),
+            wet: (
+                wet_mid: (0.1200, 0.0850, 0.0520),
+                roughness_wet: 0.14,
+                saturation_flattening: 0.80,
+            ),
+            roughness_dry: (0.90, 0.99),
+            ior: 1.46,
+
+            region_wavelength_m: 6.0,
+            region_strength: 0.5,
+            patch_wavelength_m: 0.80,
+            patch_strength: 0.25,
+            grain_strength: 0.25,
+        ),
+
+        // Two bands only, and the coarse one is nearly flat. The broad dune
+        // surface has to stay smooth or the ripples have nothing to lie on.
+        structure: (
+            bands: [
+                (wavelength_m: 0.0600, amplitude_m: 0.0040, compaction_response: 0.40, clustered: true),
+                (wavelength_m: 0.0009, amplitude_m: 0.0003, shape: "Angular", compaction_response: 0.10),
+            ],
+            cluster_wavelength_m: 4.0,
+            cluster_strength: 0.20,
+            cohesion: 0.06,
+        ),
+
+        ripples: Some((
+            wavelength_m: 0.26,
+            amplitude_m: 0.013,
+            direction_deg: 68.0,
+            crest_sharpness: 0.55,
+            asymmetry: 0.35,
+            meander_m: 1.8,
+            wetness_suppression: 0.90,
+        )),
+
+        scatter: (
+            grit_per_m2: 60.0,
+            pebble_per_m2: 0.05,
+            fragment_radius_m: (0.002, 0.010),
+        ),
+
+        vegetation_affinity: 0.02,
+    ),
+)

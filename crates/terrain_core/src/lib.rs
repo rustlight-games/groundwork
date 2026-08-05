@@ -52,6 +52,7 @@ pub mod diagnostics;
 pub mod digest;
 pub mod document;
 mod document_digest;
+pub mod ground_material;
 pub mod ids;
 pub mod prepare;
 pub mod registry;
@@ -69,12 +70,17 @@ pub use digest::{DIGEST_ALGORITHM_VERSION, Digest, Digestible, Fingerprint};
 pub use document::{
     AssetPath, CoordinateSystem, DocumentMetadata, LayerDef, LayerOperation, Mask, MaterialDef,
     MaterialLayer, MaterialMode, ModifierChannelDef, ModifierComposition, ModifierLayer,
-    ModifierUnit, ParameterObject, ParameterValue, PopulationDef, Profile, Source, SourceDef,
-    TerrainDocument, ValueRange,
+    ModifierRole, ModifierUnit, ParameterObject, ParameterValue, PopulationDef, Profile, Source,
+    SourceDef, TerrainDocument, ValueRange,
+};
+pub use ground_material::{
+    AggregateShape, CrackProfile, GroundMaterialProfile, GroundOptics, GroundProfileLibrary,
+    GroundScatter, GroundStructure, LinearRgb, Palette, RippleProfile, Span, WetResponse,
 };
 pub use ids::{
-    AppearanceKey, DomainKey, KeyError, LayerKey, MaterialIndex, MaterialKey, ModifierIndex,
-    ModifierKey, PopulationIndex, PopulationKey, RecipeKey, SourceIndex, SourceKey, StreamKey,
+    AppearanceKey, DomainKey, GroundProfileKey, KeyError, LayerKey, MaterialIndex, MaterialKey,
+    ModifierIndex, ModifierKey, PopulationIndex, PopulationKey, RecipeKey, SourceIndex, SourceKey,
+    StreamKey,
 };
 pub use prepare::{PrepareOptions, PrepareReport, PreparedTerrain, prepare};
 pub use registry::{

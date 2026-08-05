@@ -258,16 +258,116 @@ pub struct DocumentMetadata {
 ///
 /// Note what is *not* here: nothing about colour, roughness, or how it is drawn.
 /// A material in this document is a **semantic identity** — "this ground is
-/// compacted dirt" — and [`MaterialDef::appearance`] is the only bridge to a
-/// renderer, deliberately a separate key so that two documents can share a look
-/// without sharing a meaning, and a look can be swapped without touching a
-/// weight.
+/// compacted dirt" — and the two bindings below are the only bridges out of that,
+/// deliberately separate keys so that two documents can share a look without
+/// sharing a meaning, and a look can be swapped without touching a weight.
+///
+/// The two bindings answer different questions and it is worth being clear which
+/// is which. [`appearance`](MaterialDef::appearance) names a **renderer-side
+/// implementation** — which shader graph knows how to draw this at all.
+/// [`profile`](MaterialDef::profile) names **what this ground is made of** — its
+/// colours, its clod scales, how it responds to being wet. Nearly every ground
+/// material shares one appearance and has its own profile.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialDef {
     pub key: MaterialKey,
     pub display_name: String,
-    /// The renderer-side binding: `surface.grass_lush`.
+    /// The renderer-side binding: `surface.ground`.
     pub appearance: AppearanceKey,
+    /// The ground material profile asset, if this material has one.
+    ///
+    /// `None` is legal and means "this material has no physical description" —
+    /// which is right for a material that is never ground, and which leaves the
+    /// renderer to fall back on its appearance key alone.
+    pub profile: Option<AssetPath>,
+    /// How much this ground supports plants, `0..1`.
+    ///
+    /// `None` defers to the profile's own default. Overriding it is how the same
+    /// beach sand supports dune grass on one map and nothing on another.
+    ///
+    /// What this replaces was worse than either: deciding whether a material
+    /// grew grass by looking for the substring `dirt` in its key. That works
+    /// until a document contains `dirty_snow`, or `loam`, and then it works
+    /// wrongly and silently.
+    pub vegetation_affinity: Option<f32>,
+}
+
+/// What a modifier channel *means*, as opposed to what an author called it.
+///
+/// A consumer needs to find the moisture channel. Without this it finds it by
+/// looking up the exact string `soil_moisture`, which holds until the first
+/// document that calls it `wetness` or `saturation` — and then the ground is
+/// silently bone dry and nothing anywhere says why.
+///
+/// So the *role* is declared and the *key* stays the author's own word for it. A
+/// document may name its channel `path_wetness` and give it the
+/// [`SoilMoisture`](ModifierRole::SoilMoisture) role, and every consumer finds
+/// it.
+///
+/// Roles are exclusive: two channels claiming the same role is an error, because
+/// there is no defensible rule for which one a consumer should pick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum ModifierRole {
+    /// How much grows here. Scales every population's abundance.
+    VegetationDensity,
+    /// How wet the ground is, `0..1`.
+    SoilMoisture,
+    /// How packed it is, `0..1`. Flattens relief and suppresses loose material.
+    SoilCompaction,
+    /// How churned it is, `0..1`. Breaks up compaction and exposes fresh material.
+    SoilDisturbance,
+    /// How much loose material lies on top, `0..1`.
+    LooseMaterial,
+    /// How far the ground has dried out, `0..1`. Gates cracking.
+    Desiccation,
+    /// Organic content, `0..1`. Darkens and enriches.
+    OrganicMatter,
+    /// How exposed to wind, `0..1`. Drives ripple amplitude.
+    WindExposure,
+    /// How much water arrives here, `0..1`, before any is redistributed.
+    WaterSupply,
+}
+
+impl ModifierRole {
+    pub const ALL: [Self; 9] = [
+        Self::VegetationDensity,
+        Self::SoilMoisture,
+        Self::SoilCompaction,
+        Self::SoilDisturbance,
+        Self::LooseMaterial,
+        Self::Desiccation,
+        Self::OrganicMatter,
+        Self::WindExposure,
+        Self::WaterSupply,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::VegetationDensity => "VegetationDensity",
+            Self::SoilMoisture => "SoilMoisture",
+            Self::SoilCompaction => "SoilCompaction",
+            Self::SoilDisturbance => "SoilDisturbance",
+            Self::LooseMaterial => "LooseMaterial",
+            Self::Desiccation => "Desiccation",
+            Self::OrganicMatter => "OrganicMatter",
+            Self::WindExposure => "WindExposure",
+            Self::WaterSupply => "WaterSupply",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|role| role.name() == text)
+    }
+
+    /// Whether a channel in this role must be a normalised unitless fraction.
+    ///
+    /// Every state role is, and saying so lets validation catch a document that
+    /// declares its moisture in metres — which would otherwise reach a shader as
+    /// a wetness of 0.035 and look like nothing happened.
+    pub fn is_normalised_state(self) -> bool {
+        !matches!(self, Self::VegetationDensity)
+    }
 }
 
 /// A declared modifier channel.
@@ -279,6 +379,8 @@ pub struct ModifierChannelDef {
     pub default_value: f32,
     pub composition: ModifierComposition,
     pub unit: ModifierUnit,
+    /// What this channel means to a consumer, if it means anything canonical.
+    pub role: Option<ModifierRole>,
 }
 
 /// Where a raster sits in the world.

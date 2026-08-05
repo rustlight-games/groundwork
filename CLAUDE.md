@@ -58,6 +58,7 @@ the whole design: the document owns meaning, the generator owns look.
 
 ```text
 Authored terrain document        assets/terrain/documents/*.terrain.ron
+Ground material profiles         assets/terrain/materials/*.ground.ron
     │  parse · migrate · validate            terrain_format
     ▼
 TerrainDocument                             terrain_core::document
@@ -71,7 +72,10 @@ TerrainFieldStack        THE low-fidelity matrix   terrain_scene::field
     │  realise the ragged boundary           terrain_generators::transition
     │  shared candidates → ownership          terrain_generators::{domain, ownership}
     ▼
-SemanticOverlay ──► the tuned generator ──► geometry ──► Cycles   ← the render
+GroundEvaluator          ONE answer per point, shared by every consumer
+    │  realised substrate weights · state · relief · wet film
+    ├──► SemanticOverlay ──► the tuned generator ──► blades ──► Cycles
+    └──► displaced ground mesh + N weight planes + profile table ──► Cycles
 ```
 
 Geometry means blade curves, a displaced ground mesh carrying clod relief, and a
@@ -125,7 +129,11 @@ Dependencies point downward. `terrain_core` depends on nothing but `serde`.
 | Why nine tiles and not a rectangle? | `terrain_scene/src/layout.rs` |
 | Where does 144 px/m come from? | `terrain_scene/src/frame.rs` |
 | What decides what draws over what? | `terrain_scene/src/mark.rs` |
-| **What colour is earth, and how was that measured?** | `terrain_bake/src/palette.rs` — `EARTH` |
+| **What is a ground material made of?** | `terrain_core/src/ground_material.rs` |
+| **Why is mud a state and not a material?** | `terrain_core/src/ground_material.rs` |
+| **What decides whether relief is mesh, bump or roughness?** | `terrain_generators/src/ground.rs` — `BandSplit` |
+| **Where does one point of ground get its answer?** | `terrain_generators/src/ground.rs` — `GroundEvaluator` |
+| **What colour is earth, and how was that measured?** | `assets/terrain/materials/compacted_loam.ground.ron` |
 | Why does the exporter not know about grass? | `terrain_cycles/src/export.rs` |
 | Why does a shard record all that? | `terrain_dataset/src/shard.rs` |
 
@@ -158,9 +166,16 @@ Everything under `assets/terrain/` is authored.
 
 ```text
 assets/terrain/
-  documents/    constant_grass, blend_lab, meadow_path, narrow_track
-  features/     main_path.spline.ron, narrow_track.spline.ron
+  documents/    constant_grass, blend_lab, meadow_path, narrow_track, soil_showcase
+  materials/    meadow_floor, compacted_loam, loose_farm_soil, clay_soil,
+                beach_sand, desert_sand, hard_dust
+  features/     main_path.spline.ron, narrow_track.spline.ron, showcase_*.spline.ron
 ```
+
+A **document** says where things are. A **ground material profile** says what a
+soil is made of — its measured palette, its relief bands, how it responds to
+being wet or packed, whether it can crack. Two documents can share one soil and
+one edit retunes both. See [docs/materials/dirt.md](docs/materials/dirt.md).
 
 - **`constant_grass`** — the base case: one material, everywhere.
 - **`blend_lab`** — four layers reading one spline. Note that it tops out at an
@@ -172,6 +187,10 @@ assets/terrain/
   different widths.
 - **`narrow_track`** — the same idea at a smaller scale, which is what a
   raggedness setting held constant across two band widths has to demonstrate.
+- **`soil_showcase`** — a test card rather than a place: three materials down the
+  columns, three conditions across the rows. It exists to make one claim legible
+  — **mud is a row, not a column**. Render it at `--tile-size-m 0.7`, which is
+  close enough that a two-centimetre clod is a shape rather than a speckle.
 
 ## Measurement
 
@@ -195,11 +214,13 @@ page in [docs/todo/](docs/todo/) saying what would make it done.
   them — it renders through the tuned generator with a `SemanticOverlay`. The
   families exist for the Cycles path and the corpus, and their look is nowhere
   near `placement.rs`. Do not wire them into the cheap picture.
-- **Bare earth has clods but no cracks or pebbles.** `WorldField::earth_relief`
-  displaces the ground mesh at the measured scales — clods 2–8 cm, crumb 2–15 mm
-  — scaled down by compaction, so a packed track is smooth and its shoulders are
-  cloddy. Not there yet: desiccation polygons (5–25 cm), embedded pebbles, and
-  wheel or foot ruts.
+- **Bare earth has clods and cracks, but no ruts, pebbles or puddles.** The
+  relief bands and the desiccation network are geometry; ruts need the spline
+  feature context, which `FeatureContext` reserves and the sampler does not fill
+  in. Standing water needs its own mesh — a puddle is not glossy displaced dirt.
+- **Macro shape still comes from the grass generator's mound field**, not from
+  the document's elevation layers. It is why a soil plate rendered at close
+  framing has a swell across it that nothing authored.
 - **`blade_bend` reaches nothing.** Read only by `Mark::shape`, never called.
 - **`luminance_spread` is a dead column** in the rock metrics.
 - **Raster sources are refused by `prepare`**, with a message. Spline distance,

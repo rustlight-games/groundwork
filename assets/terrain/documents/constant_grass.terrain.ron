@@ -9,7 +9,7 @@
 // what the second one looks like.
 (
     format: "terrain-document",
-    format_version: 1,
+    format_version: 2,
     document: (
         coordinate_system: "PlanarMetres",
         root_seed: "8df782f95ce1a4d4",
@@ -27,7 +27,9 @@
                 // from the material's own. Two documents can share a look
                 // without sharing a meaning, and a look can be swapped without
                 // touching a weight.
-                appearance: "surface.grass_lush",
+                appearance: "surface.ground",
+                profile: Some("materials/meadow_floor.ground.ron"),
+                vegetation_affinity: Some(1.0),
             ),
         ],
 
@@ -40,6 +42,7 @@
                 // Multiply, so two suppressions compound rather than fighting.
                 composition: "Multiply",
                 unit: "Unitless",
+                role: Some("VegetationDensity"),
             ),
         ],
 

@@ -238,26 +238,37 @@ def build_ground(scene_dir, spec):
     mesh.update()
     mesh.shade_smooth()
 
-    # How much of each vertex is bare earth, carried as a mesh attribute so the
-    # material can shade a track as earth and a meadow floor as meadow floor.
+    # What each vertex is made of, and what state it is in, carried as mesh
+    # attributes so one material can shade every soil in the scene.
     #
-    # One material with an attribute rather than two materials with a boundary
-    # between them, because the boundary is a *blend*: the compiler already
-    # decided the ragged edge, and splitting the mesh at it would quantise that
-    # edge to the triangle grid and undo the work.
-    for name in ("earth", "wetness"):
-        path = spec.get(name)
-        if not path:
-            continue
+    # One material with attributes rather than one material per soil with
+    # boundaries between them, because the boundary is a *blend*: the compiler
+    # already decided the ragged edge, and splitting the mesh at it would
+    # quantise that edge to the triangle grid and undo the work.
+    def attribute(name, path):
         values = np.fromfile(os.path.join(scene_dir, path), dtype=np.float32)
         if values.size != rows * columns:
-            continue
+            raise SystemExit(
+                f"{path} has {values.size} floats, expected {rows * columns}"
+            )
         layer = mesh.attributes.new(name=name, type="FLOAT", domain="POINT")
         layer.data.foreach_set("value", values.tolist())
 
+    materials = spec.get("materials", [])
+    for index, entry in enumerate(materials):
+        attribute(f"w{index}", entry["weights"])
+    for name, path in spec.get("state", {}).items():
+        attribute(name, path)
+
     obj = bpy.data.objects.new("ground", mesh)
     bpy.context.collection.objects.link(obj)
-    obj.data.materials.append(ground_material())
+    obj.data.materials.append(ground_material(materials))
+    if materials:
+        names = ", ".join(entry["key"] for entry in materials)
+        print(
+            f"[terrain_cycles] ground: {rows}x{columns} at "
+            f"{spec.get('spacing_m', 0.0) * 100:.2f} cm — {names}"
+        )
     return obj
 
 
@@ -297,9 +308,10 @@ def appearance_builders(settings):
         "plant.broad_leaf": lambda: blade_material(settings),
         "plant.thatch": lambda: blade_material(settings),
         "plant.dry_stem": lambda: blade_material(settings),
-        "surface.grass_lush": ground_material,
-        "surface.bare_soil": ground_material,
-        "surface.dirt_compacted": ground_material,
+        # Every ground material shares one implementation. What a particular
+        # soil looks like is its *profile*, not its appearance key — see
+        # `assets/terrain/materials/`.
+        "surface.ground": lambda: ground_material(None),
     }
 
 
@@ -321,7 +333,7 @@ def material_for(appearance, settings, cache):
             f"[terrain_cycles] no builder for appearance '{appearance}'; "
             f"falling back to a plain surface. Known: {sorted(builders)}"
         )
-        builder = ground_material
+        builder = lambda: ground_material(None)
 
     material = builder()
     cache[appearance] = material
@@ -579,35 +591,40 @@ def blade_material(settings):
     return material
 
 
-def ground_material():
-    """The soil between the clumps: warm olive-brown earth, procedurally grained.
+def ground_material(materials=None):
+    """The ground, built from the soils the scene actually carries.
 
-    This is the only warm colour in the picture and it is doing more work than
-    its area suggests. It separates one tuft from the next, makes a density
-    change legible, and gives the eye somewhere to rest — a canopy with nothing
-    at all between it reads as fur rather than as plants standing in ground.
+    ## One graph per soil, blended by realised weight
 
-    ## Four octaves, because one reads as a gradient
+    This used to be a single hand-built graph with two brown ramps in it, and it
+    could only ever draw one soil. Everything exposed anywhere in the world was
+    the same colour, because the only thing the exporter could say about a point
+    was `earth`: one minus however much of it was grass. That is not a material
+    identity — it cannot tell loam from sand from clay — so the shader had
+    nothing to branch on even if it had wanted to.
 
-    A single noise ramped between two browns is what this was first, and at any
-    real magnification it is obviously a smooth blend. Earth is not smooth at any
-    scale, so the colour is built from bands that each answer a different
-    distance:
+    Now the exporter writes a **weight plane per soil** and a table describing
+    each one, and this builds a branch per entry and mixes them:
 
-    | Scale | What it is |
-    | --- | --- |
-    | ~2 m | damp and dry regions, the reason one clearing differs from another |
-    | ~25 cm | scuffs and patches, the size of a footfall |
-    | ~4 cm | grain and grit |
-    | ~1 cm | a bump, not a colour — see below |
+        C = sum_i w_i C_i        colour
+        R = sum_i w_i R_i        roughness
+        H = sum_i w_i H_i        micro-height, into *one* Bump node
 
-    The finest band drives **displacement of the normal** rather than colour.
-    Grain that is only a colour stays flat under a moving sun, which is exactly
-    when a surface announces it is a texture; grain that tilts the normal catches
-    light on one side, and that is what makes soil look like soil.
+    The single Bump at the end is the part worth stating. Blending two
+    already-perturbed normals gives a normal that is not unit length and points
+    somewhere neither soil does; blending the heights and perturbing once gives
+    the surface a boundary would actually have.
 
-    Everything here is a pure function of world position, so two renders of the
-    same ground produce the same dirt — the same rule the placement lives under.
+    The weights are the *realised* ones — the same ragged numbers the transition
+    solver handed the grass — so the colour changes exactly where the vegetation
+    does rather than a centimetre away from it.
+
+    ## Nothing here is a literal any more
+
+    Every colour, roughness, wavelength and amplitude comes from the manifest,
+    which got them from a `.ground.ron` profile. The numbers were measured off
+    reference plates and they live in a file an author can open, rather than in
+    this function where nothing in Rust could read or test them.
     """
     material = bpy.data.materials.new("ground")
     material.use_nodes = True
@@ -620,226 +637,374 @@ def ground_material():
     principled.location = (-300, 0)
 
     coordinate = nodes.new("ShaderNodeTexCoord")
-    coordinate.location = (-1800, 0)
+    coordinate.location = (-2600, 0)
 
-    def noise(scale, detail, roughness, y):
+    if not materials:
+        # A scene with no ground profiles at all: the laboratory meadow, which
+        # has no document and therefore no soils. A plain matte surface, so the
+        # sun still has something to land on behind the grass.
+        principled.inputs["Base Color"].default_value = (0.024, 0.021, 0.011, 1.0)
+        principled.inputs["Roughness"].default_value = 0.9
+        links.new(principled.outputs["BSDF"], output.inputs["Surface"])
+        return material
+
+    moisture = nodes.new("ShaderNodeAttribute")
+    moisture.location = (-2600, -600)
+    moisture.attribute_name = "moisture"
+
+    colour_sum = None
+    rough_sum = None
+    height_sum = None
+
+    for index, entry in enumerate(materials):
+        y = 900 - index * 900
+        weight = nodes.new("ShaderNodeAttribute")
+        weight.location = (-2600, y)
+        weight.attribute_name = f"w{index}"
+
+        colour, roughness, height = soil_branch(
+            nodes, links, coordinate, moisture, entry, y
+        )
+
+        colour_sum = accumulate_colour(nodes, links, colour_sum, colour, weight, y)
+        rough_sum = accumulate_float(nodes, links, rough_sum, roughness, weight, y - 200)
+        height_sum = accumulate_float(nodes, links, height_sum, height, weight, y - 400)
+
+    links.new(colour_sum, principled.inputs["Base Color"])
+    links.new(rough_sum, principled.inputs["Roughness"])
+
+    # One Bump for the whole surface. See the docstring: blending perturbed
+    # normals is not the same operation and does not give a usable one.
+    bump = nodes.new("ShaderNodeBump")
+    bump.location = (-500, -300)
+    bump.inputs["Strength"].default_value = 1.0
+    # The heights are already in metres, so the distance is unity and the
+    # amplitudes in the profiles mean what they say.
+    bump.inputs["Distance"].default_value = 1.0
+    links.new(height_sum, bump.inputs["Height"])
+    links.new(bump.outputs["Normal"], principled.inputs["Normal"])
+
+    links.new(principled.outputs["BSDF"], output.inputs["Surface"])
+    return material
+
+
+def soil_branch(nodes, links, coordinate, moisture, entry, y):
+    """One soil's colour, roughness and micro-height.
+
+    Returns three sockets. Nothing is connected to the output here — the caller
+    blends every soil's three by weight and connects once.
+    """
+    optics = entry["colour_fields"]
+
+    def noise(wavelength_m, detail, offset):
         node = nodes.new("ShaderNodeTexNoise")
-        node.location = (-1600, y)
-        node.inputs["Scale"].default_value = scale
+        node.location = (-2400, y + offset)
+        # Blender's Scale is cycles per unit and a unit is a metre here, so a
+        # wavelength in metres is its reciprocal. Stated because getting this
+        # backwards produces a plausible-looking surface at the wrong scale,
+        # which is the hardest kind of mistake to see.
+        node.inputs["Scale"].default_value = 1.0 / max(wavelength_m, 1e-5)
         node.inputs["Detail"].default_value = detail
-        node.inputs["Roughness"].default_value = roughness
+        node.inputs["Roughness"].default_value = 0.55
         links.new(coordinate.outputs["Object"], node.inputs["Vector"])
         return node
 
-    region = noise(0.5, 2.0, 0.5, 320)
-    patch = noise(4.0, 3.0, 0.55, 140)
-    grain = noise(26.0, 4.0, 0.6, -40)
-    grit = noise(90.0, 3.0, 0.5, -220)
+    region = noise(optics["region_wavelength_m"], 2.0, 300)
+    patch = noise(optics["patch_wavelength_m"], 3.0, 150)
 
-    # ## How dark the soil has to be, and why it is not a taste question
-    #
-    # These were three times brighter for one render, and the result was not
-    # "pale soil" — it was a **rock**. A broad patch of bare earth sitting on a
-    # terrain mound, bright enough to hold its own against the canopy, stops
-    # reading as ground seen between plants and starts reading as an *object*
-    # lying on top of them. Nothing about the shader said boulder; the value did.
-    #
-    # So both ramps stay well under the grass they sit between. The soil is
-    # allowed to be warm, grained and varied — it is not allowed to compete.
-    # Anything that draws the eye at this scale should be a plant.
-    damp = nodes.new("ShaderNodeValToRGB")
-    damp.location = (-1350, 320)
-    damp.color_ramp.elements[0].position = 0.05
-    damp.color_ramp.elements[1].position = 0.95
-    damp.color_ramp.elements[0].color = (0.0135, 0.0145, 0.0078, 1.0)
-    damp.color_ramp.elements[1].color = (0.0310, 0.0275, 0.0145, 1.0)
-    links.new(region.outputs["Fac"], damp.inputs["Fac"])
+    # Where this point sits on the soil's tonal range, 0..1. Two bands, because
+    # one reads as a gradient at any real magnification: the broad one says which
+    # clearing this is, the fine one says which scuff.
+    tone = nodes.new("ShaderNodeMath")
+    tone.operation = "MULTIPLY_ADD"
+    tone.location = (-2150, y + 300)
+    links.new(region.outputs["Fac"], tone.inputs[0])
+    tone.inputs[1].default_value = optics["region_strength"]
+    tone.inputs[2].default_value = 0.5 * (1.0 - optics["region_strength"])
 
-    dry = nodes.new("ShaderNodeValToRGB")
-    dry.location = (-1350, 140)
-    dry.color_ramp.elements[0].position = 0.05
-    dry.color_ramp.elements[1].position = 0.95
-    dry.color_ramp.elements[0].color = (0.0240, 0.0205, 0.0110, 1.0)
-    dry.color_ramp.elements[1].color = (0.0385, 0.0310, 0.0150, 1.0)
-    links.new(patch.outputs["Fac"], dry.inputs["Fac"])
+    tone2 = nodes.new("ShaderNodeMath")
+    tone2.operation = "MULTIPLY_ADD"
+    tone2.location = (-2000, y + 300)
+    links.new(patch.outputs["Fac"], tone2.inputs[0])
+    tone2.inputs[1].default_value = optics["patch_strength"]
+    links.new(tone.outputs["Value"], tone2.inputs[2])
 
-    # Which of the two, decided at the *region* scale and eased.
-    #
-    # Driven by `region` rather than `patch`, because `patch` carries three
-    # octaves and using it as a blend factor puts a visible boundary wherever
-    # damp meets dry — earth does not change moisture over four centimetres. The
-    # remap narrows the swing further so neither end is ever fully reached, which
-    # is what keeps the transition from reading as a stain.
-    moisture = nodes.new("ShaderNodeMapRange")
-    moisture.location = (-1200, 220)
-    moisture.inputs["From Min"].default_value = 0.20
-    moisture.inputs["From Max"].default_value = 0.80
-    moisture.inputs["To Min"].default_value = 0.15
-    moisture.inputs["To Max"].default_value = 0.85
-    moisture.clamp = True
-    links.new(region.outputs["Fac"], moisture.inputs["Value"])
+    # Back to 0..1, and the *exact* bounds matter. Both noises run 0..1, so the
+    # sum above runs from `floor` to `floor + region + patch`; getting the low
+    # bound wrong biases every soil toward one end of its own palette, which
+    # reads as the wrong material rather than as a mistuned one. This had an
+    # extra `- patch_strength` in the low bound for one render and turned dark
+    # loam into pale tan.
+    floor = 0.5 * (1.0 - optics["region_strength"])
+    tone_norm = nodes.new("ShaderNodeMapRange")
+    tone_norm.location = (-1850, y + 300)
+    tone_norm.inputs["From Min"].default_value = floor
+    tone_norm.inputs["From Max"].default_value = (
+        floor + optics["region_strength"] + optics["patch_strength"]
+    )
+    tone_norm.clamp = True
+    links.new(tone2.outputs["Value"], tone_norm.inputs["Value"])
 
-    earth = nodes.new("ShaderNodeMix")
-    earth.data_type = "RGBA"
-    earth.location = (-1050, 220)
-    links.new(live(damp.outputs, "Color"), live(earth.inputs, "A"))
-    links.new(live(dry.outputs, "Color"), live(earth.inputs, "B"))
-    links.new(moisture.outputs["Result"], live(earth.inputs, "Factor"))
+    # The palette: three measured stops, interpolated through the middle one.
+    # Three rather than two because real earth varies in hue as well as value —
+    # its dry crests are warmer and less saturated than its damp hollows, and a
+    # two-stop ramp can only interpolate a line between two colours.
+    palette = nodes.new("ShaderNodeValToRGB")
+    palette.location = (-1650, y + 300)
+    ramp = palette.color_ramp
+    ramp.elements[0].position = 0.0
+    ramp.elements[0].color = tuple(entry["dry_palette"]["low"]) + (1.0,)
+    ramp.elements[1].position = 1.0
+    ramp.elements[1].color = tuple(entry["dry_palette"]["high"]) + (1.0,)
+    middle = ramp.elements.new(0.5)
+    middle.color = tuple(entry["dry_palette"]["mid"]) + (1.0,)
+    links.new(tone_norm.outputs["Result"], palette.inputs["Fac"])
 
-    # Grain: a darkening, not a second colour. Multiplying keeps the hue the two
-    # ramps already agreed on and only varies how much light comes back.
+    # Grain: a darkening, not a second colour. Multiplying keeps the hue the
+    # palette already chose and only varies how much light comes back.
+    grain_band = entry["shader_bands"][0] if entry["shader_bands"] else None
+    grain_wavelength = grain_band["wavelength_m"] if grain_band else 0.02
+    grain = noise(grain_wavelength, 4.0, -50)
     grained = nodes.new("ShaderNodeMix")
     grained.data_type = "RGBA"
     grained.blend_type = "MULTIPLY"
-    grained.location = (-800, 220)
-    live(grained.inputs, "Factor").default_value = 0.55
-    links.new(live(earth.outputs, "Result"), live(grained.inputs, "A"))
-    links.new(live(grain.outputs, "Color"), live(grained.inputs, "B"))
-    # ## Exposed earth is a different material from the floor between blades
-    #
-    # The two ramps above are deliberately dark — they are glimpses of ground
-    # seen *between* plants, and anything brighter starts reading as a rock lying
-    # on the canopy. That reasoning is right for a meadow floor and wrong for a
-    # track, where the earth is the subject rather than the gap.
-    #
-    # Measured off `docs/references/grass_to_mud_bumpy.jpg`: the mud there runs
-    # from linear 0.061 in its shadows to 0.195 at its brightest, and its channel
-    # ratios are steady at G/R 0.63, B/R 0.36. The floor ramps sit at G/R near
-    # one, which is why a whole track of them read as sand rather than as earth —
-    # the error was the green, not the brightness.
-    #
-    # The `earth` attribute comes from the compiler, which realised the ragged
-    # boundary through the same function that decided where the grass thinned. So
-    # the colour changes exactly where the vegetation does rather than a
-    # centimetre away from it.
-    bare = nodes.new("ShaderNodeValToRGB")
-    bare.location = (-1350, -40)
-    bare.color_ramp.elements[0].position = 0.10
-    bare.color_ramp.elements[1].position = 0.90
-    bare.color_ramp.elements[0].color = (0.0500, 0.0315, 0.0180, 1.0)
-    bare.color_ramp.elements[1].color = (0.1550, 0.0977, 0.0558, 1.0)
-    links.new(patch.outputs["Fac"], bare.inputs["Fac"])
+    grained.location = (-1450, y + 300)
+    live(grained.inputs, "Factor").default_value = optics["grain_strength"]
+    links.new(live(palette.outputs, "Color"), live(grained.inputs, "A"))
+    links.new(grain.outputs["Color"], live(grained.inputs, "B"))
 
-    exposure = nodes.new("ShaderNodeAttribute")
-    exposure.location = (-1600, -400)
-    exposure.attribute_name = "earth"
-
-    # Eased, so the shading boundary is not harder than the geometry under it.
-    exposed = nodes.new("ShaderNodeMapRange")
-    exposed.location = (-1350, -400)
-    exposed.inputs["From Min"].default_value = 0.05
-    exposed.inputs["From Max"].default_value = 0.75
-    exposed.clamp = True
-    links.new(exposure.outputs["Fac"], exposed.inputs["Value"])
-
-    surfaced = nodes.new("ShaderNodeMix")
-    surfaced.data_type = "RGBA"
-    surfaced.location = (-640, 220)
-    links.new(live(grained.outputs, "Result"), live(surfaced.inputs, "A"))
-    links.new(live(bare.outputs, "Color"), live(surfaced.inputs, "B"))
-    links.new(exposed.outputs["Result"], live(surfaced.inputs, "Factor"))
     # ## Wet ground is not dry ground turned down
     #
     # Water fills the pores, so the air-soil boundary that scattered light
     # diffusely becomes a water-soil boundary: internal scattering falls,
     # absorption rises, and the outer surface becomes a smooth water-air
     # interface. Three things follow, and doing only the first is what makes wet
-    # ground read as ground in shadow instead of wet ground.
+    # ground read as ground in shadow instead of as wet ground.
     #
     #   albedo      darkens toward its own square
     #   hue         warms — the film absorbs blue and green harder than red
-    #   roughness   collapses, from about 0.75 damp to 0.20 saturated
+    #   roughness   collapses, and does so before the darkening is noticeable
     #
-    # Production shaders do not use subsurface scattering for mud; it is a rough
-    # dark dielectric under a glossy coat. So there is no SSS here either.
-    damp_attr = nodes.new("ShaderNodeAttribute")
-    damp_attr.location = (-1600, -560)
-    damp_attr.attribute_name = "wetness"
-
-    # Only earth gets wet in this sense. A sodden meadow floor is hidden under
-    # the canopy anyway, and darkening it would only deepen shadows that are
-    # already deep.
-    wet = nodes.new("ShaderNodeMath")
-    wet.operation = "MULTIPLY"
-    wet.location = (-1350, -560)
-    links.new(damp_attr.outputs["Fac"], wet.inputs[0])
-    links.new(exposed.outputs["Result"], wet.inputs[1])
+    # The gain below is fitted in Rust so that the soil's *mid* stop lands
+    # exactly on the wet colour its profile declares. The author writes two
+    # colours they can measure; the square law is what runs between them.
+    #
+    # No subsurface scattering. Production mud shaders do not use it — mud is a
+    # rough dark dielectric under a glossy coat.
+    mid = entry["dry_palette"]["mid"]
+    wet_mid = entry["wet"]["mid"]
+    gain = tuple(
+        (wet_mid[c] / (mid[c] * mid[c])) if mid[c] > 0.0 else 0.0 for c in range(3)
+    )
 
     squared = nodes.new("ShaderNodeMix")
     squared.data_type = "RGBA"
     squared.blend_type = "MULTIPLY"
-    squared.location = (-480, 60)
+    squared.location = (-1250, y + 200)
     live(squared.inputs, "Factor").default_value = 1.0
-    links.new(live(surfaced.outputs, "Result"), live(squared.inputs, "A"))
-    links.new(live(surfaced.outputs, "Result"), live(squared.inputs, "B"))
+    links.new(live(grained.outputs, "Result"), live(squared.inputs, "A"))
+    links.new(live(grained.outputs, "Result"), live(squared.inputs, "B"))
 
-    # Squaring outright is right for standing water and too strong for damp
-    # earth, so the square is lifted back toward the dry value and mixed in by
-    # how wet the ground actually is.
     lifted = nodes.new("ShaderNodeMix")
     lifted.data_type = "RGBA"
     lifted.blend_type = "MULTIPLY"
-    lifted.location = (-360, 60)
+    lifted.location = (-1100, y + 200)
     live(lifted.inputs, "Factor").default_value = 1.0
     links.new(live(squared.outputs, "Result"), live(lifted.inputs, "A"))
-    live(lifted.inputs, "B").default_value = (4.2, 3.9, 3.4, 1.0)
+    live(lifted.inputs, "B").default_value = gain + (1.0,)
 
     wetted = nodes.new("ShaderNodeMix")
     wetted.data_type = "RGBA"
-    wetted.location = (-240, 160)
-    links.new(live(surfaced.outputs, "Result"), live(wetted.inputs, "A"))
+    wetted.location = (-950, y + 300)
+    links.new(live(grained.outputs, "Result"), live(wetted.inputs, "A"))
     links.new(live(lifted.outputs, "Result"), live(wetted.inputs, "B"))
-    links.new(wet.outputs["Value"], live(wetted.inputs, "Factor"))
-    links.new(live(wetted.outputs, "Result"), principled.inputs["Base Color"])
+    links.new(moisture.outputs["Fac"], live(wetted.inputs, "Factor"))
 
-    # The bump. Two scales, because soil has both clods and grit, and a single
-    # frequency reads as sandpaper.
-    # Stronger on bare ground than under a canopy. Grain that is barely visible
-    # between blades is the whole surface on a track, and the mesh already
-    # carries the clods themselves — this is the band below what the grid
-    # resolves, which is grain rather than lumps.
-    bump_strength = nodes.new("ShaderNodeMapRange")
-    bump_strength.location = (-800, -180)
-    bump_strength.inputs["To Min"].default_value = 0.55
-    bump_strength.inputs["To Max"].default_value = 1.00
-    links.new(exposed.outputs["Result"], bump_strength.inputs["Value"])
-
-    clods = nodes.new("ShaderNodeBump")
-    clods.location = (-620, -180)
-    clods.inputs["Distance"].default_value = 0.022
-    links.new(bump_strength.outputs["Result"], clods.inputs["Strength"])
-    links.new(grain.outputs["Fac"], clods.inputs["Height"])
-
-    fine = nodes.new("ShaderNodeBump")
-    fine.location = (-450, -180)
-    fine.inputs["Strength"].default_value = 0.55
-    fine.inputs["Distance"].default_value = 0.008
-    links.new(grit.outputs["Fac"], fine.inputs["Height"])
-    links.new(clods.outputs["Normal"], fine.inputs["Normal"])
-    links.new(fine.outputs["Normal"], principled.inputs["Normal"])
-
-    # Earth is matte and not remotely specular. A little variation in how matte
-    # keeps damp patches from looking identical to dry ones under the same sun.
+    # Roughness across the dry range, collapsing toward the wet value.
+    dry_low, dry_high = entry["roughness_dry"]
     rough = nodes.new("ShaderNodeMapRange")
-    rough.location = (-620, -420)
-    rough.inputs["To Min"].default_value = 0.78
-    rough.inputs["To Max"].default_value = 0.98
-    links.new(patch.outputs["Fac"], rough.inputs["Value"])
+    rough.location = (-1250, y - 150)
+    rough.inputs["To Min"].default_value = dry_low
+    rough.inputs["To Max"].default_value = dry_high
+    links.new(tone_norm.outputs["Result"], rough.inputs["Value"])
 
-    # Water fills the micro-cavities before it does anything else, so the first
-    # thing wetness does is flatten the microstructure — which is a roughness
-    # change, not a colour one. This is most of why wet ground reads as wet: the
-    # sheen arrives before the darkening is even noticeable.
+    # Relief finer than a pixel is not a bump, it is a BRDF. Bands below the
+    # sampling rate were folded into one roughness figure in Rust; adding them
+    # here is what stops a millimetre grain arriving as speckle.
+    micro = nodes.new("ShaderNodeMath")
+    micro.operation = "ADD"
+    micro.location = (-1100, y - 150)
+    links.new(rough.outputs["Result"], micro.inputs[0])
+    micro.inputs[1].default_value = entry.get("micro_roughness", 0.0)
+    micro.use_clamp = True
+
     wet_rough = nodes.new("ShaderNodeMix")
     wet_rough.data_type = "FLOAT"
-    wet_rough.location = (-420, -420)
-    links.new(rough.outputs["Result"], live(wet_rough.inputs, "A"))
-    live(wet_rough.inputs, "B").default_value = 0.20
-    links.new(wet.outputs["Value"], live(wet_rough.inputs, "Factor"))
-    links.new(live(wet_rough.outputs, "Result"), principled.inputs["Roughness"])
+    wet_rough.location = (-950, y - 150)
+    links.new(micro.outputs["Value"], live(wet_rough.inputs, "A"))
+    live(wet_rough.inputs, "B").default_value = entry["wet"]["roughness"]
+    links.new(moisture.outputs["Fac"], live(wet_rough.inputs, "Factor"))
 
-    links.new(principled.outputs["BSDF"], output.inputs["Surface"])
-    return material
+    height = band_height(nodes, links, coordinate, moisture, entry, y)
+
+    return (
+        live(wetted.outputs, "Result"),
+        live(wet_rough.outputs, "Result"),
+        height,
+    )
+
+
+def band_height(nodes, links, coordinate, moisture, entry, y):
+    """The relief bands the mesh could not carry, summed, in metres.
+
+    Which bands these are was decided in Rust by the lattice spacing, not here
+    and not by the profile. A band the mesh resolves is displaced geometry; a
+    band below that is this. Each band is drawn exactly once by whichever half
+    can actually draw it — the alternative, a fixed rule about which scales are
+    "bump", double-counts a band whenever the sampling rate changes.
+    """
+    total = None
+    for slot, band in enumerate(entry["shader_bands"]):
+        if band["amplitude_m"] <= 0.0:
+            continue
+        noise = nodes.new("ShaderNodeTexNoise")
+        noise.location = (-2400, y - 600 - slot * 200)
+        noise.inputs["Scale"].default_value = 1.0 / max(band["wavelength_m"], 1e-5)
+        noise.inputs["Detail"].default_value = 2.0
+        noise.inputs["Roughness"].default_value = 0.5
+        links.new(coordinate.outputs["Object"], noise.inputs["Vector"])
+
+        centred = nodes.new("ShaderNodeMath")
+        centred.operation = "SUBTRACT"
+        centred.location = (-2200, y - 600 - slot * 200)
+        links.new(noise.outputs["Fac"], centred.inputs[0])
+        centred.inputs[1].default_value = 0.5
+
+        shaped = ridge(nodes, links, centred, band["ridge"], y - 600 - slot * 200)
+
+        # Water fills the smallest cavities first, so a wet surface loses its
+        # grain long before it loses its clods.
+        damped = nodes.new("ShaderNodeMix")
+        damped.data_type = "FLOAT"
+        damped.location = (-1800, y - 600 - slot * 200)
+        links.new(shaped, live(damped.inputs, "A"))
+        live(damped.inputs, "B").default_value = 0.0
+        flatten = entry["wet"]["flattening"]
+        soak = nodes.new("ShaderNodeMath")
+        soak.operation = "MULTIPLY"
+        soak.location = (-1950, y - 700 - slot * 200)
+        links.new(moisture.outputs["Fac"], soak.inputs[0])
+        soak.inputs[1].default_value = flatten
+        links.new(soak.outputs["Value"], live(damped.inputs, "Factor"))
+
+        scaled = nodes.new("ShaderNodeMath")
+        scaled.operation = "MULTIPLY"
+        scaled.location = (-1650, y - 600 - slot * 200)
+        links.new(live(damped.outputs, "Result"), scaled.inputs[0])
+        scaled.inputs[1].default_value = band["amplitude_m"]
+
+        if total is None:
+            total = scaled.outputs["Value"]
+        else:
+            add = nodes.new("ShaderNodeMath")
+            add.operation = "ADD"
+            add.location = (-1500, y - 600 - slot * 200)
+            links.new(total, add.inputs[0])
+            links.new(scaled.outputs["Value"], add.inputs[1])
+            total = add.outputs["Value"]
+
+    if total is None:
+        zero = nodes.new("ShaderNodeValue")
+        zero.location = (-1500, y - 600)
+        zero.outputs[0].default_value = 0.0
+        total = zero.outputs[0]
+    return total
+
+
+def ridge(nodes, links, centred, amount, y):
+    """Fold a centred noise band toward a ridge, keeping its mean at zero.
+
+    `1 - 2|c|` is the fold; squaring it creases the crest and flattens the
+    trough, which is what separates a soil from gravel. The offset is one third
+    — the mean of the squared fold — and not one half: subtracting a half would
+    leave the band averaging -1/12, so an author raising a soil's ridge factor
+    would sink the ground under it.
+    """
+    if amount <= 0.0:
+        return centred.outputs["Value"]
+
+    absolute = nodes.new("ShaderNodeMath")
+    absolute.operation = "ABSOLUTE"
+    absolute.location = (-2100, y)
+    links.new(centred.outputs["Value"], absolute.inputs[0])
+
+    folded = nodes.new("ShaderNodeMath")
+    folded.operation = "MULTIPLY_ADD"
+    folded.location = (-2050, y)
+    links.new(absolute.outputs["Value"], folded.inputs[0])
+    folded.inputs[1].default_value = -2.0
+    folded.inputs[2].default_value = 1.0
+
+    squared = nodes.new("ShaderNodeMath")
+    squared.operation = "MULTIPLY_ADD"
+    squared.location = (-2000, y)
+    links.new(folded.outputs["Value"], squared.inputs[0])
+    links.new(folded.outputs["Value"], squared.inputs[1])
+    squared.inputs[2].default_value = -1.0 / 3.0
+
+    mixed = nodes.new("ShaderNodeMix")
+    mixed.data_type = "FLOAT"
+    mixed.location = (-1950, y)
+    links.new(centred.outputs["Value"], live(mixed.inputs, "A"))
+    links.new(squared.outputs["Value"], live(mixed.inputs, "B"))
+    live(mixed.inputs, "Factor").default_value = amount
+    return live(mixed.outputs, "Result")
+
+
+def accumulate_colour(nodes, links, running, colour, weight, y):
+    """`running + weight * colour`, as nodes. Returns the sum's socket."""
+    # A colour multiplied by a scalar means a Mix in MULTIPLY against a grey of
+    # that scalar, because Blender has no colour-times-float node.
+    grey = nodes.new("ShaderNodeCombineColor")
+    grey.location = (-950, y - 60)
+    for channel in ("Red", "Green", "Blue"):
+        links.new(weight.outputs["Fac"], grey.inputs[channel])
+
+    scaled = nodes.new("ShaderNodeMix")
+    scaled.data_type = "RGBA"
+    scaled.blend_type = "MULTIPLY"
+    scaled.location = (-800, y)
+    live(scaled.inputs, "Factor").default_value = 1.0
+    links.new(colour, live(scaled.inputs, "A"))
+    links.new(grey.outputs["Color"], live(scaled.inputs, "B"))
+
+    if running is None:
+        return live(scaled.outputs, "Result")
+    total = nodes.new("ShaderNodeMix")
+    total.data_type = "RGBA"
+    total.blend_type = "ADD"
+    total.location = (-650, y)
+    live(total.inputs, "Factor").default_value = 1.0
+    links.new(running, live(total.inputs, "A"))
+    links.new(live(scaled.outputs, "Result"), live(total.inputs, "B"))
+    return live(total.outputs, "Result")
+
+
+def accumulate_float(nodes, links, running, value, weight, y):
+    """`running + weight * value`, as nodes. Returns the sum's socket."""
+    scaled = nodes.new("ShaderNodeMath")
+    scaled.operation = "MULTIPLY"
+    scaled.location = (-800, y)
+    links.new(value, scaled.inputs[0])
+    links.new(weight.outputs["Fac"], scaled.inputs[1])
+    if running is None:
+        return scaled.outputs["Value"]
+    total = nodes.new("ShaderNodeMath")
+    total.operation = "ADD"
+    total.location = (-650, y)
+    links.new(running, total.inputs[0])
+    links.new(scaled.outputs["Value"], total.inputs[1])
+    return total.outputs["Value"]
 
 
 def build_world(sky):

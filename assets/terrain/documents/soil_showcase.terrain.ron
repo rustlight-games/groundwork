@@ -1,0 +1,265 @@
+// Nine tiles, nine grounds: three soils by three conditions.
+//
+// A chart rather than a place. Everything else under `documents/` is somewhere a
+// unit could stand; this is a test card, and it exists to make one claim legible:
+//
+//     the columns are **materials** and the rows are **states**,
+//     and mud is a row, not a column.
+//
+// That is the whole architectural argument of the ground system. Mud is not a
+// substance that sits beside loam in a list — it *is* loam, wet and churned. Sand
+// beside it is genuinely different particles, so sand is a column. Getting this
+// backwards is what produces a materials list with `dirt`, `mud`, `wet_mud` and
+// `churned_mud` in it, none of which can express the ground halfway between two
+// of them.
+//
+//                dry & packed        as it lies         wet & churned
+//   sand         a flat beach        wind ripples       a sodden strand
+//   loam         a cracked track     loose clods        mud
+//   hardpan      dust and crazing    dusty stones       a wet pan
+//
+// Read that grid down and the *material* changes: pale mineral sand, warm brown
+// loam, grey-pale hardpan. Read it across and the material is constant and its
+// *condition* changes: the relief flattens or opens up, the colour darkens and
+// warms, the roughness collapses, and cracks appear where a soil is dry enough
+// and cohesive enough to hold a wall open.
+//
+// ## No grass here, deliberately
+//
+// Every other document is about the boundary between ground and what grows on
+// it. This one is about the ground, and a canopy over it would hide exactly the
+// thing it is for. `meadow_path` and `narrow_track` are where the interaction
+// is tested.
+//
+// ## The bands are ruled, which nothing else here is
+//
+// The transition solver still ragged the joins — that is not optional, it is how
+// candidates and colour agree — but the *guides* are straight lines, so the eye
+// spends its effort on the difference between two soils rather than on the shape
+// of the boundary between them.
+(
+    format: "terrain-document",
+    format_version: 2,
+    document: (
+        coordinate_system: "PlanarMetres",
+        root_seed: "7b2e4c018da395f6",
+
+        metadata: (
+            name: "Soil showcase",
+            description: "Three ground materials in three conditions, on one plate.",
+        ),
+
+        materials: [
+            (
+                key: "loam",
+                display_name: "Loam",
+                appearance: "surface.ground",
+                // The middle column, and the base the others are laid over.
+                profile: Some("materials/compacted_loam.ground.ron"),
+                vegetation_affinity: Some(0.0),
+            ),
+            (
+                key: "sand",
+                display_name: "Beach sand",
+                appearance: "surface.ground",
+                profile: Some("materials/beach_sand.ground.ron"),
+                vegetation_affinity: Some(0.0),
+            ),
+            (
+                key: "hardpan",
+                display_name: "Hard dust",
+                appearance: "surface.ground",
+                profile: Some("materials/hard_dust.ground.ron"),
+                vegetation_affinity: Some(0.0),
+            ),
+        ],
+
+        modifier_channels: [
+            // Every one of these carries a role, so a consumer finds it by what
+            // it means rather than by matching the string this document happened
+            // to choose. See `ModifierRole`.
+            (
+                key: "wetness",
+                display_name: "Soil moisture",
+                role: Some("SoilMoisture"),
+                range: (0.0, 1.0),
+                // Low, and not zero. Ground with no water in it at all is a
+                // laboratory condition; real dry ground still darkens in its
+                // hollows.
+                default_value: 0.12,
+                composition: "Max",
+                unit: "Unitless",
+            ),
+            (
+                key: "packed",
+                display_name: "Soil compaction",
+                role: Some("SoilCompaction"),
+                range: (0.0, 1.0),
+                // Zero by default, so the middle row is the soil as it lies and
+                // the top row has somewhere to go. `Max` can only raise, which
+                // is the right rule for a condition regions *impose*.
+                default_value: 0.0,
+                composition: "Max",
+                unit: "Unitless",
+            ),
+            (
+                key: "churn",
+                display_name: "Soil disturbance",
+                role: Some("SoilDisturbance"),
+                range: (0.0, 1.0),
+                default_value: 0.0,
+                composition: "Max",
+                unit: "Unitless",
+            ),
+            (
+                key: "baked",
+                display_name: "Desiccation",
+                role: Some("Desiccation"),
+                range: (0.0, 1.0),
+                default_value: 0.15,
+                composition: "Max",
+                unit: "Unitless",
+            ),
+        ],
+
+        sources: [
+            (
+                key: "everywhere",
+                source: Constant((value: 1.0)),
+            ),
+            (
+                key: "col_sand",
+                source: SplineDistance((
+                    asset: "features/showcase_col_sand.spline.ron",
+                    max_distance_m: 3.0,
+                )),
+            ),
+            (
+                key: "col_dust",
+                source: SplineDistance((
+                    asset: "features/showcase_col_dust.spline.ron",
+                    max_distance_m: 3.0,
+                )),
+            ),
+            (
+                key: "row_dry",
+                source: SplineDistance((
+                    asset: "features/showcase_row_dry.spline.ron",
+                    max_distance_m: 3.0,
+                )),
+            ),
+            (
+                key: "row_wet",
+                source: SplineDistance((
+                    asset: "features/showcase_row_wet.spline.ron",
+                    max_distance_m: 3.0,
+                )),
+            ),
+        ],
+
+        layers: [
+            (
+                key: "base_loam",
+                mask: Source("everywhere"),
+                operation: Material((
+                    material: "loam",
+                    mode: "Replace",
+                    amount: 1.0,
+                )),
+            ),
+            // Rendered at 70 cm a tile, so a column is 35 cm either side of its
+            // guide. The band is held flat to 28 cm and released at 35, which
+            // leaves 14 cm of genuine three-way blend down each join — the point
+            // being that it *is* a blend and not a seam: one mesh, N weights.
+            //
+            // Close framing, deliberately. At two metres a tile the columns are
+            // legible and the *soils* are not: a two-centimetre clod is three
+            // pixels, which is a texture rather than a shape. This card exists
+            // to show what the materials are.
+            (
+                key: "sand_column",
+                mask: Profile((
+                    source: "col_sand",
+                    shape: SmoothBand((inner_m: 0.28, outer_m: 0.35)),
+                )),
+                operation: Material((
+                    material: "sand",
+                    mode: "Replace",
+                    amount: 1.0,
+                )),
+            ),
+            (
+                key: "hardpan_column",
+                mask: Profile((
+                    source: "col_dust",
+                    shape: SmoothBand((inner_m: 0.28, outer_m: 0.35)),
+                )),
+                operation: Material((
+                    material: "hardpan",
+                    mode: "Replace",
+                    amount: 1.0,
+                )),
+            ),
+
+            // The dry row. Packed hard, baked through, and left alone long
+            // enough to craze — which only happens where the profile says the
+            // material can hold a wall open, so the sand column stays uncracked
+            // however dry it gets. That refusal is the feature.
+            (
+                key: "dry_row_packed",
+                mask: Profile((
+                    source: "row_dry",
+                    shape: SmoothBand((inner_m: 0.28, outer_m: 0.35)),
+                )),
+                operation: Modifier((
+                    channel: "packed",
+                    mode: "Max",
+                    value: 0.95,
+                )),
+            ),
+            (
+                key: "dry_row_baked",
+                mask: Profile((
+                    source: "row_dry",
+                    shape: SmoothBand((inner_m: 0.28, outer_m: 0.35)),
+                )),
+                operation: Modifier((
+                    channel: "baked",
+                    mode: "Max",
+                    value: 1.0,
+                )),
+            ),
+
+            // The wet row. Saturated and churned: the colour darkens toward its
+            // own square and warms, the roughness collapses, the water fills the
+            // finest relief in — and the cracks close, because a wet soil has
+            // nothing to crack about.
+            (
+                key: "wet_row_soaked",
+                mask: Profile((
+                    source: "row_wet",
+                    shape: SmoothBand((inner_m: 0.28, outer_m: 0.35)),
+                )),
+                operation: Modifier((
+                    channel: "wetness",
+                    mode: "Max",
+                    value: 0.95,
+                )),
+            ),
+            (
+                key: "wet_row_churned",
+                mask: Profile((
+                    source: "row_wet",
+                    shape: SmoothBand((inner_m: 0.28, outer_m: 0.35)),
+                )),
+                operation: Modifier((
+                    channel: "churn",
+                    mode: "Max",
+                    value: 0.90,
+                )),
+            ),
+        ],
+
+        populations: [],
+    ),
+)

@@ -39,6 +39,7 @@
 
 pub mod canonical;
 pub mod envelope;
+pub mod ground_profile;
 pub mod migration;
 pub mod raw;
 pub mod ron_io;
@@ -47,6 +48,9 @@ pub use canonical::canonicalise;
 pub use envelope::{
     CURRENT_FORMAT_VERSION, EnvelopeHeader, OLDEST_READABLE_VERSION, TERRAIN_DOCUMENT_FORMAT,
     TerrainEnvelope,
+};
+pub use ground_profile::{
+    CURRENT_PROFILE_VERSION, GROUND_PROFILE_FORMAT, ProfileError, load_library,
 };
 pub use migration::{MigrationError, MigrationLog, migrate};
 pub use raw::RawDocument;

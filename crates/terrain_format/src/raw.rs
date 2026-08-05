@@ -77,6 +77,12 @@ pub struct RawMaterial {
     #[serde(default)]
     pub display_name: String,
     pub appearance: String,
+    /// The ground material profile asset: `materials/compacted_loam.ground.ron`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// How much this ground supports plants, `0..1`, overriding the profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vegetation_affinity: Option<f32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -91,6 +97,9 @@ pub struct RawModifierChannel {
     pub composition: String,
     #[serde(default = "unitless")]
     pub unit: String,
+    /// What this channel means to a consumer: `SoilMoisture`, `Desiccation`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 fn multiply() -> String {

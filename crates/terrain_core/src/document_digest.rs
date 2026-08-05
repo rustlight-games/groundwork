@@ -63,7 +63,15 @@ impl Digestible for MaterialDef {
         digest
             .str(self.key.as_str())
             .str(&self.display_name)
-            .str(self.appearance.as_str());
+            .str(self.appearance.as_str())
+            .str(self.profile.as_ref().map_or("", |p| p.as_str()));
+        match self.vegetation_affinity {
+            // Tagged rather than folded to a default, because "the author said
+            // nothing" and "the author said what the profile already says" are
+            // different documents and must not share a digest.
+            None => digest.tag(0),
+            Some(affinity) => digest.tag(1).f32(affinity),
+        };
     }
 }
 
@@ -74,7 +82,8 @@ impl Digestible for ModifierChannelDef {
         digest
             .f32(self.default_value)
             .tag(composition_tag(self.composition))
-            .tag(unit_tag(self.unit));
+            .tag(unit_tag(self.unit))
+            .str(self.role.map_or("", |role| role.name()));
     }
 }
 
@@ -348,6 +357,8 @@ mod tests {
             key: MaterialKey::new(key).expect("valid"),
             display_name: key.to_string(),
             appearance: crate::ids::AppearanceKey::new(format!("surface.{key}")).expect("valid"),
+            profile: None,
+            vegetation_affinity: None,
         }
     }
 
@@ -422,6 +433,7 @@ mod tests {
             default_value: 1.0,
             composition: ModifierComposition::Multiply,
             unit: ModifierUnit::Unitless,
+            role: None,
         });
         assert_ne!(base, channels.digest(), "modifier_channels");
 

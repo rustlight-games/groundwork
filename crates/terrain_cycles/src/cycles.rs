@@ -142,10 +142,8 @@ pub struct CyclesScene {
     pub attributes: Vec<[f32; ATTRIBUTES_PER_BLADE]>,
     /// Ground heights over [`CyclesScene::footprint`], row-major.
     pub ground: Vec<f32>,
-    /// Bare-earth share per ground sample, `0..1`.
-    pub earth: Vec<f32>,
-    /// How wet the ground is per sample, `0..1`.
-    pub wetness: Vec<f32>,
+    /// What the ground is made of, and what state it is in.
+    pub surface: GroundSurface,
     pub ground_rows: usize,
     pub ground_columns: usize,
     /// World-space AABB the ground grid spans.
@@ -339,6 +337,15 @@ pub struct RenderSettings {
     /// from the scene stops shadowing the ground just inside the edge, and the
     /// result is a bright rim exactly where the eye goes.
     pub visible_ground: Option<(Vec2, Vec2)>,
+    /// How many pixels of *traced* image one world metre covers.
+    ///
+    /// Not the page's own resolution, which is the tiling grid and is coarser by
+    /// whatever the supersample factor is. This is what decides where the ground
+    /// shader runs out of room: relief finer than a pixel is not a bump, it is
+    /// roughness, and bumping it anyway produces speckle. Reading the page's
+    /// figure instead demoted every band a soil had to roughness, and the plate
+    /// came back smooth.
+    pub trace_px_per_metre: f32,
 }
 
 impl Default for RenderSettings {
@@ -363,6 +370,7 @@ impl Default for RenderSettings {
             ribs: 0,
             blade_width: 0.35,
             visible_ground: None,
+            trace_px_per_metre: 144.0,
         }
     }
 }
@@ -431,8 +439,8 @@ impl CyclesScene {
         points.append(&mut halo_points);
         attributes.append(&mut halo_attributes);
 
-        let (footprint, ground, earth, wetness, rows, columns) =
-            sample_ground(&page, field, settings.visible_ground);
+        let (footprint, ground, surface, rows, columns) =
+            sample_ground(&page, field, &settings);
         let camera = Camera::for_page(&page, scene.canopy_ceiling());
 
         Self {
@@ -440,8 +448,7 @@ impl CyclesScene {
             points,
             attributes,
             ground,
-            earth,
-            wetness,
+            surface,
             ground_rows: rows,
             ground_columns: columns,
             footprint,
@@ -471,8 +478,15 @@ impl CyclesScene {
             self.attributes.iter().flatten(),
         )?;
         write_f32(&directory.join("ground.bin"), self.ground.iter())?;
-        write_f32(&directory.join("earth.bin"), self.earth.iter())?;
-        write_f32(&directory.join("wetness.bin"), self.wetness.iter())?;
+        for (index, plane) in self.surface.weights.iter().enumerate() {
+            write_f32(&directory.join(format!("weight{index}.bin")), plane.iter())?;
+        }
+        write_f32(&directory.join("moisture.bin"), self.surface.moisture.iter())?;
+        write_f32(
+            &directory.join("compaction.bin"),
+            self.surface.compaction.iter(),
+        )?;
+        write_f32(&directory.join("wet_film.bin"), self.surface.wet_film.iter())?;
 
         let header = directory.join("scene.json");
         std::fs::write(&header, self.header_json())?;
@@ -526,15 +540,7 @@ impl CyclesScene {
     "vertices_per_rib": {},
     "attributes_per_blade": {}
   }},
-  "ground": {{
-    "path": "ground.bin",
-    "earth": "earth.bin",
-    "wetness": "wetness.bin",
-    "rows": {},
-    "columns": {},
-    "low": [{:.6}, {:.6}],
-    "high": [{:.6}, {:.6}]
-  }}
+  "ground": {}
 }}
 "#,
             self.page.origin.x,
@@ -580,14 +586,119 @@ impl CyclesScene {
             self.ribs,
             VERTICES_PER_RIB,
             ATTRIBUTES_PER_BLADE,
+            self.ground_json(low, high),
+        )
+    }
+
+    /// The ground section, including the table of soils.
+    ///
+    /// Split out because it is the only variable-length part of the header, and
+    /// because a `format!` with forty positional holes is a place bugs live.
+    fn ground_json(&self, low: Vec2, high: Vec2) -> String {
+        let mut materials = String::new();
+        for (index, entry) in self.surface.profiles.iter().enumerate() {
+            if index > 0 {
+                materials.push_str(",\n");
+            }
+            materials.push_str(&profile_json(index, entry));
+        }
+        format!(
+            r#"{{
+    "path": "ground.bin",
+    "rows": {},
+    "columns": {},
+    "low": [{:.6}, {:.6}],
+    "high": [{:.6}, {:.6}],
+    "spacing_m": {:.6},
+    "state": {{
+      "moisture": "moisture.bin",
+      "compaction": "compaction.bin",
+      "wet_film": "wet_film.bin"
+    }},
+    "materials": [
+{materials}
+    ]
+  }}"#,
             self.ground_rows,
             self.ground_columns,
             low.x,
             low.y,
             high.x,
             high.y,
+            self.surface.spacing_m,
         )
     }
+}
+
+/// One soil, as the Blender side reads it.
+///
+/// Everything the shader needs to build this material's branch of the ground
+/// graph. It is verbose, and the alternative is worse: the numbers used to live
+/// as literals in the node graph, which meant the measured colours were in
+/// Python where nothing in Rust could test them and a second soil meant a second
+/// branch.
+fn profile_json(index: usize, entry: &GroundProfileEntry) -> String {
+    let profile = &entry.profile;
+    let optics = &profile.optics;
+    let palette = &optics.dry_palette;
+    let rgb = |c: [f32; 3]| format!("[{:.6}, {:.6}, {:.6}]", c[0], c[1], c[2]);
+
+    let mut bands = String::new();
+    for (slot, band) in entry.shader_bands.iter().enumerate() {
+        if slot > 0 {
+            bands.push_str(", ");
+        }
+        bands.push_str(&format!(
+            r#"{{"wavelength_m": {:.6}, "amplitude_m": {:.6}, "ridge": {:.4}, "compaction_response": {:.4}, "clustered": {}}}"#,
+            band.wavelength_m,
+            band.amplitude_m,
+            band.shape.ridge(),
+            band.compaction_response,
+            band.clustered,
+        ));
+    }
+
+    format!(
+        r#"      {{
+        "key": "{key}",
+        "display_name": "{display}",
+        "shader": "{shader}",
+        "weights": "weight{index}.bin",
+        "dry_palette": {{"low": {low}, "mid": {mid}, "high": {high}}},
+        "wet": {{"mid": {wet_mid}, "roughness": {rough_wet:.4}, "flattening": {flatten:.4}, "film_ior": {film:.4}}},
+        "roughness_dry": [{rough_low:.4}, {rough_high:.4}],
+        "ior": {ior:.4},
+        "colour_fields": {{
+          "region_wavelength_m": {region_w:.4}, "region_strength": {region_s:.4},
+          "patch_wavelength_m": {patch_w:.4}, "patch_strength": {patch_s:.4},
+          "grain_strength": {grain:.4}
+        }},
+        "cluster": {{"wavelength_m": {cluster_w:.4}, "strength": {cluster_s:.4}}},
+        "micro_roughness": {micro:.4},
+        "shader_bands": [{bands}]
+      }}"#,
+        key = entry.key,
+        display = entry.display_name,
+        shader = entry.shader,
+        low = rgb(palette.low),
+        mid = rgb(palette.mid),
+        high = rgb(palette.high),
+        wet_mid = rgb(optics.wet.wet_mid),
+        rough_wet = optics.wet.roughness_wet,
+        flatten = optics.wet.saturation_flattening,
+        film = optics.wet.film_ior,
+        rough_low = optics.roughness_dry.low,
+        rough_high = optics.roughness_dry.high,
+        ior = optics.ior,
+        region_w = optics.region_wavelength_m,
+        region_s = optics.region_strength,
+        patch_w = optics.patch_wavelength_m,
+        patch_s = optics.patch_strength,
+        grain = optics.grain_strength,
+        cluster_w = profile.structure.cluster_wavelength_m,
+        cluster_s = profile.structure.cluster_strength,
+        micro = entry.micro_roughness,
+    )
 }
 
 /// Reflect a game-world point into the space Blender is given.
@@ -694,6 +805,78 @@ fn resample_into(walked: &[BladeSample], width_scale: f32, ribs: usize, out: &mu
 /// from it.
 const GROUND_RELIEF: f32 = 0.34;
 
+/// What the ground is made of, and the state it is in, over the sample grid.
+///
+/// One weight plane per ground material rather than a single "bare earth"
+/// scalar. The scalar could only ever say *how much of this is not grass*, which
+/// is not a material identity — it cannot tell loam from sand from clay — so
+/// every exposed surface in a world had to be the same brown.
+#[derive(Clone, Debug, Default)]
+pub struct GroundSurface {
+    /// One plane per entry in [`profiles`](GroundSurface::profiles), row-major,
+    /// plane-major. Realised weights, so they agree with the grass exactly.
+    pub weights: Vec<Vec<f32>>,
+    /// The profile each weight plane belongs to, and the soil it describes.
+    pub profiles: Vec<GroundProfileEntry>,
+    /// State channels, row-major. Named rather than numbered because Blender
+    /// reads them by name and a reordering must not silently swap two.
+    pub moisture: Vec<f32>,
+    pub compaction: Vec<f32>,
+    pub wet_film: Vec<f32>,
+    /// The lattice this was sampled on. Recorded rather than assumed: the
+    /// exporter may coarsen it, and a manifest that still claimed the requested
+    /// spacing would make a change in vertex budget look like a shader bug.
+    pub spacing_m: f32,
+}
+
+/// One soil in the export's material table.
+#[derive(Clone, Debug)]
+pub struct GroundProfileEntry {
+    pub key: String,
+    pub display_name: String,
+    pub shader: String,
+    pub profile: std::sync::Arc<terrain_core::ground_material::GroundMaterialProfile>,
+    /// The relief bands the shader bumps: coarser than a pixel, finer than the
+    /// mesh lattice.
+    ///
+    /// The other half of the split lives in the heights. Writing it down here is
+    /// what stops the two halves double-counting a band or dropping one between
+    /// them.
+    pub shader_bands: Vec<terrain_core::ground_material::ReliefBand>,
+    /// What the bands finer than a pixel leave behind.
+    ///
+    /// ## Three tiers, not two
+    ///
+    /// A band the mesh cannot carry goes to the shader; a band the *shader*
+    /// cannot carry either has nowhere left to go, and bumping it anyway is
+    /// worse than dropping it. A one-millimetre grain sampled at three
+    /// millimetres per pixel is not fine texture, it is speckle: every pixel
+    /// lands on a different part of the noise and the surface boils.
+    ///
+    /// So the ladder is
+    ///
+    /// ```text
+    /// wavelength >= 4 x lattice     displaced geometry — casts its own shadow
+    /// wavelength >= 2 x pixel       shader bump — tilts the normal
+    /// below that                    roughness — a microsurface, not a shape
+    /// ```
+    ///
+    /// which is the standard answer and the physical one: sub-pixel relief *is*
+    /// what roughness means. This is the aggregate slope of the dropped bands,
+    /// added to the material's roughness.
+    pub micro_roughness: f32,
+}
+
+/// The largest ground grid this exporter will build.
+///
+/// Not a clamp on the spacing — a budget on the total. When a document's soils
+/// ask for a lattice finer than this affords, the spacing is **coarsened
+/// explicitly** and reported, which moves some relief bands from the mesh to the
+/// shader. Silently clipping the row count instead would stretch the grid to
+/// cover the same ground at a spacing nothing recorded, and every measurement
+/// downstream would be of a surface nobody asked for.
+const MAX_GROUND_SAMPLES: usize = 4_000_000;
+
 /// Ground heights over the page's world footprint.
 ///
 /// The footprint is a diamond in world space — a rectangle on screen unprojects
@@ -701,13 +884,22 @@ const GROUND_RELIEF: f32 = 0.34;
 /// outside the frame. That waste is the cheapest correct option: a grid aligned
 /// to the diamond would have to be re-derived for every page shape, and the
 /// corners cost four triangles.
-#[allow(clippy::type_complexity)]
+///
+/// ## The lattice is anchored to the world, not to the footprint
+///
+/// Sample positions are `origin_index + i` times the spacing, where the origin
+/// index is an integer. The obvious alternative — spreading `columns` samples
+/// evenly between the footprint's two edges — makes the spacing a function of
+/// the footprint, so two overlapping windows sample the same ground at two
+/// different sets of positions and their clods disagree. That is the same
+/// argument the field stack makes for integer lattice addressing, and it applies
+/// here for the same reason.
 fn sample_ground(
     page: &Page,
     field: &WorldField,
-    visible: Option<(Vec2, Vec2)>,
-) -> ((Vec2, Vec2), Vec<f32>, Vec<f32>, Vec<f32>, usize, usize) {
-    let (low, high) = match visible {
+    settings: &RenderSettings,
+) -> ((Vec2, Vec2), Vec<f32>, GroundSurface, usize, usize) {
+    let (low, high) = match settings.visible_ground {
         // The ground ends exactly at the layout, because that edge *is* the
         // picture's silhouette. A margin here would put a rim of unowned ground
         // outside the diamond and the render would no longer be of nine tiles.
@@ -737,51 +929,189 @@ fn sample_ground(
         }
     };
 
-    // A grid step of a centimetre and a half.
-    //
-    // It was four centimetres, on the reasoning that the mound field's finest
-    // feature is broader than that and the blades hide the surface anyway. That
-    // reasoning holds for a meadow and fails completely for a track: where a
-    // document exposes bare earth there are no blades to hide anything, and the
-    // ground's own clods — two to eight centimetres across — are the entire
-    // texture. At four centimetres they were below the sampling rate, which is
-    // why bare ground rendered as a smooth plane.
-    //
-    // A centimetre and a half puts three or four samples across the smallest
-    // clod. See `WorldField::earth_relief`.
-    const STEP: f32 = 0.015;
-    let span = high - low;
-    let columns = ((span.x / STEP).ceil() as usize + 1).clamp(2, 2048);
-    let rows = ((span.y / STEP).ceil() as usize + 1).clamp(2, 2048);
+    // How fine the lattice has to be is a property of the soils in play, not a
+    // constant. A document of hardpan and beach sand needs a finer step than one
+    // of turned farm soil, and a single number chosen for one aliases the other.
+    let evaluator = field.ground();
+    let requested = evaluator
+        .and_then(|ground| {
+            terrain_generators::ground::BandSplit::spacing_for(
+                ground.profiles().into_iter().map(|p| p.as_ref()),
+            )
+        })
+        .unwrap_or(DEFAULT_GROUND_STEP)
+        .clamp(MIN_GROUND_STEP, MAX_GROUND_STEP);
 
-    let mut heights = Vec::with_capacity(rows * columns);
-    // How much of each grid point is bare earth, so the ground material can
-    // shade a track as earth and a meadow floor as meadow floor rather than
-    // painting every substrate the same colour.
-    let mut earth = Vec::with_capacity(rows * columns);
-    // How wet it is. Carried separately from the earth share because they are
-    // independent: a track can be bone dry and a meadow floor can be sodden, and
-    // wet ground is emphatically not dry ground turned down — it darkens toward
-    // its own square, warms, and goes glossy.
-    let mut wetness = Vec::with_capacity(rows * columns);
+    let span = high - low;
+    let (spacing, columns, rows) = fit_lattice(span, requested);
+
+    // Anchored to a global lattice so two windows over the same ground sample
+    // the same points. See the note above.
+    let origin = Vec2::new(
+        (low.x / spacing).floor() * spacing,
+        (low.y / spacing).floor() * spacing,
+    );
+
+    // What one traced pixel covers, which is where the shader runs out of room.
+    let pixel_m = if settings.trace_px_per_metre > 0.0 {
+        1.0 / settings.trace_px_per_metre
+    } else {
+        f32::INFINITY
+    };
+
+    let profiles: Vec<GroundProfileEntry> = evaluator
+        .map(|ground| {
+            let split = terrain_generators::ground::BandSplit::resolve(
+                ground.profiles().into_iter().map(|p| p.as_ref()),
+                spacing,
+            );
+            ground
+                .profiles()
+                .into_iter()
+                .map(|profile| {
+                    let left = split
+                        .shader
+                        .iter()
+                        .find(|(key, _)| key == profile.key.as_str())
+                        .map(|(_, bands)| bands.clone())
+                        .unwrap_or_default();
+                    let (bump, micro): (Vec<_>, Vec<_>) = left
+                        .into_iter()
+                        .partition(|band| band.wavelength_m >= 2.0 * pixel_m);
+                    GroundProfileEntry {
+                        key: profile.key.as_str().to_string(),
+                        display_name: profile.display_name.clone(),
+                        shader: profile.shader.as_str().to_string(),
+                        shader_bands: bump,
+                        micro_roughness: micro_roughness(&micro),
+                        profile: std::sync::Arc::clone(profile),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // A weight plane per *profile*, not per material: two materials sharing one
+    // soil are one thing to shade, and giving them a plane each would make the
+    // shader blend a colour with itself.
+    let planes = profiles.len();
+    let count = rows * columns;
+    let mut heights = Vec::with_capacity(count);
+    let mut weights = vec![Vec::with_capacity(count); planes];
+    let mut moisture = Vec::with_capacity(count);
+    let mut compaction = Vec::with_capacity(count);
+    let mut wet_film = Vec::with_capacity(count);
+
+    // Where each material's weight goes, resolved once rather than by key
+    // comparison per sample.
+    let plane_of: Vec<Option<usize>> = match evaluator {
+        None => Vec::new(),
+        Some(ground) => ground
+            .material_profile_keys()
+            .iter()
+            .map(|key| {
+                key.as_ref()
+                    .and_then(|key| profiles.iter().position(|entry| &entry.key == key))
+            })
+            .collect(),
+    };
+
     for row in 0..rows {
         for column in 0..columns {
-            let blender = Vec2::new(
-                low.x + span.x * column as f32 / (columns - 1) as f32,
-                low.y + span.y * row as f32 / (rows - 1) as f32,
-            );
+            let blender = origin + Vec2::new(column as f32, row as f32) * spacing;
             // The grid is laid out in Blender's reflected space, so the field —
             // which only knows the game's — is asked about the swapped point.
             let world = Vec2::new(blender.y, blender.x);
-            // Mound relief, plus whatever the exposed earth has of its own.
-            // The second term is zero under grass and zero without a document,
-            // so a laboratory meadow's ground is the surface it always was.
-            heights.push(field.sample(world).height * GROUND_RELIEF + field.earth_relief(world));
-            earth.push(field.earth_share(world));
-            wetness.push(field.earth_wetness(world));
+            let mound = field.sample(world).height * GROUND_RELIEF;
+
+            let Some(ground) = evaluator else {
+                heights.push(mound);
+                continue;
+            };
+            // One evaluation. Everything below reads from it, which is what
+            // makes the colour, the relief and the grass agree by construction.
+            let sample = ground.sample(world);
+            heights.push(mound + sample.displacement_m);
+            for plane in weights.iter_mut() {
+                plane.push(0.0);
+            }
+            for (material, weight) in sample.substrates.iter() {
+                if let Some(Some(plane)) = plane_of.get(material.index()) {
+                    let slot = weights[*plane].len() - 1;
+                    weights[*plane][slot] += weight;
+                }
+            }
+            moisture.push(sample.state.moisture);
+            compaction.push(sample.state.compaction);
+            wet_film.push(sample.wet_film);
         }
     }
-    ((low, high), heights, earth, wetness, rows, columns)
+
+    let footprint = (
+        origin,
+        origin + Vec2::new((columns - 1) as f32, (rows - 1) as f32) * spacing,
+    );
+    (
+        footprint,
+        heights,
+        GroundSurface {
+            weights,
+            profiles,
+            moisture,
+            compaction,
+            wet_film,
+            spacing_m: spacing,
+        },
+        rows,
+        columns,
+    )
+}
+
+/// How much roughness a set of unresolvable bands is worth.
+///
+/// Root-sum-of-squares of each band's slope, because independent microfacet
+/// distributions combine in variance rather than in amplitude — the same reason
+/// two normal maps are combined that way and not by adding.
+///
+/// Capped well below one. A band steep enough to push roughness to unity would
+/// be a surface with no specular direction at all, and no soil is that.
+fn micro_roughness(bands: &[terrain_core::ground_material::ReliefBand]) -> f32 {
+    let variance: f32 = bands
+        .iter()
+        .filter(|band| band.wavelength_m > 0.0)
+        .map(|band| {
+            let slope = band.amplitude_m / band.wavelength_m;
+            slope * slope
+        })
+        .sum();
+    (variance.sqrt() * 0.12).min(0.15)
+}
+
+/// The step a meadow with no ground profiles uses.
+///
+/// Four centimetres, which is what this was before profiles existed. The
+/// reasoning holds for a meadow — the mound field's finest feature is broader
+/// than that and the blades hide the surface — and fails completely for a track,
+/// which is why a document that names its soils gets to choose.
+const DEFAULT_GROUND_STEP: f32 = 0.04;
+const MIN_GROUND_STEP: f32 = 0.004;
+const MAX_GROUND_STEP: f32 = 0.06;
+
+/// Coarsen `requested` until the grid fits the budget, and say by how much.
+///
+/// Doubling rather than solving for the exact step, so the answer is a small set
+/// of values and a plate rendered twice at slightly different sizes does not get
+/// two subtly different lattices.
+fn fit_lattice(span: Vec2, requested: f32) -> (f32, usize, usize) {
+    let mut spacing = requested;
+    loop {
+        let columns = (span.x / spacing).ceil() as usize + 2;
+        let rows = (span.y / spacing).ceil() as usize + 2;
+        if columns.saturating_mul(rows) <= MAX_GROUND_SAMPLES || spacing >= MAX_GROUND_STEP {
+            return (spacing, columns.max(2), rows.max(2));
+        }
+        spacing = (spacing * 2.0).min(MAX_GROUND_STEP);
+    }
 }
 
 fn write_f32<'a>(path: &Path, values: impl Iterator<Item = &'a f32>) -> io::Result<()> {

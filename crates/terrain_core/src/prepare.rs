@@ -64,6 +64,14 @@ pub struct PrepareOptions {
     pub require_assets: bool,
     /// Refuse a document that produces warnings as well as one that errors.
     pub deny_warnings: bool,
+    /// The ground profiles the caller has already read.
+    ///
+    /// Passed in rather than resolved here because parsing them means RON, and
+    /// this crate depends on nothing but `serde` — the same reason documents
+    /// themselves arrive already parsed. A caller with no profiles gets a
+    /// terrain whose materials have none, which is legal and means the renderer
+    /// falls back on the appearance key alone.
+    pub profiles: crate::ground_material::GroundProfileLibrary,
 }
 
 /// Everything that went wrong while compiling.
@@ -129,6 +137,19 @@ pub struct PreparedTerrain {
     document_digest: Fingerprint,
     root_seed: RootSeed,
     materials: Vec<MaterialDef>,
+    /// The resolved profile per material, in material-index order.
+    ///
+    /// Resolved once here rather than looked up per sample, because a ground
+    /// evaluator asks this question several million times per plate and the
+    /// answer is a string comparison against an asset path.
+    material_profiles: Vec<Option<Arc<crate::ground_material::GroundMaterialProfile>>>,
+    /// How much each material supports plants, in material-index order.
+    ///
+    /// The document's override where it gave one, the profile's default
+    /// otherwise, and one where there is neither — a material nothing has
+    /// described is assumed to be ordinary ground rather than assumed to be
+    /// rock, because that is the answer that leaves a document unchanged.
+    vegetation_affinity: Vec<f32>,
     channels: Vec<ModifierChannelDef>,
     /// Each channel's default, so a sample starts from them without a lookup.
     channel_defaults: Vec<f32>,
@@ -193,7 +214,84 @@ pub fn prepare(
             .map(|i| MaterialIndex(i as u16))
     };
 
+    // Bind each material to its ground profile, and settle how much grows on it.
+    //
+    // A named profile the caller did not supply is an error rather than a
+    // silent fallback: a track that quietly reverted to meadow-floor colours
+    // would render perfectly and be wrong, which is the failure mode
+    // `deny_unknown_fields` exists to prevent on the authoring side.
+    let mut material_profiles = Vec::with_capacity(materials.len());
+    let mut vegetation_affinity = Vec::with_capacity(materials.len());
+    for (index, material) in materials.iter().enumerate() {
+        let profile = match &material.profile {
+            None => None,
+            Some(path) => match options.profiles.get(path.as_str()) {
+                Some(profile) => Some(Arc::clone(profile)),
+                None => {
+                    diagnostics.error(
+                        "missing_profile",
+                        Location::at(format!("materials[{index}].profile")),
+                        format!(
+                            "`{path}` was not loaded — a material that names a ground \
+                             profile must get it, or the ground renders as something else"
+                        ),
+                    );
+                    None
+                }
+            },
+        };
+        vegetation_affinity.push(
+            material
+                .vegetation_affinity
+                .or(profile.as_ref().map(|p| p.vegetation_affinity))
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0),
+        );
+        material_profiles.push(profile);
+    }
+
     let channels = document.modifier_channels.clone();
+    // A role is a promise that exactly one channel answers a question. Two
+    // claimants means a consumer has to pick, and there is no defensible rule
+    // for which — so it is reported here rather than resolved by document order.
+    for role in ModifierRole::ALL {
+        let claimants: Vec<&str> = channels
+            .iter()
+            .filter(|c| c.role == Some(role))
+            .map(|c| c.key.as_str())
+            .collect();
+        if claimants.len() > 1 {
+            diagnostics.error(
+                "duplicate_role",
+                Location::at("modifier_channels"),
+                format!(
+                    "{} channels claim the role `{}`: {}",
+                    claimants.len(),
+                    role.name(),
+                    claimants.join(", ")
+                ),
+            );
+        }
+        // A state role carries a normalised fraction. A document that declares
+        // its moisture in metres reaches a shader as a wetness of 0.035 and
+        // looks like nothing happened.
+        if role.is_normalised_state()
+            && let Some(channel) = channels.iter().find(|c| c.role == Some(role))
+            && channel.unit != ModifierUnit::Unitless
+        {
+            diagnostics.error(
+                "bad_unit",
+                Location::at("modifier_channels"),
+                format!(
+                    "`{}` carries the role `{}` but is declared in {} — canonical \
+                     state channels are unitless fractions",
+                    channel.key,
+                    role.name(),
+                    channel.unit.name()
+                ),
+            );
+        }
+    }
     let channel_defaults: Vec<f32> = channels.iter().map(|c| c.default_value).collect();
     let channel_index = |key: &ModifierKey| -> Option<ModifierIndex> {
         channels
@@ -322,6 +420,8 @@ pub fn prepare(
         document_digest: document.digest(),
         root_seed: document.root_seed,
         materials,
+        material_profiles,
+        vegetation_affinity,
         channels,
         channel_defaults,
         fields,
@@ -467,8 +567,65 @@ impl PreparedTerrain {
         &self.materials
     }
 
+    /// The ground profile a material resolved to, if it named one that loaded.
+    pub fn material_profile(
+        &self,
+        material: MaterialIndex,
+    ) -> Option<&Arc<crate::ground_material::GroundMaterialProfile>> {
+        self.material_profiles.get(material.index())?.as_ref()
+    }
+
+    /// How much a material supports plants, `0..1`.
+    ///
+    /// Never a guess from the material's name. A document says so, or the
+    /// profile it names says so, or it is ordinary ground.
+    pub fn vegetation_affinity(&self, material: MaterialIndex) -> f32 {
+        self.vegetation_affinity
+            .get(material.index())
+            .copied()
+            .unwrap_or(1.0)
+    }
+
+    /// Every distinct profile in play, paired with the materials using it.
+    ///
+    /// What an exporter writes into a manifest: one table of soils, and a
+    /// weight plane per material pointing into it.
+    pub fn ground_profiles(
+        &self,
+    ) -> Vec<(
+        &Arc<crate::ground_material::GroundMaterialProfile>,
+        Vec<MaterialIndex>,
+    )> {
+        let mut table: Vec<(
+            &Arc<crate::ground_material::GroundMaterialProfile>,
+            Vec<MaterialIndex>,
+        )> = Vec::new();
+        for (index, profile) in self.material_profiles.iter().enumerate() {
+            let Some(profile) = profile else { continue };
+            let material = MaterialIndex(index as u16);
+            match table.iter_mut().find(|(known, _)| known.key == profile.key) {
+                Some((_, users)) => users.push(material),
+                None => table.push((profile, vec![material])),
+            }
+        }
+        table
+    }
+
     pub fn channels(&self) -> &[ModifierChannelDef] {
         &self.channels
+    }
+
+    /// The channel a canonical role resolves to, if a document declared one.
+    ///
+    /// The reason [`ModifierRole`] exists. A consumer that looked this up by the
+    /// exact string `soil_moisture` works until the first document that calls
+    /// its channel `wetness`, and then the ground is silently bone dry with
+    /// nothing anywhere saying why.
+    pub fn role_channel(&self, role: ModifierRole) -> Option<ModifierIndex> {
+        self.channels
+            .iter()
+            .position(|c| c.role == Some(role))
+            .map(|i| ModifierIndex(i as u16))
     }
 
     pub fn populations(&self) -> &[CompiledPopulation] {
@@ -744,6 +901,8 @@ mod tests {
             key: MaterialKey::new(key).expect("valid"),
             display_name: key.into(),
             appearance: AppearanceKey::new(format!("surface.{key}")).expect("valid"),
+            profile: None,
+            vegetation_affinity: None,
         }
     }
 
@@ -765,6 +924,7 @@ mod tests {
                 default_value: 1.0,
                 composition: ModifierComposition::Multiply,
                 unit: ModifierUnit::Unitless,
+            role: None,
             }],
             sources: vec![constant_source("everywhere", 1.0)],
             layers: vec![LayerDef {

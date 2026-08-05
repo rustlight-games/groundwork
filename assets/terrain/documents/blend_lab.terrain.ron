@@ -27,7 +27,7 @@
 // exists to prevent.
 (
     format: "terrain-document",
-    format_version: 1,
+    format_version: 2,
     document: (
         coordinate_system: "PlanarMetres",
         root_seed: "5a17e33b0c9d2f14",
@@ -41,12 +41,16 @@
             (
                 key: "grass_lush",
                 display_name: "Lush Grass",
-                appearance: "surface.grass_lush",
+                appearance: "surface.ground",
+                profile: Some("materials/meadow_floor.ground.ron"),
+                vegetation_affinity: Some(1.0),
             ),
             (
                 key: "dirt_compacted",
                 display_name: "Compacted Dirt",
-                appearance: "surface.dirt_compacted",
+                appearance: "surface.ground",
+                profile: Some("materials/compacted_loam.ground.ron"),
+                vegetation_affinity: Some(0.0),
             ),
         ],
 
@@ -59,6 +63,7 @@
                 // Multiply, so two suppressions compound rather than fighting.
                 composition: "Multiply",
                 unit: "Unitless",
+                role: Some("VegetationDensity"),
             ),
             (
                 key: "flower_abundance",
@@ -85,6 +90,7 @@
                 default_value: 0.0,
                 composition: "Max",
                 unit: "Unitless",
+                role: Some("LooseMaterial"),
             ),
         ],
 

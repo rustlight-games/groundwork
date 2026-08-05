@@ -1,0 +1,90 @@
+// A worn track: the same soil as the meadow floor, seen in the open.
+//
+// ## Where these colours come from
+//
+// Sampled off `docs/references/grass_to_mud_bumpy.jpg` over a 700 px square, in
+// linear light:
+//
+//     25%           0.061, 0.031, 0.013
+//     median        0.084, 0.053, 0.030
+//     brightest 5%  0.195, 0.127, 0.072
+//
+// The ratios matter more than the levels and they hold across the whole range:
+// **G/R about 0.63, B/R about 0.36.** An earlier ramp sat at G/R of nearly one,
+// which is why a whole track of it read as sand — the error was the green, never
+// the brightness.
+(
+    format: "ground-material",
+    format_version: 1,
+    material: (
+        key: "compacted_loam",
+        display_name: "Compacted loam",
+
+        optics: (
+            dry_palette: (
+                low:  (0.0500, 0.0315, 0.0180),
+                mid:  (0.0840, 0.0530, 0.0300),
+                high: (0.1550, 0.0977, 0.0558),
+            ),
+            // A third of the dry value, and distinctly warmer: wet ground keeps
+            // its red far better than its blue. Roughness is the important one
+            // though — the sheen arrives before the darkening is noticeable, and
+            // darkening alone is what makes wet ground read as ground in shadow.
+            wet: (
+                wet_mid: (0.0294, 0.0154, 0.0069),
+                roughness_wet: 0.20,
+                saturation_flattening: 0.45,
+            ),
+            roughness_dry: (0.82, 0.96),
+            ior: 1.48,
+
+            region_wavelength_m: 2.0,
+            region_strength: 0.5,
+            patch_wavelength_m: 0.25,
+            patch_strength: 0.9,
+            grain_strength: 0.55,
+        ),
+
+        structure: (
+            bands: [
+                // Five centimetres, standing about a third of that. This is the
+                // band that casts shadows, and it is the reason bare ground has
+                // to reach the mesh at all.
+                (wavelength_m: 0.0500, amplitude_m: 0.0170, shape: "RoundedRidged", compaction_response: 0.62, clustered: true),
+                // Loose crumb riding on the clods.
+                (wavelength_m: 0.0080, amplitude_m: 0.0030, compaction_response: 0.45, clustered: true),
+                // Grain. Barely flattened by compaction — a wheel presses clods
+                // down and hardly touches what is between them.
+                //
+                // The whole ladder of responses was steeper than this once, and
+                // a worn track came back looking like paper. Packing a soil
+                // takes maybe two thirds of its coarse relief away, not five
+                // sixths: a path that has been walked on for a year still has
+                // clods, they are just flatter than the ones beside it.
+                (wavelength_m: 0.0012, amplitude_m: 0.0006, compaction_response: 0.20),
+            ],
+            cluster_wavelength_m: 0.8,
+            cluster_strength: 0.5,
+            cohesion: 0.62,
+        ),
+
+        // A packed path does craze when it dries right out, and the ceiling is
+        // low enough that a track with any moisture in it does not.
+        cracks: Some((
+            polygon_m: 0.13,
+            width_m: 0.004,
+            depth_m: 0.012,
+            secondary: 0.35,
+            curl_m: 0.0008,
+            moisture_ceiling: 0.25,
+        )),
+
+        scatter: (
+            grit_per_m2: 90.0,
+            pebble_per_m2: 0.5,
+            fragment_radius_m: (0.004, 0.02),
+        ),
+
+        vegetation_affinity: 0.0,
+    ),
+)

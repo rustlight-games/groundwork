@@ -30,7 +30,7 @@ use crate::raw::RawDocument;
 pub const TERRAIN_DOCUMENT_FORMAT: &str = "terrain-document";
 
 /// The version this build writes.
-pub const CURRENT_FORMAT_VERSION: u32 = 1;
+pub const CURRENT_FORMAT_VERSION: u32 = 2;
 
 /// The oldest version this build can still migrate from.
 ///

@@ -36,7 +36,7 @@
 // standing on ground that is already bare.
 (
     format: "terrain-document",
-    format_version: 1,
+    format_version: 2,
     document: (
         coordinate_system: "PlanarMetres",
         root_seed: "9f2c41ab7e05d386",
@@ -54,12 +54,16 @@
                 // grows out of this, which is what lets the same grass grow
                 // sparsely on the dirt without inventing a third material for
                 // "dirt with a bit of grass on it".
-                appearance: "surface.meadow_soil",
+                appearance: "surface.ground",
+                profile: Some("materials/meadow_floor.ground.ron"),
+                vegetation_affinity: Some(1.0),
             ),
             (
                 key: "dirt_compacted",
                 display_name: "Compacted Dirt",
-                appearance: "surface.dirt_compacted",
+                appearance: "surface.ground",
+                profile: Some("materials/compacted_loam.ground.ron"),
+                vegetation_affinity: Some(0.0),
             ),
         ],
 
@@ -72,6 +76,7 @@
                 // Multiply, so two suppressions compound rather than fighting.
                 composition: "Multiply",
                 unit: "Unitless",
+                role: Some("VegetationDensity"),
             ),
             (
                 key: "tuft_density",
@@ -123,6 +128,7 @@
                 default_value: 0.0,
                 composition: "Max",
                 unit: "Unitless",
+                role: Some("LooseMaterial"),
             ),
             (
                 key: "soil_compaction",
@@ -131,6 +137,7 @@
                 default_value: 0.1,
                 composition: "Max",
                 unit: "Unitless",
+                role: Some("SoilCompaction"),
             ),
             (
                 key: "soil_moisture",
@@ -139,6 +146,7 @@
                 default_value: 0.45,
                 composition: "Max",
                 unit: "Unitless",
+                role: Some("SoilMoisture"),
             ),
         ],
 

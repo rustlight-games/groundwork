@@ -162,6 +162,29 @@ impl Context<'_> {
             &raw.appearance,
             |t| AppearanceKey::new(t),
         )?;
+        let profile = match &raw.profile {
+            None => None,
+            Some(path) => match AssetPath::new(path.clone()) {
+                Ok(path) => Some(path),
+                Err(problem) => {
+                    self.report.error(
+                        "bad_asset_path",
+                        Location::at(format!("materials[{index}].profile")),
+                        format!("`{path}` is not a usable asset path: {problem}"),
+                    );
+                    None
+                }
+            },
+        };
+        if let Some(affinity) = raw.vegetation_affinity
+            && !(0.0..=1.0).contains(&affinity)
+        {
+            self.report.error(
+                "out_of_range",
+                Location::at(format!("materials[{index}].vegetation_affinity")),
+                format!("{affinity} is outside 0..1"),
+            );
+        }
         Some(MaterialDef {
             display_name: if raw.display_name.is_empty() {
                 key.as_str().to_string()
@@ -170,6 +193,8 @@ impl Context<'_> {
             },
             key,
             appearance,
+            profile,
+            vegetation_affinity: raw.vegetation_affinity.filter(|a| (0.0..=1.0).contains(a)),
         })
     }
 
@@ -195,6 +220,17 @@ impl Context<'_> {
                 return None;
             }
         };
+        let role = match &raw.role {
+            None => None,
+            Some(text) => match ModifierRole::parse(text) {
+                Some(role) => Some(role),
+                None => {
+                    let known: Vec<&str> = ModifierRole::ALL.iter().map(|r| r.name()).collect();
+                    self.bad_variant(&format!("modifier_channels[{index}].role"), text, &known);
+                    return None;
+                }
+            },
+        };
         Some(ModifierChannelDef {
             display_name: if raw.display_name.is_empty() {
                 key.as_str().to_string()
@@ -206,6 +242,7 @@ impl Context<'_> {
             default_value: raw.default_value,
             composition,
             unit,
+            role,
         })
     }
 

@@ -1,0 +1,14 @@
+# A guide line for the soil showcase, at v = -0.7 metres.
+#
+# One `u v` pair per line, in metres. See `main_path.spline.ron` for why this is
+# a line-based format rather than RON.
+#
+# Deliberately straight, which is the opposite of what a path wants. A track laid
+# on a ruled line reads as ruled; a **comparison chart** has to be ruled, or the
+# eye spends its effort on the shape of the boundary instead of on the difference
+# between the two soils either side of it.
+#
+# The spacing is one tile of `soil_showcase`, which is rendered at 70 cm — close
+# enough that a two-centimetre clod is a feature rather than a speckle.
+-10.00  -0.70
+ 10.00  -0.70

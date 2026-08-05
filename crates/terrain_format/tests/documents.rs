@@ -37,10 +37,15 @@ fn the_constant_grass_document_loads_and_validates() {
     let document = &loaded.document;
     assert_eq!(document.materials.len(), 1);
     assert_eq!(document.materials[0].key.as_str(), "grass_lush");
+    assert_eq!(document.materials[0].appearance.as_str(), "surface.ground");
+    // One shader for every ground material, and a profile per material saying
+    // what that ground actually is. The appearance key answers "which node graph
+    // knows how to draw this"; the profile answers "what is it made of".
     assert_eq!(
-        document.materials[0].appearance.as_str(),
-        "surface.grass_lush"
+        document.materials[0].profile.as_ref().map(|p| p.as_str()),
+        Some("materials/meadow_floor.ground.ron")
     );
+    assert_eq!(document.materials[0].vegetation_affinity, Some(1.0));
     assert_eq!(document.layers.len(), 1);
     assert_eq!(document.populations.len(), 1);
     assert_eq!(document.root_seed.to_string(), "8df782f95ce1a4d4");
@@ -114,7 +119,7 @@ fn a_file_that_is_not_a_terrain_document_says_so() {
 fn a_document_from_the_future_is_refused_by_its_version() {
     let text = std::fs::read_to_string(constant_grass())
         .expect("readable")
-        .replace("format_version: 1", "format_version: 99");
+        .replace("format_version: 2", "format_version: 99");
     let error = from_str(&text, "future").expect_err("refused");
     assert!(
         matches!(error, LoadError::Migration { .. }),
@@ -199,4 +204,37 @@ fn a_missing_file_reports_the_path_it_looked_for() {
     let error = load(Path::new("does/not/exist.terrain.ron")).expect_err("refused");
     assert!(matches!(error, LoadError::Io { .. }));
     assert!(error.to_string().contains("does/not/exist.terrain.ron"));
+}
+
+#[test]
+fn every_committed_ground_profile_loads() {
+    // Same argument as `every_committed_document_loads`: a profile built in Rust
+    // cannot catch a RON spelling the deserialiser refuses, and that is the
+    // mistake an author hits first. This also runs every range check in
+    // `GroundMaterialProfile::problems` against the shipped library.
+    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/terrain/materials");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&directory).expect("materials directory") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("ron") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("readable");
+        match terrain_format::ground_profile::from_str(&path.display().to_string(), &text) {
+            Ok(profile) => {
+                // The key has to match the filename, or a document naming the
+                // path gets a profile that calls itself something else and every
+                // diagnostic downstream lies about which soil it is.
+                let stem = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(|n| n.strip_suffix(".ground.ron"))
+                    .expect("named <key>.ground.ron");
+                assert_eq!(profile.key.as_str(), stem, "{}", path.display());
+                checked += 1;
+            }
+            Err(error) => panic!("{error}"),
+        }
+    }
+    assert!(checked >= 7, "only {checked} profiles found");
 }

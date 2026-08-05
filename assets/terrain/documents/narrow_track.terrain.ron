@@ -27,7 +27,7 @@
 // than the meadow beside it, the shared candidate field is not being shared.
 (
     format: "terrain-document",
-    format_version: 1,
+    format_version: 2,
     document: (
         coordinate_system: "PlanarMetres",
         root_seed: "3c81f0d92ba64e57",
@@ -41,12 +41,16 @@
             (
                 key: "meadow_soil",
                 display_name: "Meadow Soil",
-                appearance: "surface.meadow_soil",
+                appearance: "surface.ground",
+                profile: Some("materials/meadow_floor.ground.ron"),
+                vegetation_affinity: Some(1.0),
             ),
             (
                 key: "dirt_compacted",
                 display_name: "Compacted Dirt",
-                appearance: "surface.dirt_compacted",
+                appearance: "surface.ground",
+                profile: Some("materials/compacted_loam.ground.ron"),
+                vegetation_affinity: Some(0.0),
             ),
         ],
 
@@ -60,6 +64,7 @@
                 // load-bearing rather than a preference — see the note above.
                 composition: "Multiply",
                 unit: "Unitless",
+                role: Some("VegetationDensity"),
             ),
             (
                 key: "tuft_density",
@@ -108,6 +113,7 @@
                 default_value: 0.0,
                 composition: "Max",
                 unit: "Unitless",
+                role: Some("LooseMaterial"),
             ),
             (
                 key: "soil_compaction",
@@ -116,6 +122,7 @@
                 default_value: 0.1,
                 composition: "Max",
                 unit: "Unitless",
+                role: Some("SoilCompaction"),
             ),
             (
                 key: "soil_moisture",
@@ -124,6 +131,7 @@
                 default_value: 0.45,
                 composition: "Max",
                 unit: "Unitless",
+                role: Some("SoilMoisture"),
             ),
         ],
 

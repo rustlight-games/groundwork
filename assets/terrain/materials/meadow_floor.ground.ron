@@ -1,0 +1,82 @@
+// The ground under a canopy.
+//
+// Almost none of this is ever seen directly, and it is doing more work than its
+// visible area suggests: it separates one tuft from the next, makes a density
+// change legible, and gives the eye somewhere to rest. A canopy with nothing at
+// all between it reads as fur rather than as plants standing in ground.
+//
+// ## Why it is this dark
+//
+// These values were three times brighter for one render and the result was not
+// "pale soil", it was a **rock** — a broad patch bright enough to hold its own
+// against the canopy stops reading as ground seen between plants and starts
+// reading as an object lying on top of them. Nothing about the shader said
+// boulder; the value did.
+//
+// So the floor stays well under the grass it sits between. Compare
+// `compacted_loam.ground.ron`, which is the same physical soil seen on an open
+// track and is four times brighter, because there it is the subject rather than
+// the gap.
+//
+// Note the low stop is the only colour here with more green than red. Ground
+// glimpsed in the deepest shade of a canopy is lit almost entirely by light that
+// has already passed through a leaf.
+(
+    format: "ground-material",
+    format_version: 1,
+    material: (
+        key: "meadow_floor",
+        display_name: "Meadow floor",
+
+        optics: (
+            dry_palette: (
+                low:  (0.0135, 0.0145, 0.0078),
+                mid:  (0.0240, 0.0205, 0.0110),
+                high: (0.0385, 0.0310, 0.0150),
+            ),
+            // A shaded floor is half damp already, so soaking it moves it less
+            // than it moves an open track — and it never goes glossy, because a
+            // sheen down there would be a specular highlight arriving from a
+            // direction the canopy has already blocked.
+            wet: (
+                wet_mid: (0.0101, 0.0074, 0.0033),
+                roughness_wet: 0.30,
+                saturation_flattening: 0.35,
+            ),
+            roughness_dry: (0.78, 0.98),
+            ior: 1.50,
+
+            // Damp and dry regions at two metres, scuffs at a quarter of one.
+            // The region band is the stronger of the two: earth does not change
+            // moisture over four centimetres, and driving the blend from the
+            // finer band puts a visible boundary wherever damp meets dry.
+            region_wavelength_m: 2.0,
+            region_strength: 0.9,
+            patch_wavelength_m: 0.25,
+            patch_strength: 0.5,
+            grain_strength: 0.55,
+        ),
+
+        // No band here is coarse enough to reach the mesh, and that is correct
+        // rather than a limitation: the relief a meadow floor has at clod scale
+        // is hidden under the canopy, and paying for it in vertices would buy
+        // nothing. What the mesh does carry under a meadow is the mound field.
+        structure: (
+            bands: [
+                (wavelength_m: 0.0385, amplitude_m: 0.0110, compaction_response: 0.35, clustered: true),
+                (wavelength_m: 0.0111, amplitude_m: 0.0035, compaction_response: 0.25),
+            ],
+            cluster_wavelength_m: 1.2,
+            cluster_strength: 0.35,
+            cohesion: 0.45,
+        ),
+
+        scatter: (
+            grit_per_m2: 40.0,
+            pebble_per_m2: 0.2,
+            fragment_radius_m: (0.003, 0.015),
+        ),
+
+        vegetation_affinity: 1.0,
+    ),
+)

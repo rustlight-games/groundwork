@@ -46,13 +46,29 @@ fn assets_root() -> PathBuf {
 fn prepared(document: &str) -> std::sync::Arc<terrain_core::PreparedTerrain> {
     let path = assets_root().join("documents").join(document);
     let loaded = terrain_format::load(&path).expect("the document loads");
+    let assets = BesideDocument {
+        root: assets_root(),
+    };
+    // A material that names a ground profile has to get it: `prepare` refuses a
+    // document whose soil could not be read rather than quietly rendering it as
+    // something else.
+    let (profiles, problems) = terrain_format::load_library(
+        loaded
+            .document
+            .materials
+            .iter()
+            .filter_map(|material| material.profile.clone()),
+        &assets,
+    );
+    assert!(problems.is_empty(), "{problems:?}");
     terrain_core::prepare(
         &loaded.document,
-        &BesideDocument {
-            root: assets_root(),
-        },
+        &assets,
         &terrain_core::SourceRegistry::new(),
-        &terrain_core::PrepareOptions::default(),
+        &terrain_core::PrepareOptions {
+            profiles,
+            ..terrain_core::PrepareOptions::default()
+        },
     )
     .expect("the document prepares")
 }

@@ -33,6 +33,7 @@ pub mod domain;
 pub mod families;
 pub mod fastmath;
 pub mod field;
+pub mod ground;
 pub mod fixtures;
 pub mod geometry;
 pub mod iso;

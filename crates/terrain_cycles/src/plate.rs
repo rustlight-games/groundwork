@@ -430,6 +430,7 @@ pub fn trace(
                 ribs: plan.ribs,
                 blade_width: plan.blade_width,
                 visible_ground: request.visible,
+                trace_px_per_metre: plan.trace_px_per_metre,
                 ..request.settings.clone()
             };
             let scene = CyclesScene::build(&grown, field, settings);

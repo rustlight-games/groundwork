@@ -211,6 +211,7 @@ stable_key!(RecipeKey, "a registered recipe");
 stable_key!(DomainKey, "a shared candidate domain");
 stable_key!(StreamKey, "a named random stream");
 stable_key!(AppearanceKey, "a renderer-side appearance binding");
+stable_key!(GroundProfileKey, "a ground material profile");
 
 /// Declare a dense index type.
 ///

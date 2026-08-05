@@ -1,17 +1,5 @@
 //! Bringing an older document up to the current version.
 //!
-//! ## There is nothing to migrate yet, and the machinery is here anyway
-//!
-//! Version one is the only version, so [`migrate`] currently checks a range and
-//! returns. That looks like speculative generality and is the opposite: the
-//! expensive moment for a format is the *first* migration, and it is expensive
-//! precisely when there is nowhere for it to go. What usually happens instead is
-//! a quiet `#[serde(default)]` and a field that means one thing in old documents
-//! and another in new ones, with nothing recording the difference.
-//!
-//! So the shape is here, with the rules written down, and the first migration is
-//! a function and an arm rather than a design decision under time pressure.
-//!
 //! ## The rules a migration follows
 //!
 //! - **One step per version.** `1 -> 2 -> 3`, never `1 -> 3`. A direct jump has
@@ -87,9 +75,7 @@ pub fn migrate(
     };
     let mut document = document;
 
-    // One step per version. When version 2 arrives this becomes a match on
-    // `log.to_version` with an arm per step, and the loop carries the document
-    // through each in turn.
+    // One step per version, carrying the document through each in turn.
     while log.to_version < CURRENT_FORMAT_VERSION {
         let (next, note) = step(document, log.to_version);
         document = next;
@@ -102,20 +88,116 @@ pub fn migrate(
 
 /// One version's worth of change.
 ///
-/// Unreachable today, and it is written as a `match` with no arms rather than
-/// left out entirely so that adding version two is a compile error here until
-/// somebody writes the step.
-fn step(_document: RawDocument, from: u32) -> (RawDocument, String) {
-    // No steps yet: version one is the only version, so the loop above never
-    // enters. Kept as a called function rather than omitted so that raising
-    // `CURRENT_FORMAT_VERSION` without writing the migration fails loudly here
-    // rather than silently skipping a version.
-    unreachable!("no migration is registered from format version {from}")
+/// Written as a `match` with an arm per step rather than a chain of `if`s, so
+/// that raising [`CURRENT_FORMAT_VERSION`] without writing the migration fails
+/// loudly here rather than silently skipping a version.
+fn step(document: RawDocument, from: u32) -> (RawDocument, String) {
+    match from {
+        1 => one_to_two(document),
+        _ => unreachable!("no migration is registered from format version {from}"),
+    }
+}
+
+/// Version one to version two: profiles, affinities and roles.
+///
+/// Three things a version-one document could not say, and all three were being
+/// guessed at runtime instead:
+///
+/// - **Which ground profile a material uses.** It was decided by the appearance
+///   key, in a table in the Blender build.
+/// - **Whether grass grows on it.** It was decided by looking for the substring
+///   `dirt`, `mud`, `rock`, `sand` or `gravel` in the material's key. That rule
+///   is reproduced exactly here, once, at migration time — which is the right
+///   place for a guess: it happens on a document an author can then correct,
+///   rather than on every sample of every render forever.
+/// - **What a modifier channel means.** It was decided by exact string match on
+///   `soil_moisture` and `soil_compaction`. Same treatment: the conventional
+///   names get their canonical roles, and a document that used a different word
+///   comes through with no role and can be told so.
+///
+/// Nothing here fails. A material this cannot classify gets no profile and no
+/// affinity, which is exactly what it had before.
+fn one_to_two(mut document: RawDocument) -> (RawDocument, String) {
+    let mut profiled = 0usize;
+    let mut roled = 0usize;
+
+    for material in &mut document.materials {
+        if material.profile.is_none() {
+            material.profile = default_profile(&material.key).map(str::to_string);
+            if material.profile.is_some() {
+                profiled += 1;
+            }
+        }
+        if material.vegetation_affinity.is_none() {
+            material.vegetation_affinity = Some(if grew_grass_under_the_old_rule(&material.key) {
+                1.0
+            } else {
+                0.0
+            });
+        }
+    }
+
+    for channel in &mut document.modifier_channels {
+        if channel.role.is_none() {
+            channel.role = conventional_role(&channel.key).map(str::to_string);
+            if channel.role.is_some() {
+                roled += 1;
+            }
+        }
+    }
+
+    let note = format!(
+        "1 -> 2: bound {profiled} material(s) to a ground profile, gave every material an \
+         explicit vegetation affinity, and named the role of {roled} modifier channel(s)"
+    );
+    (document, note)
+}
+
+/// The profile a version-one material key implies.
+///
+/// Keyed on the material key rather than the appearance key because the material
+/// key is what an author chose to describe the ground; two materials sharing
+/// `surface.ground` are two different soils.
+fn default_profile(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "meadow_soil" => "materials/meadow_floor.ground.ron",
+        "dirt_compacted" => "materials/compacted_loam.ground.ron",
+        "grass_lush" | "grass_dry" => "materials/meadow_floor.ground.ron",
+        "bare_soil" => "materials/loose_farm_soil.ground.ron",
+        _ => return None,
+    })
+}
+
+/// The rule that used to live in the CLI, preserved exactly.
+fn grew_grass_under_the_old_rule(key: &str) -> bool {
+    !(key.contains("dirt")
+        || key.contains("mud")
+        || key.contains("rock")
+        || key.contains("sand")
+        || key.contains("gravel"))
+}
+
+/// The role a conventionally-named version-one channel was being read as.
+fn conventional_role(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "vegetation_density" => "VegetationDensity",
+        "soil_moisture" => "SoilMoisture",
+        "soil_compaction" => "SoilCompaction",
+        "soil_disturbance" => "SoilDisturbance",
+        "grit_abundance" => "LooseMaterial",
+        "soil_dryness" | "desiccation" => "Desiccation",
+        "organic_matter" => "OrganicMatter",
+        "wind_exposure" => "WindExposure",
+        "water_supply" => "WaterSupply",
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::raw::{RawMaterial, RawModifierChannel};
 
     fn document() -> RawDocument {
         RawDocument {
@@ -128,6 +210,114 @@ mod tests {
             layers: Vec::new(),
             populations: Vec::new(),
         }
+    }
+
+    fn material(key: &str) -> RawMaterial {
+        RawMaterial {
+            key: key.into(),
+            display_name: String::new(),
+            appearance: format!("surface.{key}"),
+            profile: None,
+            vegetation_affinity: None,
+        }
+    }
+
+    fn channel(key: &str) -> RawModifierChannel {
+        RawModifierChannel {
+            key: key.into(),
+            display_name: String::new(),
+            range: (0.0, 1.0),
+            default_value: 0.0,
+            composition: "Max".into(),
+            unit: "Unitless".into(),
+            role: None,
+        }
+    }
+
+    /// The two materials every shipped version-one document is built from.
+    fn meadow_and_track() -> RawDocument {
+        let mut document = document();
+        document.materials = vec![material("meadow_soil"), material("dirt_compacted")];
+        document.modifier_channels = vec![
+            channel("vegetation_density"),
+            channel("soil_moisture"),
+            channel("soil_compaction"),
+            channel("flower_abundance"),
+        ];
+        document
+    }
+
+    #[test]
+    fn version_one_materials_reach_version_two_with_profiles() {
+        let (migrated, log) = migrate(meadow_and_track(), 1).expect("migrates");
+        assert!(log.migrated());
+        assert_eq!(
+            migrated.materials[0].profile.as_deref(),
+            Some("materials/meadow_floor.ground.ron")
+        );
+        assert_eq!(
+            migrated.materials[1].profile.as_deref(),
+            Some("materials/compacted_loam.ground.ron")
+        );
+    }
+
+    #[test]
+    fn the_old_substring_rule_is_frozen_into_the_migration() {
+        // The picture a version-one document produced came from this rule. It
+        // has to survive the migration exactly, or every existing render moves.
+        let (migrated, _) = migrate(meadow_and_track(), 1).expect("migrates");
+        assert_eq!(migrated.materials[0].vegetation_affinity, Some(1.0));
+        assert_eq!(migrated.materials[1].vegetation_affinity, Some(0.0));
+    }
+
+    #[test]
+    fn conventional_channel_names_get_their_roles_and_others_do_not() {
+        let (migrated, _) = migrate(meadow_and_track(), 1).expect("migrates");
+        let roles: Vec<_> = migrated
+            .modifier_channels
+            .iter()
+            .map(|c| c.role.as_deref())
+            .collect();
+        assert_eq!(
+            roles,
+            vec![
+                Some("VegetationDensity"),
+                Some("SoilMoisture"),
+                Some("SoilCompaction"),
+                // Not a canonical state channel. No role, and nothing invented.
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_document_that_already_said_it_is_left_alone() {
+        // A migration is pure and total, and that includes not overwriting an
+        // answer the author gave. A version-one document written by hand may
+        // already carry the new fields; the step must not second-guess it.
+        let mut document = document();
+        let mut material = material("dirt_compacted");
+        material.profile = Some("materials/beach_sand.ground.ron".into());
+        material.vegetation_affinity = Some(0.08);
+        document.materials = vec![material];
+
+        let (migrated, _) = migrate(document, 1).expect("migrates");
+        assert_eq!(
+            migrated.materials[0].profile.as_deref(),
+            Some("materials/beach_sand.ground.ron")
+        );
+        assert_eq!(migrated.materials[0].vegetation_affinity, Some(0.08));
+    }
+
+    #[test]
+    fn an_unrecognised_material_migrates_to_no_profile_rather_than_a_guess() {
+        let mut document = document();
+        document.materials = vec![material("volcanic_ash")];
+        let (migrated, _) = migrate(document, 1).expect("migrates");
+        assert_eq!(migrated.materials[0].profile, None);
+        // Still affinity 1.0: the old rule grew grass on anything it could not
+        // name, and reproducing the old picture is the point.
+        assert_eq!(migrated.materials[0].vegetation_affinity, Some(1.0));
     }
 
     #[test]

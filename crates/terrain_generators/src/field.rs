@@ -394,104 +394,21 @@ pub const LIGHT_PLANE: Vec2 = Vec2::new(-0.724_1, -0.689_7);
 /// importantly — is ragged in *exactly the same places* the compiler decided
 /// ownership. One function, called by both.
 pub struct SemanticOverlay {
-    pub fields: std::sync::Arc<terrain_scene::field::TerrainFieldStack>,
-    pub transition: crate::transition::TransitionProfile,
-    pub root_seed: u64,
-    /// Which substrate counts as ground grass grows on.
-    pub vegetated: Vec<terrain_core::ids::MaterialIndex>,
-    /// The channel scaling how much grows, if the document declares one.
-    pub density_channel: Option<terrain_core::ids::ModifierIndex>,
-    /// The channel saying how wet the ground is, if the document declares one.
-    pub moisture_channel: Option<terrain_core::ids::ModifierIndex>,
-    /// The channel saying how packed it is, if the document declares one.
-    pub compaction_channel: Option<terrain_core::ids::ModifierIndex>,
+    /// The one evaluator. See [`crate::ground`].
+    ///
+    /// Not a copy of its inputs. An overlay that realised the substrate itself
+    /// would be the second caller doing so, and the whole reason the evaluator
+    /// exists is that two callers realising the same ragged boundary separately
+    /// is how a track's colour ends up a centimetre from where its grass
+    /// thinned.
+    pub ground: std::sync::Arc<crate::ground::GroundEvaluator>,
 }
 
 impl std::fmt::Debug for SemanticOverlay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SemanticOverlay")
-            .field("vegetated", &self.vegetated.len())
+            .field("ground", &self.ground)
             .finish()
-    }
-}
-
-impl SemanticOverlay {
-    /// How much of this point is ground that grass grows on, `0..1`.
-    fn vegetated_share(&self, world: Vec2) -> f32 {
-        let at = terrain_core::coords::WorldPoint::new(world.x as f64, world.y as f64);
-        let mut weights: Vec<(terrain_core::ids::MaterialIndex, f32)> = Vec::new();
-        self.fields.substrate_weights_into(at, &mut weights);
-        if weights.is_empty() {
-            return 1.0;
-        }
-        let realised = crate::transition::realise(
-            weights.iter().copied(),
-            at,
-            &self.transition,
-            self.root_seed,
-        );
-        if self.vegetated.is_empty() {
-            return 1.0;
-        }
-        self.vegetated
-            .iter()
-            .map(|material| realised.weight_of(*material))
-            .sum::<f32>()
-            .clamp(0.0, 1.0)
-    }
-
-    /// How wet the ground is here, `0..1`.
-    ///
-    /// The document's declared moisture channel when there is one, and where
-    /// water collects when there is not. Both, in fact: a hollow on a path
-    /// declared dry is still the wettest part of it.
-    fn wetness(&self, world: Vec2) -> f32 {
-        let at = terrain_core::coords::WorldPoint::new(world.x as f64, world.y as f64);
-        let declared = match self.moisture_channel {
-            Some(channel) => self.fields.modifier(channel, at, 0.0).clamp(0.0, 1.0),
-            None => 0.0,
-        };
-        let collected = self
-            .fields
-            .derived
-            .flow_accumulation
-            .as_ref()
-            .map(|plane| {
-                let value = plane.sample(&self.fields.grid, at);
-                (value / (value + 0.6)).clamp(0.0, 1.0)
-            })
-            .unwrap_or(0.0);
-        declared.max(collected * 0.8)
-    }
-
-    /// How packed the ground is here, `0..1`.
-    fn compaction(&self, world: Vec2) -> f32 {
-        match self.compaction_channel {
-            None => 0.0,
-            Some(channel) => self
-                .fields
-                .modifier(
-                    channel,
-                    terrain_core::coords::WorldPoint::new(world.x as f64, world.y as f64),
-                    0.0,
-                )
-                .clamp(0.0, 1.0),
-        }
-    }
-
-    /// The declared abundance channel here, or one.
-    fn abundance(&self, world: Vec2) -> f32 {
-        match self.density_channel {
-            None => 1.0,
-            Some(channel) => self
-                .fields
-                .modifier(
-                    channel,
-                    terrain_core::coords::WorldPoint::new(world.x as f64, world.y as f64),
-                    1.0,
-                )
-                .max(0.0),
-        }
     }
 }
 
@@ -1023,8 +940,8 @@ impl WorldField {
     pub fn sample(&self, world: Vec2) -> Ground {
         let mut ground = self.sample_style(world);
         if let Some(overlay) = &self.overlay {
-            let vegetated = overlay.vegetated_share(world);
-            let abundance = overlay.abundance(world);
+            let vegetated = overlay.ground.vegetation_support(world);
+            let abundance = overlay.ground.abundance(world);
             // Multiplied into the tuned density rather than replacing it, so a
             // meadow the document leaves alone keeps every clump and channel the
             // procedural field gave it.
@@ -1038,88 +955,27 @@ impl WorldField {
         ground
     }
 
-    /// How much of this point is bare earth the document named, `0..1`.
+    /// How much of this point is *not* ground that plants grow on, `0..1`.
     ///
     /// Zero without an overlay, so the laboratory meadow's bare patches keep the
     /// olive ramp they were tuned against and every existing baseline holds.
-    pub fn earth_share(&self, world: Vec2) -> f32 {
+    ///
+    /// Note what this is not: a material identity. It is the complement of the
+    /// weighted vegetation affinity, which is the right question for *the grass*
+    /// — how much of this point can a blade root in — and the wrong question for
+    /// the ground itself. What the ground is made of is
+    /// [`GroundEvaluator::substrates`](crate::ground::GroundEvaluator::substrates),
+    /// which names each soil rather than lumping them into "not grass".
+    pub fn exposed_share(&self, world: Vec2) -> f32 {
         match &self.overlay {
             None => 0.0,
-            Some(overlay) => 1.0 - overlay.vegetated_share(world),
+            Some(overlay) => 1.0 - overlay.ground.vegetation_support(world),
         }
     }
 
-    /// Clod and crumb relief on exposed earth, in metres.
-    ///
-    /// Zero under grass and zero without a document, so the laboratory meadow's
-    /// ground is exactly the surface it always was.
-    ///
-    /// Three bands, at the scales bare ground actually has — measured off
-    /// `docs/references/grass_to_mud_bumpy.jpg` and checked against soil
-    /// literature:
-    ///
-    /// ```text
-    /// clods / aggregates   2 - 8 cm across, standing ~a third of that
-    /// loose crumb          2 - 15 mm
-    /// grain                0.5 - 2 mm      (shader bump, not geometry)
-    /// ```
-    ///
-    /// Only the first two are geometry. The third is below what any sane mesh
-    /// resolves and belongs in the material — but the first two are *silhouette*,
-    /// and a normal map cannot make a lump occlude its own shadow. That is the
-    /// whole reason bare ground rendered flat: the height field was sampled at
-    /// four centimetres on the assumption that blades hide the surface, which
-    /// stops being true the moment a document says the ground is a track.
-    ///
-    /// Compaction flattens it. A worn path is smoother than the loose shoulder
-    /// beside it, and that difference is most of what makes a track read as
-    /// walked on rather than as a strip of different-coloured ground.
-    pub fn earth_relief(&self, world: Vec2) -> f32 {
-        let Some(overlay) = &self.overlay else {
-            return 0.0;
-        };
-        let earth = 1.0 - overlay.vegetated_share(world);
-        if earth <= 0.0 {
-            return 0.0;
-        }
-        let compaction = overlay.compaction(world);
-        // Loose ground clods; compacted ground barely does.
-        let looseness = 1.0 - 0.75 * compaction;
-
-        // 5 cm clods: the band that casts shadows.
-        let clods = fbm(
-            self.seed ^ 0x0C10D5,
-            Stream::Soil,
-            world.x * 20.0,
-            world.y * 20.0,
-            2,
-        ) - 0.5;
-        // 8 mm crumb, riding on top of them.
-        let crumb = fbm(
-            self.seed ^ 0xC20B15,
-            Stream::Soil,
-            world.x * 125.0 + 41.0,
-            world.y * 125.0 - 17.0,
-            2,
-        ) - 0.5;
-
-        // Amplitudes from the measured bands: clods 2-8 cm across stand about a
-        // third of their width, so +-2.75 cm of relief on fully loose ground,
-        // falling to a few millimetres where a track has been packed down.
-        earth * looseness * (clods * 0.055 + crumb * 0.009)
-    }
-
-    /// How wet that earth is, `0..1`.
-    ///
-    /// From the document's own moisture channel where it declares one, and from
-    /// where water collects otherwise. Wet earth is not dry earth in shadow —
-    /// see [`terrain_bake::palette::wet_earth`] — so this drives a colour
-    /// response rather than a brightness one.
-    pub fn earth_wetness(&self, world: Vec2) -> f32 {
-        match &self.overlay {
-            None => 0.0,
-            Some(overlay) => overlay.wetness(world),
-        }
+    /// The ground evaluator behind this field, if a document supplied one.
+    pub fn ground(&self) -> Option<&std::sync::Arc<crate::ground::GroundEvaluator>> {
+        self.overlay.as_ref().map(|overlay| &overlay.ground)
     }
 
     fn sample_style(&self, world: Vec2) -> Ground {

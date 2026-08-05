@@ -88,6 +88,23 @@ pub enum Stream {
     /// not correlate with anything growing near it — grass that thinned in step
     /// with the mud's own lobes would read as a pattern rather than as an edge.
     Boundary = 0x1d,
+    /// The relief of exposed ground, at whichever scale is being asked for.
+    ///
+    /// Bands within it are separated by offsetting the sampling frame per band
+    /// rather than by taking a stream each, because a soil may declare any
+    /// number of bands and streams are a fixed vocabulary.
+    GroundRelief = 0x1e,
+    /// Where a soil is cloddy and where it is smooth.
+    ///
+    /// Its own stream, and not derived from the relief, because clustering is a
+    /// statement about *how much* relief there is rather than about where a
+    /// particular clod sits. Sharing one field would make every cluster centre
+    /// also a clod crest.
+    GroundCluster = 0x1f,
+    /// How far wind ripples wander from a straight wavefront.
+    Ripple = 0x20,
+    /// Where the desiccation polygons meet.
+    Crack = 0x21,
 }
 
 /// Mix a 64-bit value until its bits are independent.
