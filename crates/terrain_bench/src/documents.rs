@@ -126,7 +126,15 @@ pub fn prepare(document: &Path) -> Result<Arc<PreparedTerrain>, LoadError> {
 /// Listed rather than globbed. A glob would silently start measuring a document
 /// somebody dropped into the directory to try something out, and a pinned
 /// baseline that grows rows on its own is not pinned.
-pub const SHIPPED: &[&str] = &["constant_grass", "blend_lab", "meadow_path", "narrow_track"];
+pub const SHIPPED: &[&str] = &[
+    "constant_grass",
+    "blend_lab",
+    "meadow_path",
+    "narrow_track",
+    "flower_meadow",
+    "stony_pasture",
+    "wet_hollow",
+];
 
 /// The documents the shared-candidate compiler can actually build.
 ///
@@ -144,7 +152,13 @@ pub const SHIPPED: &[&str] = &["constant_grass", "blend_lab", "meadow_path", "na
 /// describe. What they cannot do is take part in shared candidate domains, and
 /// a baseline that pretended otherwise by silently skipping them would hide the
 /// day somebody migrates them.
-pub const COMPILABLE: &[&str] = &["meadow_path", "narrow_track"];
+pub const COMPILABLE: &[&str] = &[
+    "meadow_path",
+    "narrow_track",
+    "flower_meadow",
+    "stony_pasture",
+    "wet_hollow",
+];
 
 /// The documents that prepare but cannot compile, and why.
 pub const NOT_COMPILABLE: &[(&str, &str)] = &[

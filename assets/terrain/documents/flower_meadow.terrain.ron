@@ -1,0 +1,275 @@
+// A rich flowering meadow, with nothing walking through it.
+//
+// The counterpart to `meadow_path`. That document is about a *boundary* — what
+// a track does to the ground it crosses — and everything in it is arranged to
+// make that boundary readable. This one has no boundary at all: one soil, one
+// grass, and the whole of its variation carried by two noise fields.
+//
+// It exists to answer a different question. A generator that can only produce
+// interesting ground where it has drawn a line on it is a line generator, not a
+// terrain generator, and the way to find out which this is was to take the line
+// away.
+//
+// ## What the two fields do
+//
+// `meadow_richness` is broad — three metres per cycle — and drives both the
+// flowers and the grass, so a rich passage is rich in both. `sward_texture` is
+// finer and drives only the thatch, which is what stops the richness reading as
+// one field turned up and down: the mat thickens where the canopy thins, so a
+// quiet passage is a *smoother* meadow rather than a balder one.
+//
+// The flowers reach four times the base rate at their richest and a fifth of it
+// at their thinnest, which at two a square metre is a range from one flower
+// every two metres to eight in one. That is roughly what a summer hay meadow
+// does across a field.
+(
+    format: "terrain-document",
+    format_version: 2,
+    document: (
+        coordinate_system: "PlanarMetres",
+        root_seed: "c41ab7e05d3869f2",
+
+        metadata: (
+            name: "Flowering meadow",
+            description: "Rich unbroken meadow: flowers where the ground is good, thatch where it is not.",
+        ),
+
+        materials: [
+            (
+                key: "meadow_soil",
+                display_name: "Meadow Soil",
+                appearance: "surface.ground",
+                profile: Some("materials/meadow_floor.ground.ron"),
+                vegetation_affinity: Some(1.0),
+            ),
+        ],
+
+        modifier_channels: [
+            (
+                key: "vegetation_density",
+                display_name: "Vegetation density",
+                range: (0.0, 1.5),
+                default_value: 1.0,
+                composition: "Multiply",
+                unit: "Unitless",
+                role: Some("VegetationDensity"),
+            ),
+            (
+                key: "thatch_density",
+                display_name: "Thatch density",
+                range: (0.0, 2.0),
+                default_value: 0.45,
+                composition: "Max",
+                unit: "Unitless",
+                role: None,
+            ),
+            (
+                key: "flower_abundance",
+                display_name: "Flower abundance",
+                range: (0.0, 5.0),
+                default_value: 1.0,
+                composition: "Multiply",
+                unit: "Unitless",
+                role: None,
+            ),
+            (
+                key: "stone_abundance",
+                display_name: "Stone abundance",
+                range: (0.0, 1.0),
+                default_value: 0.10,
+                composition: "Max",
+                unit: "Unitless",
+                role: None,
+            ),
+            (
+                key: "soil_moisture",
+                display_name: "Soil moisture",
+                range: (0.0, 1.0),
+                default_value: 0.42,
+                composition: "Max",
+                unit: "Unitless",
+                role: Some("SoilMoisture"),
+            ),
+            (
+                key: "soil_compaction",
+                display_name: "Soil compaction",
+                range: (0.0, 1.0),
+                default_value: 0.06,
+                composition: "Max",
+                unit: "Unitless",
+                role: Some("SoilCompaction"),
+            ),
+        ],
+
+        sources: [
+            (
+                key: "everywhere",
+                source: Constant((value: 1.0)),
+            ),
+            (
+                // Broad: which part of the field this is, not which tussock.
+                key: "meadow_richness",
+                source: Noise((
+                    kind: "Perlin",
+                    frequency_per_m: 0.33,
+                    octaves: 3,
+                    lacunarity: 2.0,
+                    gain: 0.5,
+                    stream: "richness",
+                )),
+            ),
+            (
+                // Finer, and its own stream, so the mat's patches are not the
+                // richness field's patches seen through a different ramp.
+                key: "sward_texture",
+                source: Noise((
+                    kind: "Perlin",
+                    frequency_per_m: 0.9,
+                    octaves: 2,
+                    lacunarity: 2.0,
+                    gain: 0.5,
+                    stream: "sward",
+                )),
+            ),
+        ],
+
+        layers: [
+            (
+                key: "base_meadow",
+                mask: Source("everywhere"),
+                operation: Material((
+                    material: "meadow_soil",
+                    mode: "Replace",
+                    amount: 1.0,
+                )),
+            ),
+            (
+                key: "rich_flowers",
+                mask: Profile((
+                    source: "meadow_richness",
+                    shape: Ramp((low: 0.35, high: 0.80)),
+                )),
+                operation: Modifier((
+                    channel: "flower_abundance",
+                    mode: "Multiply",
+                    value: 4.0,
+                )),
+            ),
+            (
+                key: "poor_flowers",
+                // The other end of the same field. Two layers rather than one
+                // ramp because a meadow's flowers do not fall off linearly:
+                // there is a threshold below which the sward closes and nothing
+                // gets through it, and above which they come thickly.
+                mask: Profile((
+                    source: "meadow_richness",
+                    shape: Ramp((low: 0.42, high: 0.12)),
+                )),
+                operation: Modifier((
+                    channel: "flower_abundance",
+                    mode: "Multiply",
+                    value: 0.18,
+                )),
+            ),
+            (
+                key: "rich_grass",
+                mask: Profile((
+                    source: "meadow_richness",
+                    shape: Ramp((low: 0.30, high: 0.75)),
+                )),
+                operation: Modifier((
+                    channel: "vegetation_density",
+                    mode: "Multiply",
+                    value: 1.25,
+                )),
+            ),
+            (
+                key: "thin_grass",
+                mask: Profile((
+                    source: "meadow_richness",
+                    shape: Ramp((low: 0.38, high: 0.08)),
+                )),
+                operation: Modifier((
+                    channel: "vegetation_density",
+                    mode: "Multiply",
+                    value: 0.55,
+                )),
+            ),
+            (
+                key: "sward_thatch",
+                // The mat thickens where the canopy thins, so a quiet passage
+                // is a smoother meadow rather than a balder one.
+                mask: Profile((
+                    source: "sward_texture",
+                    shape: Ramp((low: 0.55, high: 0.15)),
+                )),
+                operation: Modifier((
+                    channel: "thatch_density",
+                    mode: "Max",
+                    value: 1.35,
+                )),
+            ),
+        ],
+
+        populations: [
+            (
+                key: "meadow_tufts",
+                recipe: "population.grass_tuft",
+                seed_stream: "tufts",
+                material_affinity: [("meadow_soil", 1.0)],
+                abundance_channel: Some("vegetation_density"),
+                parameters: [
+                    ("density", Number(240.0)),
+                    ("length_m", Number(0.20)),
+                    ("width_m", Number(0.0035)),
+                    ("blades", Number(7.0)),
+                ],
+            ),
+            (
+                key: "meadow_fine_grass",
+                recipe: "population.grass_fine",
+                seed_stream: "fine",
+                material_affinity: [("meadow_soil", 1.0)],
+                abundance_channel: Some("vegetation_density"),
+                parameters: [
+                    ("density", Number(900.0)),
+                    ("length_m", Number(0.085)),
+                ],
+            ),
+            (
+                key: "meadow_thatch",
+                recipe: "population.ground_thatch",
+                seed_stream: "thatch",
+                material_affinity: [("meadow_soil", 1.0)],
+                abundance_channel: Some("thatch_density"),
+                parameters: [
+                    ("density", Number(320.0)),
+                    ("length_m", Number(0.065)),
+                ],
+            ),
+            (
+                key: "meadow_flowers",
+                recipe: "population.meadow_flowers",
+                seed_stream: "flowers",
+                material_affinity: [("meadow_soil", 1.0)],
+                abundance_channel: Some("flower_abundance"),
+                parameters: [
+                    ("density", Number(2.2)),
+                    ("stem_length_m", Number(0.27)),
+                    ("head_radius_m", Number(0.015)),
+                ],
+            ),
+            (
+                key: "field_stones",
+                recipe: "population.field_stones",
+                seed_stream: "stones",
+                material_affinity: [],
+                abundance_channel: Some("stone_abundance"),
+                parameters: [
+                    ("density", Number(0.5)),
+                    ("radius_m", Number(0.05)),
+                ],
+            ),
+        ],
+    ),
+)
