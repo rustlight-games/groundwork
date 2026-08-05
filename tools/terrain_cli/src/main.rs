@@ -83,6 +83,49 @@ enum Command {
     Dataset(DatasetArgs),
     /// Run a measurement suite and report against its baseline.
     Benchmark(BenchmarkArgs),
+    /// Compile a document into one scene and render the nine-tile plate.
+    ///
+    /// The production path: document, matrix, shared candidates, one scene, one
+    /// picture. Named apart from `preview-export` because that one still drives
+    /// the older grass-specific generator, and a flag that silently chose
+    /// between two pipelines is how a render comes out of a path nobody meant.
+    Compile(CompileArgs),
+}
+
+#[derive(Args, Debug)]
+struct CompileArgs {
+    /// The terrain document to compile.
+    document: PathBuf,
+    /// Which world. Sixteen hex digits; omitted picks a fresh one.
+    #[arg(long, value_parser = parse_seed)]
+    seed: Option<u64>,
+    /// Which tile sits in the middle, as `U,V`. Omitted derives one from the seed.
+    #[arg(long, value_name = "U,V", allow_hyphen_values = true)]
+    centre_tile: Option<String>,
+    /// Output width in pixels.
+    #[arg(long, default_value_t = 1920)]
+    width: u32,
+    /// Output height in pixels.
+    #[arg(long, default_value_t = 1080)]
+    height: u32,
+    /// Metres along one tile edge.
+    #[arg(long, default_value_t = 2.0)]
+    tile_size_m: f64,
+    /// How hard the rasteriser is allowed to work.
+    #[arg(long, value_parser = parse_quality, default_value = "dataset")]
+    quality: GrassRenderQuality,
+    /// Metres between field-stack samples. Omitted derives one from the framing.
+    #[arg(long)]
+    field_spacing_m: Option<f64>,
+    /// How ragged a boundary between two substrates runs.
+    #[arg(long, default_value_t = 0.30)]
+    raggedness: f32,
+    /// The size of the largest boundary lobes, in metres.
+    #[arg(long, default_value_t = 0.18)]
+    boundary_feature_m: f32,
+    /// Where to write the plate.
+    #[arg(long, default_value = "target/plate.png")]
+    out: PathBuf,
 }
 
 #[derive(Args, Debug)]
@@ -461,6 +504,7 @@ fn parse_quality(text: &str) -> Result<GrassRenderQuality, String> {
 
 fn main() -> ExitCode {
     match Cli::parse().command {
+        Command::Compile(args) => compile(&args),
         Command::Validate(args) => validate(&args),
         Command::Inspect(args) => inspect(&args),
         Command::PreviewExport(args) => preview_export(&args),
@@ -487,8 +531,25 @@ fn validate(args: &DocumentArgs) -> ExitCode {
             // loader cannot do this — it has no registry, deliberately, so a
             // document stays checkable from a CI job with no binary's recipe
             // list — so it happens here where the registry exists.
-            let registry = terrain_generators::default_registry();
-            let recipes = terrain_core::validate::validate_against(document, &registry.known());
+            // Both registries. The shared-candidate families and the older
+            // population recipes are two legitimate sets during the migration,
+            // and a document naming either is a document this binary can grow.
+            let legacy = terrain_generators::default_registry();
+            let families = terrain_generators::family_registry();
+            let mut names: Vec<String> = legacy
+                .keys()
+                .chain(families.keys())
+                .map(|key| key.to_string())
+                .collect();
+            names.sort();
+            names.dedup();
+            let mut known = legacy.known();
+            for key in families.keys() {
+                known = known.with_population(
+                    terrain_core::RecipeKey::new(key).expect("registered keys are valid"),
+                );
+            }
+            let recipes = terrain_core::validate::validate_against(document, &known);
             if recipes.has_errors() {
                 eprintln!("{recipes}");
                 return ExitCode::FAILURE;
@@ -523,11 +584,7 @@ fn validate(args: &DocumentArgs) -> ExitCode {
             );
             println!("  digest {}", document.digest());
             println!("  seed   {}", document.root_seed);
-            println!(
-                "  recipes {} registered: {}",
-                registry.len(),
-                registry.keys().collect::<Vec<_>>().join(", ")
-            );
+            println!("  recipes {} registered: {}", names.len(), names.join(", "));
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -1349,4 +1406,218 @@ mod tests {
         assert!(described.contains("marks"));
         assert!(described.contains("fingerprint"));
     }
+}
+
+/// Compile a document into one scene and render the nine-tile plate.
+///
+/// The whole production path in one command, and the order is the point: the
+/// document decides what the terrain *is*, the compiler decides what grows, and
+/// the renderer only draws what it was handed. Nothing here scatters anything.
+fn compile(args: &CompileArgs) -> ExitCode {
+    let loaded = match terrain_format::load(&args.document) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let assets = BesideDocument {
+        root: asset_root(&args.document),
+    };
+    let terrain = match terrain_core::prepare(
+        &loaded.document,
+        &assets,
+        &terrain_core::SourceRegistry::new(),
+        &terrain_core::PrepareOptions::default(),
+    ) {
+        Ok(terrain) => terrain,
+        Err(report) => {
+            eprintln!("{report}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // The world, and which tile is the middle of it. Derived from the seed
+    // through named streams rather than drawn beside it, so one number
+    // reproduces the whole frame.
+    let seed = args.seed.unwrap_or_else(fresh_seed);
+    let centre = match args.centre_tile.as_deref().map(parse_tile) {
+        Some(Ok(tile)) => Some(tile),
+        Some(Err(problem)) => {
+            eprintln!("{problem}");
+            return ExitCode::FAILURE;
+        }
+        None => None,
+    };
+    let identity = terrain_scene::RenderIdentity::resolve(seed, centre);
+
+    let layout = match terrain_scene::IsoTileLayout::nine(identity.centre_tile, args.tile_size_m) {
+        Ok(layout) => layout,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let frame = terrain_scene::ResolvedIsoFrame::resolve(
+        layout,
+        terrain_scene::Projection::default(),
+        terrain_scene::IsoFrameOptions {
+            output_size: [args.width, args.height],
+            ..terrain_scene::IsoFrameOptions::default()
+        },
+    );
+
+    let transition = terrain_generators::TransitionProfile {
+        raggedness: args.raggedness,
+        feature_m: args.boundary_feature_m,
+        octaves: 3,
+    };
+    let options = terrain_generators::SceneCompileOptions {
+        field_spacing_m: args.field_spacing_m,
+        derive: terrain_scene::derive::DerivedFieldRequest::ALL,
+        transition,
+        validate: true,
+    };
+
+    // The halo is derived by the compiler from every reach that exists, so the
+    // request asks for none and lets it decide.
+    let request = frame.scene_request(0.0);
+    let registry = terrain_generators::family_registry();
+
+    let started = std::time::Instant::now();
+    let compiled = match terrain_generators::compile_scene(&terrain, &request, &registry, &options)
+    {
+        Ok(compiled) => compiled,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let compile_time = started.elapsed();
+
+    // The tuned rasteriser, driven by the document.
+    //
+    // Deliberately *not* a fresh renderer over the generic scene. The painterly
+    // tier is years of tuning against reference art — canopy lighting, glazing,
+    // depth composition, the whole palette — and a from-scratch generic renderer
+    // is a regression however clean its architecture is. What the document
+    // controls is `SemanticOverlay`: how much grows, and where the earth shows.
+    let overlay = std::sync::Arc::new(terrain_generators::SemanticOverlay {
+        fields: compiled.fields.clone(),
+        transition,
+        root_seed: terrain.root_seed().bits(),
+        vegetated: vegetated_materials(&terrain),
+        density_channel: terrain
+            .channel_index(&terrain_core::ModifierKey::new("vegetation_density").expect("valid")),
+        moisture_channel: terrain
+            .channel_index(&terrain_core::ModifierKey::new("soil_moisture").expect("valid")),
+    });
+
+    let params = BakeParams {
+        seed: seed,
+        quality: args.quality,
+        visible: framing_visible(&frame),
+        overlay: Some(overlay),
+        ..BakeParams::default()
+    };
+    let page = Page::at_detail(
+        terrain_bake::bake::vec2(frame.cache_origin[0], frame.cache_origin[1]),
+        args.width as usize,
+        args.height as usize,
+        frame.pixels_per_metre / terrain_generators::iso::PX_PER_METRE,
+    );
+
+    let started = std::time::Instant::now();
+    let plate = terrain_bake::bake::bake_padded_image(page, &params);
+    let render_time = started.elapsed();
+
+    if let Some(parent) = args.out.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(error) = save_rgba(&args.out, &plate) {
+        eprintln!("cannot write {}: {error}", args.out.display());
+        return ExitCode::FAILURE;
+    }
+
+    let report = &compiled.report;
+    println!("{}", args.out.display());
+    println!(
+        "  document {} — seed {} — centre tile {},{}",
+        loaded.document.metadata.name,
+        identity.seed_hex(),
+        identity.centre_tile.u,
+        identity.centre_tile.v
+    );
+    println!(
+        "  matrix   {} samples at {:.3} m, halo {:.2} m",
+        report.field_samples, report.field_spacing_m, report.halo_m
+    );
+    println!(
+        "  candidates {} generated, {} accepted, {} unowned",
+        report.candidates_generated, report.candidates_accepted, report.candidates_unowned
+    );
+    println!(
+        "  marks    {} from {} populations",
+        report.marks_emitted,
+        report.marks_by_population.len()
+    );
+    for (population, count) in &report.marks_by_population {
+        println!("             {population}: {count}");
+    }
+    println!(
+        "  scene    {} — {:.1} marks/m2",
+        compiled.scene.fingerprint().short(),
+        compiled.scene.mark_density()
+    );
+    println!(
+        "  time     compile {:.2}s, render {:.2}s",
+        compile_time.as_secs_f64(),
+        render_time.as_secs_f64()
+    );
+    println!("\nreplay:");
+    println!(
+        "  terrain compile {} --seed {} --centre-tile={},{}",
+        args.document.display(),
+        identity.seed_hex(),
+        identity.centre_tile.u,
+        identity.centre_tile.v
+    );
+    ExitCode::SUCCESS
+}
+
+/// Which substrates count as ground that grass grows on.
+///
+/// Every material whose key does not name bare earth. A crude rule and an honest
+/// one for now: the alternative is a per-material `vegetated` flag in the
+/// document, which is the right answer and a schema change — and until the set
+/// of materials is larger than two, a schema change would be guessing at what
+/// authors need rather than responding to it.
+fn vegetated_materials(
+    terrain: &terrain_core::PreparedTerrain,
+) -> Vec<terrain_core::MaterialIndex> {
+    terrain
+        .materials()
+        .iter()
+        .enumerate()
+        .filter(|(_, material)| {
+            let key = material.key.as_str();
+            !(key.contains("dirt")
+                || key.contains("mud")
+                || key.contains("rock")
+                || key.contains("sand")
+                || key.contains("gravel"))
+        })
+        .map(|(index, _)| terrain_core::MaterialIndex(index as u16))
+        .collect()
+}
+
+/// The ground a resolved frame's plate is *about*.
+fn framing_visible(
+    frame: &terrain_scene::ResolvedIsoFrame,
+) -> Option<terrain_bake::bake::VisibleGround> {
+    let bounds = frame.layout.visible_bounds();
+    Some(terrain_bake::bake::VisibleGround::new(
+        terrain_bake::bake::vec2(bounds.min.u_m as f32, bounds.min.v_m as f32),
+        terrain_bake::bake::vec2(bounds.max.u_m as f32, bounds.max.v_m as f32),
+    ))
 }

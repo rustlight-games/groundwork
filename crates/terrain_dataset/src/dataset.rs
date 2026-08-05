@@ -84,7 +84,10 @@ impl Pair {
         let scene = GrassScene::build(page, &field, &params.grass());
 
         let render = |quality: GrassRenderQuality| {
-            let params = BakeParams { quality, ..*params };
+            let params = BakeParams {
+                quality,
+                ..params.clone()
+            };
             let mut surface =
                 Surface::at_supersample(page.width, page.height, quality.supersample());
             lay_floor(&mut surface, &page, &field, &lattice);
@@ -189,7 +192,7 @@ impl TracedPair {
 
         let cheap = BakeParams {
             quality: input,
-            ..*params
+            ..params.clone()
         };
         let mut surface = Surface::at_supersample(page.width, page.height, input.supersample());
         lay_floor(&mut surface, &page, &field, &lattice);

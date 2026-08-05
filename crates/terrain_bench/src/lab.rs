@@ -222,7 +222,7 @@ pub fn bake_lab(lab: &Lab, params: &BakeParams) -> Vec<Vec3> {
         seed: lab.seed,
         light: lab.key.direction(),
         quality: lab.quality,
-        ..*params
+        ..params.clone()
     };
     let page = lab_page(lab);
     let field = WorldField::lit_by(params.seed, params.light);

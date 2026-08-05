@@ -564,7 +564,7 @@ mod tests {
             ("glaze", |r| r.glaze += 0.5),
         ];
         for (name, nudge) in nudges {
-            let mut params = base;
+            let mut params = base.clone();
             nudge(&mut params.raster);
             let moved = fingerprint(
                 &GrassScene::build(page, &field, &params.grass()),
@@ -606,7 +606,7 @@ mod tests {
             ("thatch", |s| s.thatch *= 1.5),
         ];
         for (name, nudge) in nudges {
-            let mut params = base;
+            let mut params = base.clone();
             nudge(&mut params.style);
             let moved = fingerprint(
                 &GrassScene::build(page, &field, &params.grass()),

@@ -200,7 +200,7 @@ fn request_pages(
             if world.pages.contains_key(&coordinate) {
                 continue;
             }
-            let params = world.params;
+            let params = world.params.clone();
             let page = Page::new(coordinate.as_vec2() * size, PAGE_PIXELS, PAGE_PIXELS);
             let task = pool.spawn(async move { bake_to_rgba(page, &params) });
             world.pages.insert(coordinate, PageState::Baking(task));

@@ -1,0 +1,1016 @@
+//! The content families: what actually grows.
+//!
+//! Six recipes, sharing five lattices. The sharing is the interesting part — see
+//! [`crate::domain`] — and the geometry below is what the reference plates in
+//! `docs/references/` ask for.
+//!
+//! ## The unit of grass is the tuft, not the blade
+//!
+//! One accepted candidate becomes a **tuft**: five to nine blades from one root
+//! neighbourhood, sharing a lean, a length family, a maturity and a hue. Look at
+//! either reference plate and the grass is unmistakably made of clumps with
+//! their own direction; a field of independently scattered blades reads as
+//! carpet however carefully each blade is shaped, because nothing at the
+//! centimetre scale groups them.
+//!
+//! It is also what makes the boundary work. In
+//! `grass_to_mud_transition.jpg` the last grass before the mud is a scatter of
+//! *whole clumps*, full height and full density, standing on bare ground. That
+//! is what falling acceptance looks like when the unit is a tuft. If the unit
+//! were a blade, falling acceptance would thin every clump uniformly and the
+//! edge would fade into a haze instead of breaking into islands.
+//!
+//! ## Everything reads the matrix
+//!
+//! Dryness from moisture, height from the vegetation channels, lean from the
+//! flow direction, and — for dirt — wetness from where water collects. A recipe
+//! that ignored the fields would produce content that is internally consistent
+//! and unrelated to the ground it stands on, which is the look of a scatter
+//! plugin rather than of terrain.
+
+use terrain_core::diagnostics::{DiagnosticReport, Location};
+use terrain_core::document::ParameterObject;
+use terrain_core::ids::{DomainKey, PopulationKey, RecipeKey, StreamKey};
+use terrain_scene::mark::{MarkAttributes, RibbonGeometry, Stratum, TipShape, WidthProfile};
+
+use crate::domain::{CandidateDomainDef, DomainCandidate, SpacingPolicy};
+use crate::population::EmittedMark;
+use crate::recipe::{RecipeContext, RecipeOutput, TerrainRecipe, TerrainRecipeRegistry};
+
+/// Every family this build knows how to grow.
+///
+/// One function listing everything, which is the whole benefit of explicit
+/// registration: a reviewer can read what the binary can do, and two recipes
+/// claiming one key fail here rather than by link order.
+pub fn register_families(registry: &mut TerrainRecipeRegistry) {
+    registry.register(Box::new(GrassTuft));
+    registry.register(Box::new(GrassFine));
+    registry.register(Box::new(GroundThatch));
+    registry.register(Box::new(MeadowFlowers));
+    registry.register(Box::new(FieldStones));
+    registry.register(Box::new(DirtClods));
+}
+
+/// A registry with every family registered.
+pub fn family_registry() -> TerrainRecipeRegistry {
+    let mut registry = TerrainRecipeRegistry::new();
+    register_families(&mut registry);
+    registry
+}
+
+fn key(name: &str) -> RecipeKey {
+    RecipeKey::new(name).expect("family keys are valid by construction")
+}
+
+fn domain_key(name: &str) -> DomainKey {
+    DomainKey::new(name).expect("domain keys are valid by construction")
+}
+
+fn stream(name: &str) -> StreamKey {
+    StreamKey::new(name).expect("stream names are valid by construction")
+}
+
+/// A parameter, or a default, reporting anything unusable.
+fn number(
+    parameters: &ParameterObject,
+    name: &str,
+    default: f64,
+    population: &PopulationKey,
+    diagnostics: &mut DiagnosticReport,
+) -> f64 {
+    match parameters.number(name) {
+        None => default,
+        Some(value) if value.is_finite() && value > 0.0 => value,
+        Some(value) => {
+            diagnostics.error(
+                "invalid_parameter",
+                Location::at(format!("populations.{population}.parameters.{name}")),
+                format!("`{name}` is {value}; it must be finite and positive"),
+            );
+            default
+        }
+    }
+}
+
+/// A parameter, without diagnostics, for the emit path.
+fn read(parameters: &ParameterObject, name: &str, default: f64) -> f64 {
+    match parameters.number(name) {
+        Some(value) if value.is_finite() && value > 0.0 => value,
+        _ => default,
+    }
+}
+
+/// Smooth step between two edges.
+fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
+    if (high - low).abs() < 1.0e-6 {
+        return if x >= high { 1.0 } else { 0.0 };
+    }
+    let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+// ---------------------------------------------------------------------------
+// Grass tufts — the statement layer
+// ---------------------------------------------------------------------------
+
+/// Clumps of blades sharing a root, a lean and a family.
+pub struct GrassTuft;
+
+/// How far a tuft's blades spread from its anchor, in metres.
+///
+/// Three centimetres. Wider and the clump stops reading as one plant; narrower
+/// and the blades occlude each other so completely that the count stops
+/// mattering.
+const TUFT_SPREAD_M: f64 = 0.03;
+
+impl TerrainRecipe for GrassTuft {
+    fn key(&self) -> RecipeKey {
+        key("population.grass_tuft")
+    }
+
+    fn domain(&self) -> DomainKey {
+        domain_key("vegetation.tuft_anchor")
+    }
+
+    fn domain_definition(&self) -> CandidateDomainDef {
+        CandidateDomainDef {
+            key: self.domain(),
+            // Eight candidates per 12 cm cell is about 550 anchors a square
+            // metre at saturation, which is denser than any meadow wants — the
+            // headroom is what lets an author raise density without the lattice
+            // saturating and flattening the variation.
+            cell_m: 0.12,
+            candidates_per_cell: 8,
+            // Tufts exclude each other: real ones compete for root space, and
+            // pure jitter puts two anchors a millimetre apart often enough to
+            // read as a doubled clump.
+            spacing: SpacingPolicy::Exclusion {
+                max_radius_m: 0.035,
+            },
+        }
+    }
+
+    fn appearances(&self) -> Vec<&'static str> {
+        vec!["plant.grass_blade", "plant.grass_dry", "plant.broad_leaf"]
+    }
+
+    fn target_density(&self, parameters: &ParameterObject) -> f64 {
+        read(parameters, "density", 220.0)
+    }
+
+    fn maximum_reach_m(&self, parameters: &ParameterObject) -> f64 {
+        // A blade can lean its whole length from a root already offset from the
+        // anchor, so both add. An upper bound, not a typical value.
+        read(parameters, "length_m", 0.20) * read(parameters, "length_variation", 1.6)
+            + TUFT_SPREAD_M
+    }
+
+    fn validate(
+        &self,
+        parameters: &ParameterObject,
+        population: &PopulationKey,
+        diagnostics: &mut DiagnosticReport,
+    ) {
+        number(parameters, "density", 220.0, population, diagnostics);
+        number(parameters, "length_m", 0.20, population, diagnostics);
+        number(parameters, "width_m", 0.0035, population, diagnostics);
+        number(parameters, "blades", 7.0, population, diagnostics);
+    }
+
+    fn emit(
+        &self,
+        candidate: &DomainCandidate,
+        context: &RecipeContext<'_>,
+        output: &mut dyn RecipeOutput,
+    ) {
+        let seeds = &context.seeds;
+        let at = candidate.position;
+        let base_length = read(context.parameters, "length_m", 0.20) as f32;
+        let base_width = read(context.parameters, "width_m", 0.0035) as f32;
+        let blade_count = read(context.parameters, "blades", 7.0).clamp(1.0, 16.0) as u16;
+
+        // The tuft's shared personality. Drawn once, at the anchor, so every
+        // blade in the clump agrees — which is the entire reason a tuft is the
+        // unit.
+        let family = candidate.latent(seeds, &stream("tuft_family"));
+        let maturity = candidate.latent(seeds, &stream("tuft_maturity"));
+        let hue = candidate.latent_range(seeds, &stream("tuft_hue"), -1.0, 1.0);
+        let lean = candidate.latent_range(seeds, &stream("tuft_lean"), 0.0, std::f32::consts::TAU);
+
+        // The ground decides the rest. A tuft on wet, sheltered, hollow ground
+        // grows taller and greener than one on a dry exposed crest, and reading
+        // that from the matrix is what ties the content to the terrain.
+        let moisture = context
+            .fields
+            .derived
+            .flow_accumulation
+            .as_ref()
+            .map(|plane| {
+                let value = plane.sample(&context.fields.grid, at);
+                // Accumulated area is unbounded above, so compress it.
+                (value / (value + 0.25)).clamp(0.0, 1.0)
+            })
+            .unwrap_or(0.5);
+        let exposure = context.fields.exposure(at);
+        let curvature = context.fields.curvature(at);
+        // Hollows collect: negative curvature is a dip.
+        let sheltered = smoothstep(0.4, -0.4, curvature);
+
+        // Grass standing on ground that is mostly not grass is the sparse edge
+        // of a meadow: shorter, drier, and it is what makes the transition read
+        // as a boundary rather than as a line where one texture stops.
+        let own_ground = context.substrate.dominant().map(|(_, w)| w).unwrap_or(1.0);
+        let contested = 1.0 - own_ground;
+
+        let length_scale = (0.75 + 0.5 * family)
+            * (0.85 + 0.30 * moisture)
+            * (1.0 - 0.35 * contested)
+            * (0.90 + 0.20 * sheltered);
+        let dryness =
+            (0.25 + 0.5 * (1.0 - moisture) + 0.4 * contested - 0.2 * sheltered).clamp(0.0, 1.0);
+
+        for blade in 0..blade_count {
+            let path = [blade as u32];
+            let draw = |name: &str| {
+                seeds.unit_with_path(
+                    &terrain_core::seed::RandomAddress::new(candidate.id, &stream(name)),
+                    &path,
+                ) as f32
+            };
+
+            // Blades sit around the anchor rather than exactly on it, so the
+            // clump has a footprint instead of being a fan from one point.
+            let spread = TUFT_SPREAD_M as f32 * (0.3 + 0.7 * draw("blade_spread"));
+            let around = draw("blade_around") * std::f32::consts::TAU;
+            let root = terrain_core::coords::WorldPoint::new(
+                at.u_m + (spread * around.cos()) as f64,
+                at.v_m + (spread * around.sin()) as f64,
+            );
+
+            // Each blade leans near the tuft's direction, not at random. The
+            // spread is what stops the clump reading as a comb.
+            let azimuth = lean + (draw("blade_azimuth") - 0.5) * 1.5;
+            let length = base_length * length_scale * (0.7 + 0.6 * draw("blade_length"));
+            let bend = 0.35 + 0.85 * draw("blade_bend") + 0.3 * dryness;
+
+            // A tenth of the blades in a mature tuft are broader leaves, and a
+            // dry tuft carries some straw. Chosen per blade so one clump can
+            // hold both.
+            let appearance = if draw("blade_kind") < 0.12 + 0.10 * maturity {
+                2
+            } else if draw("blade_dry") < dryness * 0.45 {
+                1
+            } else {
+                0
+            };
+
+            output.emit(EmittedMark::Ribbon {
+                root: [root.u_m, root.v_m, context.surface_z_m],
+                geometry: RibbonGeometry {
+                    length_m: length,
+                    azimuth_rad: azimuth,
+                    bend_rad: bend,
+                    curl_rad: 0.15 + 0.5 * draw("blade_curl"),
+                    sway_rad: (draw("blade_sway") - 0.5) * 0.5,
+                    // An elbow. Every smooth arc in a field of smooth arcs
+                    // advertises the function that drew it; no continuous
+                    // parameter produces a kink.
+                    kink_rad: if draw("blade_kinks") < 0.25 {
+                        (draw("blade_kink") - 0.5) * 0.7
+                    } else {
+                        0.0
+                    },
+                    kink_at: 0.45 + 0.35 * draw("blade_kink_at"),
+                    kink_turn_rad: (draw("blade_kink_turn") - 0.5) * 0.4,
+                    // The cheapest valuable parameter in the vocabulary:
+                    // without it every blade presents the same face to the sun
+                    // and the tuft reads as a comb.
+                    twist_rad: (draw("blade_twist") - 0.5) * 2.2,
+                    width_m: base_width * (0.7 + 0.6 * draw("blade_width")),
+                    tip_width_m: base_width * 0.18,
+                    profile: if appearance == 2 {
+                        WidthProfile::Oval
+                    } else {
+                        WidthProfile::Leaf
+                    },
+                    tip: if draw("blade_fork") < 0.08 {
+                        TipShape::Forked {
+                            split_at: 0.7,
+                            opening_rad: 0.25,
+                            long: 0.35,
+                            short: 0.2,
+                        }
+                    } else {
+                        TipShape::Pointed
+                    },
+                    ridge: 0.25 + 0.3 * draw("blade_ridge"),
+                },
+                attributes: MarkAttributes {
+                    maturity,
+                    moisture,
+                    exposure,
+                    tint: hue * 0.6 + (draw("blade_tint") - 0.5) * 0.5,
+                    variation: family,
+                },
+                stratum: Stratum::Canopy,
+                appearance,
+            });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fine grass — the undergrowth that closes the canopy
+// ---------------------------------------------------------------------------
+
+/// Short filler blades between the tufts.
+///
+/// A separate domain from the tufts, at much higher density and without
+/// exclusion, because its job is to close the gaps the statement clumps leave.
+/// Sharing the tuft lattice would make the two compete for the same candidates
+/// and the meadow would be either clumps or filler, never both.
+pub struct GrassFine;
+
+impl TerrainRecipe for GrassFine {
+    fn key(&self) -> RecipeKey {
+        key("population.grass_fine")
+    }
+
+    fn domain(&self) -> DomainKey {
+        domain_key("vegetation.fine")
+    }
+
+    fn domain_definition(&self) -> CandidateDomainDef {
+        CandidateDomainDef {
+            key: self.domain(),
+            cell_m: 0.06,
+            candidates_per_cell: 8,
+            // No exclusion: fine grass has no business keeping its neighbours
+            // at arm's length, and the thinning pass is the expensive part.
+            spacing: SpacingPolicy::Jittered,
+        }
+    }
+
+    fn appearances(&self) -> Vec<&'static str> {
+        vec!["plant.grass_blade", "plant.grass_dry"]
+    }
+
+    fn target_density(&self, parameters: &ParameterObject) -> f64 {
+        read(parameters, "density", 900.0)
+    }
+
+    fn maximum_reach_m(&self, parameters: &ParameterObject) -> f64 {
+        read(parameters, "length_m", 0.09) * 1.8
+    }
+
+    fn validate(
+        &self,
+        parameters: &ParameterObject,
+        population: &PopulationKey,
+        diagnostics: &mut DiagnosticReport,
+    ) {
+        number(parameters, "density", 900.0, population, diagnostics);
+        number(parameters, "length_m", 0.09, population, diagnostics);
+    }
+
+    fn emit(
+        &self,
+        candidate: &DomainCandidate,
+        context: &RecipeContext<'_>,
+        output: &mut dyn RecipeOutput,
+    ) {
+        let seeds = &context.seeds;
+        let base_length = read(context.parameters, "length_m", 0.09) as f32;
+        let own_ground = context.substrate.dominant().map(|(_, w)| w).unwrap_or(1.0);
+        let dryness = (1.0 - own_ground).clamp(0.0, 1.0);
+
+        output.emit(EmittedMark::Ribbon {
+            root: [
+                candidate.position.u_m,
+                candidate.position.v_m,
+                context.surface_z_m,
+            ],
+            geometry: RibbonGeometry {
+                length_m: base_length
+                    * (0.6 + 0.8 * candidate.latent(seeds, &stream("fine_length"))),
+                azimuth_rad: candidate.latent_range(
+                    seeds,
+                    &stream("fine_azimuth"),
+                    0.0,
+                    std::f32::consts::TAU,
+                ),
+                bend_rad: 0.5 + 0.9 * candidate.latent(seeds, &stream("fine_bend")),
+                curl_rad: 0.2 * candidate.latent(seeds, &stream("fine_curl")),
+                sway_rad: 0.0,
+                kink_rad: 0.0,
+                kink_at: 0.5,
+                kink_turn_rad: 0.0,
+                twist_rad: candidate.latent_range(seeds, &stream("fine_twist"), -1.0, 1.0),
+                width_m: 0.0022 * (0.7 + 0.6 * candidate.latent(seeds, &stream("fine_width"))),
+                tip_width_m: 0.0005,
+                profile: WidthProfile::Leaf,
+                tip: TipShape::Pointed,
+                ridge: 0.2,
+            },
+            attributes: MarkAttributes {
+                maturity: 0.35,
+                moisture: 0.5,
+                exposure: context.fields.exposure(candidate.position),
+                tint: candidate.latent_range(seeds, &stream("fine_tint"), -0.5, 0.5),
+                variation: candidate.latent(seeds, &stream("fine_variation")),
+            },
+            stratum: Stratum::Canopy,
+            appearance: if candidate.latent(seeds, &stream("fine_dry")) < dryness * 0.5 {
+                1
+            } else {
+                0
+            },
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Thatch — the dull mat between green grass and bare ground
+// ---------------------------------------------------------------------------
+
+/// The flattened dead layer under a canopy and at its edge.
+///
+/// Both reference plates show it and it is easy to leave out: between the green
+/// and the clean mud there is a band that is neither, made of flattened dead
+/// material. Without it the boundary is grass-then-dirt with nothing in between,
+/// which reads as a cut.
+pub struct GroundThatch;
+
+impl TerrainRecipe for GroundThatch {
+    fn key(&self) -> RecipeKey {
+        key("population.ground_thatch")
+    }
+
+    fn domain(&self) -> DomainKey {
+        domain_key("vegetation.fine")
+    }
+
+    fn domain_definition(&self) -> CandidateDomainDef {
+        CandidateDomainDef {
+            key: self.domain(),
+            cell_m: 0.06,
+            candidates_per_cell: 8,
+            spacing: SpacingPolicy::Jittered,
+        }
+    }
+
+    fn appearances(&self) -> Vec<&'static str> {
+        vec!["plant.thatch"]
+    }
+
+    fn target_density(&self, parameters: &ParameterObject) -> f64 {
+        read(parameters, "density", 260.0)
+    }
+
+    fn maximum_reach_m(&self, parameters: &ParameterObject) -> f64 {
+        read(parameters, "length_m", 0.07) * 1.5
+    }
+
+    fn validate(
+        &self,
+        parameters: &ParameterObject,
+        population: &PopulationKey,
+        diagnostics: &mut DiagnosticReport,
+    ) {
+        number(parameters, "density", 260.0, population, diagnostics);
+        number(parameters, "length_m", 0.07, population, diagnostics);
+    }
+
+    fn emit(
+        &self,
+        candidate: &DomainCandidate,
+        context: &RecipeContext<'_>,
+        output: &mut dyn RecipeOutput,
+    ) {
+        let seeds = &context.seeds;
+        let length = read(context.parameters, "length_m", 0.07) as f32;
+        output.emit(EmittedMark::Ribbon {
+            root: [
+                candidate.position.u_m,
+                candidate.position.v_m,
+                context.surface_z_m,
+            ],
+            geometry: RibbonGeometry {
+                length_m: length * (0.6 + 0.7 * candidate.latent(seeds, &stream("thatch_length"))),
+                azimuth_rad: candidate.latent_range(
+                    seeds,
+                    &stream("thatch_azimuth"),
+                    0.0,
+                    std::f32::consts::TAU,
+                ),
+                // Nearly flat. Thatch is lying down — that is what makes it
+                // thatch rather than short grass, and it is why it belongs to
+                // the ground stratum where it can be buried.
+                bend_rad: 1.25 + 0.3 * candidate.latent(seeds, &stream("thatch_bend")),
+                curl_rad: 0.0,
+                sway_rad: 0.0,
+                kink_rad: 0.0,
+                kink_at: 0.5,
+                kink_turn_rad: 0.0,
+                twist_rad: 0.0,
+                width_m: 0.0025,
+                tip_width_m: 0.0008,
+                profile: WidthProfile::Stem,
+                tip: TipShape::Notched { depth: 0.3 },
+                ridge: 0.1,
+            },
+            attributes: MarkAttributes {
+                maturity: 0.9,
+                moisture: 0.3,
+                exposure: 0.4,
+                tint: candidate.latent_range(seeds, &stream("thatch_tint"), -0.4, 0.4),
+                variation: candidate.latent(seeds, &stream("thatch_variation")),
+            },
+            stratum: Stratum::Ground,
+            appearance: 0,
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Flowers
+// ---------------------------------------------------------------------------
+
+/// A stem and a head, standing above the canopy.
+pub struct MeadowFlowers;
+
+impl TerrainRecipe for MeadowFlowers {
+    fn key(&self) -> RecipeKey {
+        key("population.meadow_flowers")
+    }
+
+    fn domain(&self) -> DomainKey {
+        domain_key("vegetation.emergent")
+    }
+
+    fn domain_definition(&self) -> CandidateDomainDef {
+        CandidateDomainDef {
+            key: self.domain(),
+            cell_m: 0.25,
+            candidates_per_cell: 6,
+            spacing: SpacingPolicy::Exclusion { max_radius_m: 0.08 },
+        }
+    }
+
+    fn appearances(&self) -> Vec<&'static str> {
+        vec!["flower.stem", "flower.head"]
+    }
+
+    fn target_density(&self, parameters: &ParameterObject) -> f64 {
+        read(parameters, "density", 6.0)
+    }
+
+    fn maximum_reach_m(&self, parameters: &ParameterObject) -> f64 {
+        read(parameters, "stem_length_m", 0.28) * 1.6
+    }
+
+    fn validate(
+        &self,
+        parameters: &ParameterObject,
+        population: &PopulationKey,
+        diagnostics: &mut DiagnosticReport,
+    ) {
+        number(parameters, "density", 6.0, population, diagnostics);
+        number(parameters, "stem_length_m", 0.28, population, diagnostics);
+        number(parameters, "head_radius_m", 0.013, population, diagnostics);
+    }
+
+    fn emit(
+        &self,
+        candidate: &DomainCandidate,
+        context: &RecipeContext<'_>,
+        output: &mut dyn RecipeOutput,
+    ) {
+        let seeds = &context.seeds;
+        let stem_length = read(context.parameters, "stem_length_m", 0.28) as f32
+            * (0.75 + 0.5 * candidate.latent(seeds, &stream("flower_length")));
+        let head_radius = read(context.parameters, "head_radius_m", 0.013) as f32
+            * (0.8 + 0.4 * candidate.latent(seeds, &stream("flower_head")));
+        let azimuth =
+            candidate.latent_range(seeds, &stream("flower_azimuth"), 0.0, std::f32::consts::TAU);
+        let bend = 0.12 + 0.35 * candidate.latent(seeds, &stream("flower_bend"));
+        let root = [
+            candidate.position.u_m,
+            candidate.position.v_m,
+            context.surface_z_m,
+        ];
+
+        output.emit(EmittedMark::Curve {
+            root,
+            length_m: stem_length,
+            azimuth_rad: azimuth,
+            bend_rad: bend,
+            radius_m: 0.0013,
+            tip_radius_m: 0.0009,
+            attributes: MarkAttributes {
+                maturity: 0.7,
+                moisture: 0.5,
+                exposure: 1.0,
+                tint: candidate.latent_range(seeds, &stream("flower_stem_tint"), -0.3, 0.3),
+                variation: candidate.latent(seeds, &stream("flower_variation")),
+            },
+            stratum: Stratum::Emergent,
+            appearance: 0,
+        });
+
+        // The head sits where the bent stem's tip actually is, rather than
+        // straight up: a head that ignored the bend would float beside its own
+        // stem at any noticeable lean.
+        let tip_offset = (stem_length * bend.sin()) as f64;
+        output.emit(EmittedMark::Analytic {
+            centre: [
+                root[0] + tip_offset * azimuth.cos() as f64,
+                root[1] + tip_offset * azimuth.sin() as f64,
+                root[2] + (stem_length * bend.cos()) as f64,
+            ],
+            radius_m: [head_radius, head_radius],
+            height_m: head_radius * 0.55,
+            rotation_rad: azimuth,
+            attributes: MarkAttributes {
+                maturity: 0.8,
+                moisture: 0.5,
+                exposure: 1.0,
+                tint: candidate.latent_range(seeds, &stream("flower_tint"), -1.0, 1.0),
+                variation: candidate.latent(seeds, &stream("flower_variation")),
+            },
+            appearance: 1,
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stones
+// ---------------------------------------------------------------------------
+
+/// Analytic boulders, settled into the ground.
+pub struct FieldStones;
+
+impl TerrainRecipe for FieldStones {
+    fn key(&self) -> RecipeKey {
+        key("population.field_stones")
+    }
+
+    fn domain(&self) -> DomainKey {
+        domain_key("rock.large")
+    }
+
+    fn domain_definition(&self) -> CandidateDomainDef {
+        CandidateDomainDef {
+            key: self.domain(),
+            cell_m: 0.5,
+            candidates_per_cell: 4,
+            // Strict exclusion. Two stones interpenetrating is the one artefact
+            // in this family that is unmistakable.
+            spacing: SpacingPolicy::Exclusion { max_radius_m: 0.22 },
+        }
+    }
+
+    fn appearances(&self) -> Vec<&'static str> {
+        vec!["rock.granite"]
+    }
+
+    fn target_density(&self, parameters: &ParameterObject) -> f64 {
+        read(parameters, "density", 1.2)
+    }
+
+    fn maximum_reach_m(&self, parameters: &ParameterObject) -> f64 {
+        read(parameters, "radius_m", 0.06) * 2.5
+    }
+
+    fn validate(
+        &self,
+        parameters: &ParameterObject,
+        population: &PopulationKey,
+        diagnostics: &mut DiagnosticReport,
+    ) {
+        number(parameters, "density", 1.2, population, diagnostics);
+        number(parameters, "radius_m", 0.06, population, diagnostics);
+    }
+
+    fn emit(
+        &self,
+        candidate: &DomainCandidate,
+        context: &RecipeContext<'_>,
+        output: &mut dyn RecipeOutput,
+    ) {
+        let seeds = &context.seeds;
+        let radius = read(context.parameters, "radius_m", 0.06) as f32
+            * (0.55 + 0.9 * candidate.latent(seeds, &stream("stone_size")));
+        // Not round. A stone with equal semi-axes reads as a ball, and a field
+        // of balls is the giveaway of an analytic rock.
+        let squash = 0.55 + 0.45 * candidate.latent(seeds, &stream("stone_squash"));
+
+        output.emit(EmittedMark::Analytic {
+            centre: [
+                candidate.position.u_m,
+                candidate.position.v_m,
+                // Settled: a stone sits *in* the ground rather than on it, and
+                // the buried third is what stops it reading as a decal.
+                context.surface_z_m - (radius * 0.3) as f64,
+            ],
+            radius_m: [radius, radius * squash],
+            height_m: radius * (0.6 + 0.5 * candidate.latent(seeds, &stream("stone_height"))),
+            rotation_rad: candidate.latent_range(
+                seeds,
+                &stream("stone_rotation"),
+                0.0,
+                std::f32::consts::TAU,
+            ),
+            attributes: MarkAttributes {
+                maturity: 1.0,
+                moisture: context.fields.blend(candidate.position),
+                exposure: context.fields.exposure(candidate.position),
+                tint: candidate.latent_range(seeds, &stream("stone_tint"), -1.0, 1.0),
+                variation: candidate.latent(seeds, &stream("stone_variation")),
+            },
+            appearance: 0,
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dirt clods and grit
+// ---------------------------------------------------------------------------
+
+/// The lumps and grit that make bare ground read as ground.
+///
+/// `grass_to_mud_bumpy.jpg` is mostly this: clods of three to eight centimetres
+/// casting their own shadows under a low sun. A normal map cannot produce that
+/// silhouette, which is why these are geometry rather than shading.
+pub struct DirtClods;
+
+impl TerrainRecipe for DirtClods {
+    fn key(&self) -> RecipeKey {
+        key("population.dirt_clods")
+    }
+
+    fn domain(&self) -> DomainKey {
+        domain_key("surface.grit")
+    }
+
+    fn domain_definition(&self) -> CandidateDomainDef {
+        CandidateDomainDef {
+            key: self.domain(),
+            cell_m: 0.08,
+            candidates_per_cell: 8,
+            spacing: SpacingPolicy::Jittered,
+        }
+    }
+
+    fn appearances(&self) -> Vec<&'static str> {
+        vec!["soil.clod", "soil.grit"]
+    }
+
+    fn target_density(&self, parameters: &ParameterObject) -> f64 {
+        read(parameters, "density", 220.0)
+    }
+
+    fn maximum_reach_m(&self, parameters: &ParameterObject) -> f64 {
+        read(parameters, "radius_m", 0.022) * 3.0
+    }
+
+    fn validate(
+        &self,
+        parameters: &ParameterObject,
+        population: &PopulationKey,
+        diagnostics: &mut DiagnosticReport,
+    ) {
+        number(parameters, "density", 220.0, population, diagnostics);
+        number(parameters, "radius_m", 0.022, population, diagnostics);
+    }
+
+    fn emit(
+        &self,
+        candidate: &DomainCandidate,
+        context: &RecipeContext<'_>,
+        output: &mut dyn RecipeOutput,
+    ) {
+        let seeds = &context.seeds;
+        let size = candidate.latent(seeds, &stream("clod_size"));
+        let base = read(context.parameters, "radius_m", 0.022) as f32;
+        // Two populations in one: a few big clods and a lot of fine grit. A
+        // single size reads as gravel, which is the wrong material.
+        let big = size > 0.72;
+        let radius = if big {
+            base * (1.4 + 1.6 * size)
+        } else {
+            base * (0.25 + 0.6 * size)
+        };
+
+        // Loose material sorts: fines wash into the hollows and the coarse
+        // fragments stay on the crowns. Reading curvature here is what makes
+        // the scatter look deposited rather than sprinkled.
+        let curvature = context.fields.curvature(candidate.position);
+        let hollow = smoothstep(0.5, -0.5, curvature);
+        let wetness = hollow;
+
+        output.emit(EmittedMark::Analytic {
+            centre: [
+                candidate.position.u_m,
+                candidate.position.v_m,
+                context.surface_z_m - (radius * 0.35) as f64,
+            ],
+            radius_m: [
+                radius,
+                radius * (0.6 + 0.4 * candidate.latent(seeds, &stream("clod_squash"))),
+            ],
+            height_m: radius * (0.45 + 0.5 * candidate.latent(seeds, &stream("clod_height"))),
+            rotation_rad: candidate.latent_range(
+                seeds,
+                &stream("clod_rotation"),
+                0.0,
+                std::f32::consts::TAU,
+            ),
+            attributes: MarkAttributes {
+                maturity: 0.6,
+                // Darker where water collects, which is the tonal sweep across
+                // the mud in both reference plates.
+                moisture: wetness,
+                exposure: context.fields.exposure(candidate.position),
+                tint: candidate.latent_range(seeds, &stream("clod_tint"), -1.0, 1.0),
+                variation: size,
+            },
+            appearance: if big { 0 } else { 1 },
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use terrain_core::coords::{CellCoord, WorldPoint, WorldRect};
+    use terrain_core::seed::{CandidateId, PopulationHash, RootSeed, SeedContext};
+    use terrain_scene::field::{FieldGridSpec, TerrainFieldStack};
+
+    fn context_fields() -> TerrainFieldStack {
+        TerrainFieldStack::flat(FieldGridSpec::covering(
+            WorldRect::new(WorldPoint::new(-1.0, -1.0), WorldPoint::new(1.0, 1.0)),
+            0.05,
+        ))
+    }
+
+    fn candidate() -> DomainCandidate {
+        DomainCandidate {
+            id: CandidateId::new(PopulationHash::from_bits(0x1234), CellCoord::new(1, 2), 3),
+            position: WorldPoint::new(0.1, 0.2),
+            priority: 0.5,
+        }
+    }
+
+    fn emit_all(recipe: &dyn TerrainRecipe) -> crate::recipe::CollectedEmissions {
+        let fields = context_fields();
+        let context = RecipeContext {
+            fields: &fields,
+            seeds: SeedContext::new(RootSeed::new(0xabcd), recipe.version()),
+            parameters: &ParameterObject::default(),
+            substrate: crate::transition::realise(
+                [(terrain_core::ids::MaterialIndex(0), 1.0)],
+                WorldPoint::new(0.1, 0.2),
+                &crate::transition::TransitionProfile::SMOOTH,
+                0xabcd,
+            ),
+            surface_z_m: 0.0,
+            root_seed: 0xabcd,
+        };
+        let mut out = crate::recipe::CollectedEmissions::default();
+        recipe.emit(&candidate(), &context, &mut out);
+        out
+    }
+
+    #[test]
+    fn every_family_registers_under_its_own_key() {
+        let registry = family_registry();
+        assert_eq!(registry.len(), 6, "six families");
+        for key in [
+            "population.grass_tuft",
+            "population.grass_fine",
+            "population.ground_thatch",
+            "population.meadow_flowers",
+            "population.field_stones",
+            "population.dirt_clods",
+        ] {
+            assert!(
+                registry.contains(&RecipeKey::new(key).expect("valid")),
+                "{key} is not registered"
+            );
+        }
+    }
+
+    #[test]
+    fn every_family_grows_something() {
+        let registry = family_registry();
+        for name in registry.keys() {
+            let recipe = registry
+                .get(&RecipeKey::new(name).expect("valid"))
+                .expect("registered");
+            let emitted = emit_all(recipe);
+            assert!(
+                !emitted.marks.is_empty(),
+                "{name} emitted nothing for an accepted candidate"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tuft_is_several_blades_and_not_one() {
+        // The property the whole family rests on: falling acceptance has to
+        // remove whole clumps, which only means anything if a clump is more
+        // than one blade.
+        let emitted = emit_all(&GrassTuft);
+        assert!(
+            emitted.marks.len() >= 4,
+            "a tuft came out as {} marks",
+            emitted.marks.len()
+        );
+    }
+
+    #[test]
+    fn a_flower_is_a_stem_and_a_head() {
+        let emitted = emit_all(&MeadowFlowers);
+        assert_eq!(emitted.marks.len(), 2);
+        assert!(matches!(emitted.marks[0], EmittedMark::Curve { .. }));
+        assert!(matches!(emitted.marks[1], EmittedMark::Analytic { .. }));
+    }
+
+    #[test]
+    fn every_familys_reach_bounds_what_it_emits() {
+        // The halo is sized from `maximum_reach_m`, and a mark that reaches
+        // further is present on one side of a page join and missing on the
+        // other. A bound that is not a bound is the silent version of a seam.
+        let registry = family_registry();
+        let parameters = ParameterObject::default();
+        for name in registry.keys() {
+            let recipe = registry
+                .get(&RecipeKey::new(name).expect("valid"))
+                .expect("registered");
+            let reach = recipe.maximum_reach_m(&parameters);
+            assert!(reach > 0.0 && reach.is_finite(), "{name} has no reach");
+
+            let emitted = emit_all(recipe);
+            let anchor = candidate().position;
+            for mark in &emitted.marks {
+                let (position, extent) = match mark {
+                    EmittedMark::Ribbon { root, geometry, .. } => {
+                        ([root[0], root[1]], geometry.reach_m() as f64)
+                    }
+                    EmittedMark::Curve {
+                        root,
+                        length_m,
+                        radius_m,
+                        ..
+                    } => ([root[0], root[1]], (*length_m + *radius_m) as f64),
+                    EmittedMark::Analytic {
+                        centre,
+                        radius_m,
+                        height_m,
+                        ..
+                    } => (
+                        [centre[0], centre[1]],
+                        radius_m[0].max(radius_m[1]).max(*height_m) as f64,
+                    ),
+                };
+                let offset = ((position[0] - anchor.u_m).powi(2)
+                    + (position[1] - anchor.v_m).powi(2))
+                .sqrt();
+                assert!(
+                    offset + extent <= reach + 1.0e-6,
+                    "{name} reaches {} from its anchor but declares {reach}",
+                    offset + extent
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_same_candidate_grows_the_same_thing_twice() {
+        let first = emit_all(&GrassTuft);
+        let second = emit_all(&GrassTuft);
+        assert_eq!(first.marks.len(), second.marks.len());
+        for (a, b) in first.marks.iter().zip(second.marks.iter()) {
+            match (a, b) {
+                (
+                    EmittedMark::Ribbon {
+                        root: ra,
+                        geometry: ga,
+                        ..
+                    },
+                    EmittedMark::Ribbon {
+                        root: rb,
+                        geometry: gb,
+                        ..
+                    },
+                ) => {
+                    assert_eq!(ra, rb);
+                    assert_eq!(ga.length_m, gb.length_m);
+                    assert_eq!(ga.azimuth_rad, gb.azimuth_rad);
+                }
+                _ => panic!("a tuft changed shape between runs"),
+            }
+        }
+    }
+}

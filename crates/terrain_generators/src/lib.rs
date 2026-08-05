@@ -28,7 +28,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod compiler;
 pub mod domain;
+pub mod families;
 pub mod fastmath;
 pub mod field;
 pub mod fixtures;
@@ -39,6 +41,7 @@ pub mod page;
 pub mod placement;
 pub mod population;
 pub mod quality;
+pub mod recipe;
 pub mod recipes;
 pub mod rng;
 pub mod scene;
@@ -48,14 +51,20 @@ pub mod sun;
 pub mod tone;
 pub mod transition;
 
+pub use compiler::{
+    COMPILER_VERSION, SceneCompilation, SceneCompileError, SceneCompileOptions, SceneCompileReport,
+    compile_scene,
+};
 pub use domain::{
     CandidateDomainDef, DOMAIN_ALGORITHM_VERSION, DomainCandidate, DomainRequest, SpacingPolicy,
 };
-pub use field::WorldField;
+pub use families::{family_registry, register_families};
+pub use field::{SemanticOverlay, WorldField};
 pub use ownership::{OwnerOption, assign as assign_owner};
 pub use page::Page;
 pub use population::{PopulationContext, PopulationRecipe, PopulationRegistry};
 pub use quality::GrassRenderQuality;
+pub use recipe::{RecipeContext, RecipeOutput, TerrainRecipe, TerrainRecipeRegistry};
 pub use recipes::{default_registry, register_all};
 pub use scene::GrassScene;
 pub use stroke::Stroke;

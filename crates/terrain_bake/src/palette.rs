@@ -161,6 +161,71 @@ pub const SOIL: [[f32; 3]; 8] = [
     [0.6710, 0.6194, 0.1820],
 ];
 
+/// Bare earth, calibrated against measured soil albedos rather than sampled
+/// from the reference painting.
+///
+/// [`SOIL`] is what thin bare patches *between* grass should be, and it is a
+/// yellow-olive because that is what a few pixels of ground glimpsed through a
+/// canopy read as. Rendered across a whole track it reads as sand: its top stop
+/// is a linear 0.67, which is nearly white.
+///
+/// Real earth is far darker and far redder. Measured off the mud in
+/// `docs/references/grass_to_mud_bumpy.jpg`, sampled over a 700 px square and
+/// converted to linear:
+///
+/// ```text
+/// 25%           linear [0.061, 0.031, 0.013]
+/// median        linear [0.084, 0.053, 0.030]
+/// brightest 5%  linear [0.195, 0.127, 0.072]
+/// ```
+///
+/// The ratios are the part that matters and they are steady across the whole
+/// range: **G/R about 0.63, B/R about 0.36**. `SOIL` has G/R of very nearly
+/// *one*, which is the whole reason it reads as sand rather than as earth — the
+/// error was never the brightness, it was the green.
+///
+/// Kept as a separate ramp rather than replacing [`SOIL`], because every
+/// existing baseline and every bare patch in the laboratory meadow is tuned
+/// against that one.
+pub const EARTH: [[f32; 3]; 8] = [
+    [0.0450, 0.0284, 0.0162],
+    [0.0580, 0.0365, 0.0209],
+    [0.0740, 0.0466, 0.0266],
+    [0.0940, 0.0592, 0.0338],
+    [0.1180, 0.0743, 0.0425],
+    [0.1460, 0.0920, 0.0526],
+    [0.1760, 0.1109, 0.0634],
+    [0.2100, 0.1323, 0.0756],
+];
+
+/// Wet earth, which is not dry earth turned down.
+///
+/// Water displaces the air in the pores, so internal scattering falls and
+/// absorption rises: the albedo darkens roughly as its own square, the hue
+/// shifts *warmer* rather than staying put, and saturation goes up by half
+/// again. Multiplying all three channels by a constant — the obvious
+/// implementation — desaturates instead, which is why wet ground done that way
+/// reads as ground in shadow rather than as wet ground.
+pub fn wet_earth(dry: Vec3, wetness: f32) -> Vec3 {
+    let wetness = wetness.clamp(0.0, 1.0);
+    // Squaring is the standard approximation and it is too strong on its own at
+    // full wetness for a surface that is damp rather than submerged, so it is
+    // interpolated toward rather than applied outright.
+    let squared = Vec3::new(dry.x * dry.x, dry.y * dry.y, dry.z * dry.z);
+    // Scaled back to the ramp's own range before it is mixed in, and mixed
+    // gently. Squaring outright is the textbook approximation for a surface
+    // under standing water; a damp path is not under standing water, and applied
+    // at full strength it takes the dark end of the ramp to a twentieth of its
+    // value — which reads as a hole rather than as wet ground.
+    let darkened = dry.lerp(squared * 5.0, wetness * 0.55);
+    // Warmer and more saturated: red survives the water film better than blue.
+    Vec3::new(
+        darkened.x * (1.0 + 0.16 * wetness),
+        darkened.y * (1.0 - 0.04 * wetness),
+        darkened.z * (1.0 - 0.22 * wetness),
+    )
+}
+
 /// Broadleaf: flatter shading and a touch bluer, so a leaf cluster separates
 /// from the blades it sits among without being a different colour.
 pub const LEAF: [[f32; 3]; 8] = [
@@ -237,6 +302,22 @@ fn shadow_floor(bottom: Vec3) -> Vec3 {
 /// percentile. Below zero is the shadow extension, down to `-`[`SHADOW_DEPTH`];
 /// above one clamps, because the top stop is already an extrapolation.
 #[inline]
+/// Bare earth at a shading value, wet by `wetness`.
+///
+/// The dirt counterpart of [`shade`]: same stop interpolation, a ramp measured
+/// from soil rather than sampled from a painting, and the wet response applied
+/// after so that a damp hollow and a dry crown are the same earth under
+/// different water rather than two different browns.
+pub fn shade_earth(q: f32, wetness: f32) -> Vec3 {
+    let stops = &EARTH;
+    let t = q.clamp(0.0, 1.0) * (stops.len() - 1) as f32;
+    let low = t.floor() as usize;
+    let high = (low + 1).min(stops.len() - 1);
+    let f = t - low as f32;
+    let dry = Vec3::from_array(stops[low]).lerp(Vec3::from_array(stops[high]), f);
+    wet_earth(dry, wetness)
+}
+
 pub fn shade(tone: Tone, q: f32) -> Vec3 {
     let ramp = ramp(tone);
     if q < 0.0 {

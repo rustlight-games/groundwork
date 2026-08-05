@@ -368,6 +368,116 @@ impl Ground {
 /// a test rather than by hope.
 pub const LIGHT_PLANE: Vec2 = Vec2::new(-0.724_1, -0.689_7);
 
+/// What the authored document says about ground the procedural fields are
+/// describing.
+///
+/// ## Why this is a modulation and not a replacement
+///
+/// The fields in [`Ground`] are two different kinds of thing wearing one type.
+/// `flow`, `colony`, `statement`, `crown`, `hue` and `tint` are **style** —
+/// how a meadow is painted, tuned against reference art, and no business of a
+/// terrain document. `density` and `bare` are **terrain semantics** — how much
+/// grows here and whether the ground is exposed — and those are exactly what an
+/// author writing a path through a meadow is trying to control.
+///
+/// So the overlay touches those two and leaves the rest alone. That boundary is
+/// what lets the document decide where the track runs while the grass beside it
+/// keeps every bit of the tuning that makes it look like grass: the colonies
+/// still comb together, the statement field still lets passages collapse into
+/// paint, and the mounds still swell. Replacing the whole field with document
+/// values would produce semantically correct ground that looks like a carpet.
+///
+/// ## The substrate is realised, not read
+///
+/// Bareness comes through the transition solver rather than from the substrate
+/// planes directly, so the edge of the track is ragged at tuft scale and — more
+/// importantly — is ragged in *exactly the same places* the compiler decided
+/// ownership. One function, called by both.
+pub struct SemanticOverlay {
+    pub fields: std::sync::Arc<terrain_scene::field::TerrainFieldStack>,
+    pub transition: crate::transition::TransitionProfile,
+    pub root_seed: u64,
+    /// Which substrate counts as ground grass grows on.
+    pub vegetated: Vec<terrain_core::ids::MaterialIndex>,
+    /// The channel scaling how much grows, if the document declares one.
+    pub density_channel: Option<terrain_core::ids::ModifierIndex>,
+    /// The channel saying how wet the ground is, if the document declares one.
+    pub moisture_channel: Option<terrain_core::ids::ModifierIndex>,
+}
+
+impl std::fmt::Debug for SemanticOverlay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SemanticOverlay")
+            .field("vegetated", &self.vegetated.len())
+            .finish()
+    }
+}
+
+impl SemanticOverlay {
+    /// How much of this point is ground that grass grows on, `0..1`.
+    fn vegetated_share(&self, world: Vec2) -> f32 {
+        let at = terrain_core::coords::WorldPoint::new(world.x as f64, world.y as f64);
+        let mut weights: Vec<(terrain_core::ids::MaterialIndex, f32)> = Vec::new();
+        self.fields.substrate_weights_into(at, &mut weights);
+        if weights.is_empty() {
+            return 1.0;
+        }
+        let realised = crate::transition::realise(
+            weights.iter().copied(),
+            at,
+            &self.transition,
+            self.root_seed,
+        );
+        if self.vegetated.is_empty() {
+            return 1.0;
+        }
+        self.vegetated
+            .iter()
+            .map(|material| realised.weight_of(*material))
+            .sum::<f32>()
+            .clamp(0.0, 1.0)
+    }
+
+    /// How wet the ground is here, `0..1`.
+    ///
+    /// The document's declared moisture channel when there is one, and where
+    /// water collects when there is not. Both, in fact: a hollow on a path
+    /// declared dry is still the wettest part of it.
+    fn wetness(&self, world: Vec2) -> f32 {
+        let at = terrain_core::coords::WorldPoint::new(world.x as f64, world.y as f64);
+        let declared = match self.moisture_channel {
+            Some(channel) => self.fields.modifier(channel, at, 0.0).clamp(0.0, 1.0),
+            None => 0.0,
+        };
+        let collected = self
+            .fields
+            .derived
+            .flow_accumulation
+            .as_ref()
+            .map(|plane| {
+                let value = plane.sample(&self.fields.grid, at);
+                (value / (value + 0.6)).clamp(0.0, 1.0)
+            })
+            .unwrap_or(0.0);
+        declared.max(collected * 0.8)
+    }
+
+    /// The declared abundance channel here, or one.
+    fn abundance(&self, world: Vec2) -> f32 {
+        match self.density_channel {
+            None => 1.0,
+            Some(channel) => self
+                .fields
+                .modifier(
+                    channel,
+                    terrain_core::coords::WorldPoint::new(world.x as f64, world.y as f64),
+                    1.0,
+                )
+                .max(0.0),
+        }
+    }
+}
+
 /// The composition fields for one world.
 #[derive(Debug)]
 pub struct WorldField {
@@ -375,6 +485,12 @@ pub struct WorldField {
     light: Vec2,
     mound_cache: MoundCache,
     blob_cache: Box<BlobCache>,
+    /// What the document says, when there is one.
+    ///
+    /// `None` is the laboratory meadow the reference art was tuned against, and
+    /// it stays the default so that every existing measurement keeps meaning
+    /// what it meant.
+    overlay: Option<std::sync::Arc<SemanticOverlay>>,
 }
 
 const MOUND_CACHE_SLOTS: usize = 256;
@@ -518,7 +634,14 @@ impl WorldField {
             light: LIGHT_PLANE,
             mound_cache: MoundCache::new(),
             blob_cache: Box::new(BlobCache::new()),
+            overlay: None,
         }
+    }
+
+    /// The same world, told what the document says about it.
+    pub fn with_overlay(mut self, overlay: std::sync::Arc<SemanticOverlay>) -> Self {
+        self.overlay = Some(overlay);
+        self
     }
 
     /// The same world under a different key light.
@@ -528,6 +651,7 @@ impl WorldField {
             light: Vec2::new(light.x, light.y).normalize_or(LIGHT_PLANE),
             mound_cache: MoundCache::new(),
             blob_cache: Box::new(BlobCache::new()),
+            overlay: None,
         }
     }
 
@@ -874,7 +998,54 @@ impl WorldField {
     }
 
     /// Everything at once, which is how the baker wants it.
+    /// The ground here: the tuned style fields, then what the document says.
+    ///
+    /// Two steps kept apart on purpose. See [`SemanticOverlay`]: the procedural
+    /// half is the meadow the reference art was tuned against, and the document
+    /// half only ever decides *how much* grows and *whether the earth shows*.
     pub fn sample(&self, world: Vec2) -> Ground {
+        let mut ground = self.sample_style(world);
+        if let Some(overlay) = &self.overlay {
+            let vegetated = overlay.vegetated_share(world);
+            let abundance = overlay.abundance(world);
+            // Multiplied into the tuned density rather than replacing it, so a
+            // meadow the document leaves alone keeps every clump and channel the
+            // procedural field gave it.
+            ground.density *= vegetated * abundance;
+            // Bareness takes whichever is barer. A document that says "this is a
+            // track" must be able to expose ground the mound field thought was
+            // lush, and ground the procedural field already thinned must not be
+            // covered up by a document that said nothing about it.
+            ground.bare = ground.bare.max(1.0 - vegetated);
+        }
+        ground
+    }
+
+    /// How much of this point is bare earth the document named, `0..1`.
+    ///
+    /// Zero without an overlay, so the laboratory meadow's bare patches keep the
+    /// olive ramp they were tuned against and every existing baseline holds.
+    pub fn earth_share(&self, world: Vec2) -> f32 {
+        match &self.overlay {
+            None => 0.0,
+            Some(overlay) => 1.0 - overlay.vegetated_share(world),
+        }
+    }
+
+    /// How wet that earth is, `0..1`.
+    ///
+    /// From the document's own moisture channel where it declares one, and from
+    /// where water collects otherwise. Wet earth is not dry earth in shadow —
+    /// see [`terrain_bake::palette::wet_earth`] — so this drives a colour
+    /// response rather than a brightness one.
+    pub fn earth_wetness(&self, world: Vec2) -> f32 {
+        match &self.overlay {
+            None => 0.0,
+            Some(overlay) => overlay.wetness(world),
+        }
+    }
+
+    fn sample_style(&self, world: Vec2) -> Ground {
         let (height, lit) = self.mounds(world);
         // Every noise lookup below shares this frame; the mound grid rotates
         // itself internally so that finite differences still come back in world

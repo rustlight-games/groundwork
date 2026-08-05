@@ -81,7 +81,7 @@ impl IsoScenario {
                 glam::Vec2::new(bounds.min.u_m as f32, bounds.min.v_m as f32),
                 glam::Vec2::new(bounds.max.u_m as f32, bounds.max.v_m as f32),
             )),
-            ..*params
+            ..params.clone()
         };
         let page = Page::at_detail(
             glam::Vec2::new(frame.cache_origin[0], frame.cache_origin[1]),

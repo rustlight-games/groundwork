@@ -3,6 +3,41 @@
 The map. Read [AGENTS.md](AGENTS.md) first — it is the governing policy, and
 this is where things are.
 
+## The goal
+
+**One isometric 3×3 tile plate, generated from a top-down semantic matrix,
+rendered cheaply and again at high fidelity, with smooth transitions between
+terrain types and every level of detail present.**
+
+The unit is always nine world tiles — three by three, subject in the middle,
+generated as *one continuous scene*. That never changes. See
+[docs/LOW_TO_HIGH_FIDELITY_SPEC.md](docs/LOW_TO_HIGH_FIDELITY_SPEC.md) for the
+full specification and [docs/references/](docs/references/) for what the output
+is aiming at.
+
+Low fidelity means a **typed multi-channel field stack**, not a small picture.
+High fidelity means *the same* terrain rendered more accurately — never a second,
+more detailed terrain.
+
+## Do not reinvent these
+
+Read this section before writing a renderer or a grass generator. Both mistakes
+have been made once already and both cost a day.
+
+- **`terrain_generators::{field, placement, scene, stroke, style}`** is the tuned
+  grass generator: colonies, flow, tillers, statement fields, tuft groups. It is
+  the quality bar. A from-scratch "generic tuft recipe" is a massive visual
+  regression, however clean its architecture.
+- **`terrain_bake::{bake, palette, painter, surface, lighting}`** is the tuned
+  painterly rasteriser: canopy lighting, depth composition, glazing, shadow
+  penumbrae, the measured palette. Same warning.
+
+The way to add semantics is **not** to replace either. It is
+`terrain_generators::field::SemanticOverlay`, which lets an authored document
+modulate `Ground::density` and `Ground::bare` — *how much grows* and *whether
+earth shows* — while every style field stays exactly as tuned. That boundary is
+the whole design: the document owns meaning, the generator owns look.
+
 ## The pipeline
 
 ```text
@@ -13,14 +48,15 @@ TerrainDocument                             terrain_core::document
     │  prepare                               terrain_core::prepare
     ▼
 PreparedTerrain          immutable, Send + Sync, sampling cannot fail
-    │  sample                                terrain_core::sample
+    │  sample onto an edge-anchored lattice  terrain_scene::derive
     ▼
-TerrainScene             built once, reused by every renderer
-    │                                        terrain_scene
-    ├────────► Cycles                        terrain_cycles
-    ├────────► cheap rasteriser              terrain_bake
-    ├────────► debug plates                  terrain_bake
-    └────────► paired corpus                 terrain_dataset
+TerrainFieldStack        THE low-fidelity matrix   terrain_scene::field
+    │  derive slope, curvature, flow, exposure, boundary frames
+    │  realise the ragged boundary           terrain_generators::transition
+    │  shared candidates → ownership          terrain_generators::{domain, ownership}
+    ▼
+    ├──► SemanticOverlay ──► the tuned generator ──► terrain_bake   ← the render
+    └──► TerrainScene    ──► terrain_cycles                          ← path traced
 ```
 
 ## Crates
@@ -30,10 +66,12 @@ crates/
   terrain_core        coordinates, keys, seeds, digests, the document,
                       validation, PreparedTerrain, sampling, built-in sources
   terrain_format      the versioned file: envelope, raw types, migration, RON
-  terrain_scene       projection, tile layout, frame resolver, ground, marks,
-                      instances, painter order
-  terrain_generators  what grows: fields, candidates, blades, recipes
-  terrain_bake        the cheap raster tier, and bake requests and manifests
+  terrain_scene       projection, tile layout, frame resolver, marks, instances,
+                      painter order, AND the field stack + derived fields
+  terrain_generators  what grows: the tuned grass generator, the semantic
+                      overlay, candidate domains, the transition solver,
+                      ownership, the scene compiler, content families
+  terrain_bake        the tuned painterly raster tier, and bake requests
   terrain_cycles      the scene package, the tiled plate driver, Blender
   terrain_dataset     paired renders and shards
   terrain_bevy        page cache, material, plugin  — the only Bevy crate
@@ -55,18 +93,22 @@ Dependencies point downward. `terrain_core` depends on nothing but `serde`.
 | Why is randomness addressed? | `terrain_core/src/seed.rs` |
 | Why two hashes? | `terrain_core/src/digest.rs` |
 | What can an author write? | `terrain_core/src/document.rs` |
-| Why is that an error and this a warning? | `terrain_core/src/validate.rs` |
 | Why can sampling not fail? | `terrain_core/src/prepare.rs` |
-| Why is noise per metre? | `terrain_core/src/sources.rs` |
+| **What is the low-fidelity matrix?** | `terrain_scene/src/field.rs` |
+| **Why is the lattice addressed by integer?** | `terrain_scene/src/field.rs` |
+| **Where do slope, flow and curvature come from?** | `terrain_scene/src/derive.rs` |
+| **Why does a boundary look ragged?** | `terrain_generators/src/transition.rs` |
+| **Why does a transition not double its density?** | `terrain_generators/src/domain.rs` |
+| **Who decides what a candidate becomes?** | `terrain_generators/src/ownership.rs` |
+| **How does a document reach the tuned generator?** | `terrain_generators/src/field.rs` — `SemanticOverlay` |
+| Document → one scene | `terrain_generators/src/compiler.rs` |
 | Why is the projection a mirror? | `terrain_scene/src/projection.rs` |
 | Why nine tiles and not a rectangle? | `terrain_scene/src/layout.rs` |
 | Where does 144 px/m come from? | `terrain_scene/src/frame.rs` |
-| Why is the ground grid edge-anchored? | `terrain_scene/src/ground.rs` |
 | What decides what draws over what? | `terrain_scene/src/mark.rs` |
-| Why candidates and not counts? | `terrain_generators/src/population.rs` |
+| **What colour is earth, and how was that measured?** | `terrain_bake/src/palette.rs` — `EARTH` |
 | Why does the exporter not know about grass? | `terrain_cycles/src/export.rs` |
 | Why does a shard record all that? | `terrain_dataset/src/shard.rs` |
-| Why is a seam measured that way? | `terrain_bench/src/seams.rs` |
 
 Crate-level `//!` docs carry the reasoning. They are written to be read.
 
@@ -78,41 +120,49 @@ cargo run -p terrain_cli -- --help
 terrain validate <document>          # every problem, in one pass
 terrain inspect  <document> --at U,V # what the ground is, and why
 
+# The production path: document → matrix → candidates → tuned render.
+terrain compile assets/terrain/documents/meadow_path.terrain.ron \
+  --seed 5a17e33b0c9d2f14 --centre-tile=0,0 --out target/plate.png
+
 ./run                                # nine tiles, cheap tier, seconds
 ./render                             # the same nine tiles, path-traced
 TERRAIN_SEED=5a17e33b ./run          # that world again, exactly
-
-terrain preview-export --seed 7      # the cheap tier, headless
-terrain render --samples 512         # nine tiles through Cycles
-terrain dataset --shards 8 --aovs
-cargo run --release -p terrain_preview
 ```
 
-A render is **nine world tiles**, three by three, subject in the middle, on a
-transparent background. Random by default and reproducible from the manifest
-written beside it — see [docs/ISOMETRIC_TILES.md](docs/ISOMETRIC_TILES.md).
-`--manual` is the old hand-framed laboratory plate, and the two modes refuse
-each other's options rather than picking silently.
+`terrain compile` is the new path and `preview-export` is the old one: the
+former reads a document, the latter renders the laboratory meadow with no
+document at all. Kept apart deliberately — a flag that silently chose between
+two pipelines is how a render comes out of a path nobody meant.
 
 `TERRAIN_BLENDER` overrides where Blender is found. Pinned to 5.2 LTS.
 
+## Content
+
+Everything under `assets/terrain/` is authored.
+
+```text
+assets/terrain/
+  documents/    constant_grass, blend_lab, meadow_path
+  features/     main_path.spline.ron
+```
+
+- **`constant_grass`** — the base case: one material, everywhere.
+- **`blend_lab`** — four layers reading one spline. Note that it tops out at an
+  *even split*: its base grass claims the ground with `Replace` and the path adds
+  a dirt score of one, so its path centre normalises to 0.5/0.5 and it cannot
+  express bare ground. That is a property of the document, not of the sampler.
+- **`meadow_path`** — the one that does. Its path uses `Replace`, so one band
+  sweeps pure meadow to bare earth, and six layers read the spline at six
+  different widths.
+
 ## Measurement
 
-Three instruments, answering different questions. Use the right one.
-
 - **`cargo test -p terrain_bench --test refactor_fingerprints`** — *is it the
-  same meadow?* Hashes the scene: every mark, its shape, its material, and the
-  ground beneath. No renderer in the loop, so it survives a refactor of the
-  renderer. A tenth of a second.
+  same meadow?* No renderer in the loop. A tenth of a second.
 - **`cargo bench -p terrain_bake --bench bake`** — *what did it cost?*
-  Deliberately granular: the bake is five stages and each is timed separately,
-  because one number for "a page costs 100 ms" tells an optimiser nothing about
-  which fifth to attack.
-- **`grass_snapshot`** — *did the picture move?* Pixel for pixel against the
-  last accepted set.
+- **`grass_snapshot`** — *did the picture move?*
 - **`terrain_bench::iso`** — *is the subject any good, and are the joins
-  invisible?* Every number twice, once over the layout and once weighted by the
-  subject mask, because a nine-tile plate is eight ninths set dressing.
+  invisible?*
 
 `terrain_bench::SCENARIOS` is the pinned ground. Append only.
 
@@ -120,50 +170,26 @@ Three instruments, answering different questions. Use the right one.
 
 Real, currently true, and worth knowing before tripping over them.
 
-- **`blade_bend` reaches nothing.** Read only by `Mark::shape`, which is never
-  called. `blade_bend_reaches_nothing` asserts the gap.
-- **`luminance_spread` is a dead column** in the rock metrics: the palette
-  applies one hue drift to all three tones, so the spread reads identically for
-  every seed.
-- **Raster and shape-distance sources are refused by `prepare`**, with a
-  message. They need an image decoder and a polygon index. Constants, noise and
-  spline distance compile.
-- **Three of four population recipes are minimal.** Wildflowers are a curve and
-  a disc; rocks and grit are analytic. They validate, emit, and are honestly not
-  finished.
-- **`path.t_junction` and `path.x_junction` are named and not pinned.** They
-  wait on a spline that branches.
-- **The grass generator has not yet been rewritten as a `PopulationRecipe`.**
-  `terrain_generators::placement` is the original code and `recipes::GrassRecipe`
-  is the new interface; the meadow the fingerprints pin comes from the former.
-- **No wind, no trampling, no animated crown layer.** The baked surface is
-  static.
-- **The nine-tile world is flat.** All tile bases are coplanar; no steps, no
-  cliffs, no camera pitch. Deliberate, so a bad result after the layout change
-  has one possible cause rather than three. Only the seed and the centre tile
-  are randomised — sun, camera, framing and style are fixed.
-- **`TileLayoutPreset` has one variant.** Twenty-seven tiles is not a number, it
-  is a shape nobody has chosen; the layout is a coordinate list precisely so
-  choosing one later changes `layout.rs` and nothing downstream.
-- **`terrain dataset` still frames by page, not by layout.** It crops square
-  patches at a chosen scale, which was right when a render was a rectangle. Once
-  the neural renderer's unit is a tile, the corpus should be tile-shaped and
-  carry the subject mask — that is a contract change, so it waits on the
-  input/target contract settling rather than being done in passing.
-- **Terrain blending is reserved, not implemented.** The weights compose; the
-  shared candidate field that stops a transition doubling its marks does not
-  exist yet. See [docs/MATERIAL_BLENDING.md](docs/MATERIAL_BLENDING.md).
-
-## Content
-
-Everything under `assets/terrain/` is authored. Adding a material or a
-population should be a file and a recipe, not a code change.
-
-```text
-assets/terrain/
-  documents/    constant_grass, blend_lab
-  features/     main_path.spline.ron
-```
-
-A spline is one `u v` pair per line — not RON, despite the extension. See
-`terrain_core::sources::Spline::parse` for why.
+- **The scene compiler's own content families are not the tuned grass.**
+  `terrain_generators::families` emits tufts, undergrowth, thatch, flowers,
+  stones and clods into a `TerrainScene`, and `terrain compile` does *not* draw
+  them — it renders through the tuned generator with a `SemanticOverlay`. The
+  families exist for the Cycles path and the corpus, and their look is nowhere
+  near `placement.rs`. Do not wire them into the cheap picture.
+- **Bare earth has no relief.** The measured `EARTH` ramp gives it the right
+  colour; the clods, grain and cracks the references show are not there. Feature
+  scales, if implemented: compacted path micro-relief 0.5–2 mm, loose dry crumb
+  2–15 mm, churned mud clods 2–8 cm, desiccation polygons 5–25 cm.
+- **`blade_bend` reaches nothing.** Read only by `Mark::shape`, never called.
+- **`luminance_spread` is a dead column** in the rock metrics.
+- **Raster sources are refused by `prepare`**, with a message. Spline distance,
+  constants and noise compile.
+- **Cycles still renders through `GrassScene`**, not the generic package.
+  `write_package` exists and is not on the active path.
+- **`terrain dataset` still frames by page, not by layout.**
+- **The world is flat.** All tile bases are coplanar; no steps, no cliffs, no
+  camera pitch.
+- **Transcendental determinism is same-platform only.** `atan2`, `powf` and the
+  noise are not guaranteed bit-identical across architectures.
+- **Snow, and covers generally, are types without a solver.** `CoverPlane`
+  exists; nothing fills one.

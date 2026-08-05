@@ -71,7 +71,9 @@ fn shoulder(q: f32) -> f32 {
 /// through the baker. Matching a piece of reference art is an iterative,
 /// numerical exercise, and it goes very badly when the knobs are spread across
 /// six files.
-#[derive(Clone, Copy, Debug)]
+// No longer `Copy`: the overlay is shared through an `Arc`, because a field
+// stack is megabytes and every bake would otherwise clone one.
+#[derive(Clone, Debug)]
 pub struct BakeParams {
     pub seed: u64,
     /// How hard the renderer is allowed to work. See [`GrassRenderQuality`].
@@ -91,6 +93,16 @@ pub struct BakeParams {
     /// `None` means the whole page, which is what a laboratory plate wants and
     /// is how every caller behaved before there were tile layouts.
     pub visible: Option<VisibleGround>,
+
+    /// What an authored document says about this ground, if one compiled it.
+    ///
+    /// `None` is the laboratory meadow: the procedural fields alone, exactly as
+    /// the reference art was tuned against, which is what every existing
+    /// measurement and baseline means. With one, the document decides how much
+    /// grows and where the earth shows through, and the tuned fields decide
+    /// everything about how it looks. See
+    /// [`terrain_generators::field::SemanticOverlay`].
+    pub overlay: Option<std::sync::Arc<terrain_generators::field::SemanticOverlay>>,
 }
 
 /// The ground a render is of, as opposed to the ground it is generated over.
@@ -131,6 +143,20 @@ impl VisibleGround {
 
 impl BakeParams {
     /// The half of these parameters the generator reads.
+    /// The world this bake grows from.
+    ///
+    /// One constructor, so the padded bake, the plain bake and every test build
+    /// the same field. Two call sites constructing it separately is how one of
+    /// them ends up without the document's overlay and quietly renders the
+    /// laboratory meadow instead of the authored one.
+    pub fn world_field(&self) -> WorldField {
+        let field = WorldField::lit_by(self.seed, self.light);
+        match &self.overlay {
+            Some(overlay) => field.with_overlay(overlay.clone()),
+            None => field,
+        }
+    }
+
     pub fn grass(&self) -> GrassParams {
         GrassParams {
             seed: self.seed,
@@ -394,6 +420,7 @@ impl Default for BakeParams {
             style: grass.style,
             raster: PreviewRasterStyle::default(),
             visible: None,
+            overlay: None,
         }
     }
 }
@@ -659,7 +686,7 @@ pub fn bake(page: Page, params: &BakeParams) -> Vec<Vec3> {
 /// the result read as isometric ground rather than as a rectangle with a grid
 /// drawn on it.
 pub fn bake_image(page: Page, params: &BakeParams) -> RenderImage {
-    let field = WorldField::lit_by(params.seed, params.light);
+    let field = params.world_field();
     let lattice = Macro::build(&page, &field);
     // One scene, rendered twice: once from the sun into a depth buffer and once
     // from the camera into the surface. Building it here rather than inside each
@@ -1473,7 +1500,7 @@ pub fn resolve_passes(
     // How much of each pixel gets glazed back into its neighbourhood, filled in
     // as the colours are resolved.
     let mut glaze_mask = vec![0.0f32; width * height];
-    let field = WorldField::lit_by(params.seed, params.light);
+    let field = params.world_field();
 
     // The macro lighting is assembled first and then blurred, rather than being
     // applied where it is computed.
@@ -1705,7 +1732,21 @@ pub fn resolve_passes(
                 if soil <= 0.0 {
                     colour
                 } else {
-                    colour.lerp(palette::shade(Tone::Soil, q), soil)
+                    // Which *earth* this is, when a document said. The
+                    // laboratory meadow has no opinion and keeps the olive
+                    // `Soil` ramp its bare patches were tuned against; a
+                    // document that declared a track gets measured earth,
+                    // wetted by what the matrix says collects there.
+                    let earth = field.earth_share(ground_here);
+                    let bare = if earth > 0.0 {
+                        palette::shade(Tone::Soil, q).lerp(
+                            palette::shade_earth(q, field.earth_wetness(ground_here)),
+                            earth,
+                        )
+                    } else {
+                        palette::shade(Tone::Soil, q)
+                    };
+                    colour.lerp(bare, soil)
                 }
             });
 
@@ -2499,7 +2540,7 @@ mod tests {
                 ..Default::default()
             };
             let page = Page::new(*origin, 192, 192);
-            let field = WorldField::lit_by(params.seed, params.light);
+            let field = params.world_field();
             let scene = GrassScene::build(page, &field, &params.grass());
             tallest = tallest.max(scene.canopy_ceiling());
         }
@@ -2588,7 +2629,7 @@ mod tests {
                 light: iso::world_to_image(world).normalize(),
                 ..Default::default()
             };
-            let field = WorldField::lit_by(params.seed, params.light);
+            let field = params.world_field();
             let scene = GrassScene::build(page, &field, &params.grass());
             let colours = bake(page, &params);
             (scene, colours)
@@ -3232,4 +3273,13 @@ impl BakeRegion {
         }
         page
     }
+}
+
+/// A ground-plane point, for callers that do not link `glam` themselves.
+///
+/// The CLI needs to name a rectangle of ground for [`VisibleGround`] and has no
+/// other reason to take a maths dependency. One function is cheaper than making
+/// every tool link one.
+pub fn vec2(x: f32, y: f32) -> Vec2 {
+    Vec2::new(x, y)
 }

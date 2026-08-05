@@ -32,6 +32,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bake;
+pub mod generic;
 pub mod lighting;
 pub mod overlay;
 pub mod painter;
@@ -44,6 +45,7 @@ pub use bake::{
     BakeParams, BakeRegion, Passes, PreviewRasterStyle, VisibleGround, bake, bake_image,
     bake_padded, bake_padded_image,
 };
+pub use generic::{GENERIC_RASTER_VERSION, RasterProfile, RenderBundle, render_scene};
 pub use overlay::{GridStyle, draw_tile_grid, layout_mask, subject_mask};
 pub use painter::Painter;
 pub use request::{
