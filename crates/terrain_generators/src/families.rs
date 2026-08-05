@@ -1530,8 +1530,9 @@ impl TerrainRecipe for DirtClods {
         // and a trodden loam keeps some. Falls back to a tenth when no profile
         // says otherwise.
         let pebble_share = match &scatter {
-            Some(s) => (s.pebble_per_m2 / (s.grit_per_m2 + s.pebble_per_m2).max(1.0e-6))
-                .clamp(0.0, 0.25),
+            Some(s) => {
+                (s.pebble_per_m2 / (s.grit_per_m2 + s.pebble_per_m2).max(1.0e-6)).clamp(0.0, 0.25)
+            }
             None => 0.10,
         };
         let low = scatter

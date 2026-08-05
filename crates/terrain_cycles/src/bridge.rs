@@ -367,10 +367,7 @@ pub fn lower(
                             stone.height_m.max(1.0e-4),
                         ],
                         tint: if appearance.starts_with("soil.") {
-                            soil_fragment_tint(
-                                stone.attributes.tint,
-                                stone.attributes.moisture,
-                            )
+                            soil_fragment_tint(stone.attributes.tint, stone.attributes.moisture)
                         } else {
                             tint_from(stone.attributes.tint)
                         },

@@ -329,11 +329,18 @@ fn the_grass_itself_recovers_across_the_path() {
     )
     .expect("compiles");
 
-    let control_terrain = documents::prepare_without_source(
-        &documents::shipped("meadow_path"),
-        "main_path",
-    )
-    .expect("the control prepares");
+    let (control_terrain, removed) =
+        documents::prepare_without_source(&documents::shipped("meadow_path"), "main_path")
+            .expect("the control prepares");
+    // The exact intervention, printed and gated. A control is only as
+    // trustworthy as the list of what it took out, and "at least one layer"
+    // would not notice a document that renamed its bands.
+    println!("control removes: {}", removed.join(", "));
+    assert!(
+        removed.len() >= 8,
+        "the control removed only {} layers: {removed:?}",
+        removed.len()
+    );
     let control = compile_scene(
         &control_terrain,
         &request,
@@ -364,338 +371,366 @@ fn the_grass_itself_recovers_across_the_path() {
     const ROI_M: f32 = 3.6;
 
     for seed in terrain_bench::fixtures::SEEDS.iter().take(SEEDS_MEASURED) {
-    // Production's own parameters, on both halves. `cycles_params` scales the
-    // populations sevenfold, and density sets the candidate *lattice* rather
-    // than only the final count — so it does not cancel in a ratio unless both
-    // halves share it. Measuring at defaults would be measuring a lattice
-    // production never uses.
-    // `terrain_cycles::plate::CYCLES_DENSITY` and `CYCLES_LENGTH`, applied
-    // here rather than imported: `terrain_bench` does not depend on the Cycles
-    // crate and adding a dependency for two constants would point the
-    // dependency arrow the wrong way. Kept in step by the assertion below.
-    const CYCLES_DENSITY: f32 = 7.0;
-    const CYCLES_LENGTH: f32 = 1.2;
-    let mut params = GrassParams {
-        seed: *seed,
-        ..GrassParams::default()
-    };
-    params.style.tufts *= CYCLES_DENSITY;
-    params.style.fine *= CYCLES_DENSITY;
-    params.style.thatch *= CYCLES_DENSITY;
-    params.style.leaves *= CYCLES_DENSITY;
-    params.style.blade_length.0 *= CYCLES_LENGTH;
-    params.style.blade_length.1 *= CYCLES_LENGTH;
-    let params = params;
-    let field = WorldField::lit_by(params.seed, params.light).with_overlay(Arc::new(
-        SemanticOverlay {
-            ground: Arc::clone(&compiled.ground),
-            interactions: Arc::clone(&compiled.interactions),
-            tuned: Arc::clone(&compiled.tuned),
-        },
-    ));
-    // ## The page is sized *from* the region, not guessed at
-    //
-    // A world square projects to a diamond, so the pixels a given square needs
-    // are not something to estimate — they are `to_pixel` of its corners. A
-    // guessed 1100 was not enough and the assertion below said so, which is
-    // what it is for.
-    let probe = Page::new(Vec2::ZERO, 1, 1);
-    let corners = [
-        Vec2::new(-ROI_M, -ROI_M),
-        Vec2::new(ROI_M, -ROI_M),
-        Vec2::new(-ROI_M, ROI_M),
-        Vec2::new(ROI_M, ROI_M),
-    ];
-    let pixels: Vec<Vec2> = corners
-        .iter()
-        .map(|at| probe.to_pixel(at.extend(0.0)))
-        .collect();
-    let low = pixels.iter().fold(Vec2::splat(f32::MAX), |a, b| a.min(*b));
-    let high = pixels
-        .iter()
-        .fold(Vec2::splat(f32::MIN), |a, b| a.max(*b));
-    // A little margin, so a corner exactly on the edge is inside it.
-    let margin = 8.0f32;
-    let side_x = (high.x - low.x + margin * 2.0).ceil() as usize;
-    let side_y = (high.y - low.y + margin * 2.0).ceil() as usize;
-    let page = Page::new(low - Vec2::splat(margin), side_x, side_y);
-    // Every corner of the region has to fall inside the page, or the counts are
-    // taken from ground the page never grew.
-    let inside = |at: Vec2| -> bool {
-        let px = page.to_pixel(at.extend(0.0));
-        px.x >= 0.0 && px.y >= 0.0 && px.x <= side_x as f32 && px.y <= side_y as f32
-    };
-    for corner in corners {
-        assert!(
-            inside(corner),
-            "the page does not cover {corner:?}, so its area and its strokes \
-             describe different ground"
-        );
-    }
-    let scene = GrassScene::build(page, &field, &params);
-
-    // ## The same document with the path taken out
-    //
-    // The tuned field grows colonies, statement passages and mounds of its own,
-    // and they are seed-dependent. They multiply whatever the document asks
-    // for, so a colony sitting on the fringe sharpens the measured transition
-    // and one just outside it flattens it — and neither has anything to do with
-    // the path. That is what made `2468ace0` look like a solver defect at
-    // 0.30 m and 1.53; both were the meadow's own structure being counted as
-    // the path's doing.
-    //
-    // ## And the control has to differ by the path *only*
-    //
-    // The first version of this divided by the laboratory meadow — no overlay
-    // at all — which removes the document's tuned population controls and every
-    // stone interaction along with the path. A ratio against that is a ratio
-    // against a world that differs in several ways at once, and agreeing in the
-    // far field cannot prove local equivalence where the measurement is taken.
-    //
-    // `prepare_without_source` drops the layers that read the path spline and
-    // nothing else, so materials, channels, populations, seeds, the tuned
-    // controls and the stones are identical on both sides. Same seed, same
-    // page, same parameters: a paired control with common random numbers, which
-    // is why dividing by a second stochastic scene is sound rather than noisy.
-    let plain_field = WorldField::lit_by(params.seed, params.light).with_overlay(Arc::new(
-        SemanticOverlay {
-            ground: Arc::clone(&control.ground),
-            interactions: Arc::clone(&control.interactions),
-            tuned: Arc::clone(&control.tuned),
-        },
-    ));
-    let plain = GrassScene::build(page, &plain_field, &params);
-
-    let spline = path_spline();
-    let bins = (8.0 / BIN_M) as usize;
-    let mut living = vec![0.0f64; bins];
-    let mut thatch = vec![0.0f64; bins];
-    let mut area = vec![0.0f64; bins];
-
-    let in_roi = |at: Vec2| at.x.abs() <= ROI_M && at.y.abs() <= ROI_M;
-
-    let mut plain_living = vec![0.0f64; bins];
-    let mut plain_thatch = vec![0.0f64; bins];
-    for (marks, living, thatch) in [
-        (&scene.marks, &mut living, &mut thatch),
-        (&plain.marks, &mut plain_living, &mut plain_thatch),
-    ] {
-        for stroke in marks {
-            let at = Vec2::new(stroke.root.x, stroke.root.y);
-            if !in_roi(at) {
-                continue;
-            }
-            let bin = (distance_to(&spline, at) / BIN_M) as usize;
-            if bin >= bins {
-                continue;
-            }
-            match stroke.pass {
-                TunedPass::Thatch => thatch[bin] += 1.0,
-                _ => living[bin] += 1.0,
-            }
-        }
-    }
-
-    // The same region, sampled for area.
-    let step = 0.04f32;
-    let mut u = -ROI_M;
-    while u < ROI_M {
-        let mut v = -ROI_M;
-        while v < ROI_M {
-            let bin = (distance_to(&spline, Vec2::new(u, v)) / BIN_M) as usize;
-            if bin < bins {
-                area[bin] += (step * step) as f64;
-            }
-            v += step;
-        }
-        u += step;
-    }
-
-    // The document's effect alone: this world's grass over the same world's
-    // grass without a path in it, bin for bin.
-    let live_profile: Vec<(f64, f64)> = (0..bins)
-        .map(|bin| {
-            let d = (bin as f64 + 0.5) * BIN_M;
-            let n = if plain_living[bin] >= 40.0 {
-                living[bin] / plain_living[bin]
-            } else {
-                f64::NAN
-            };
-            (d, n)
-        })
-        .collect();
-    // The mat, as its own ratio. Separate from the living grass because they
-    // answer different questions: a mat that thickens where the canopy thins is
-    // correct authoring and would be invisible inside a total.
-    let thatch_profile: Vec<(f64, f64)> = (0..bins)
-        .map(|bin| {
-            let d = (bin as f64 + 0.5) * BIN_M;
-            // Against the *matched control*, bin for bin, like the living
-            // grass. Normalising against an open-density median sampled at
-            // 2.95–3.35 m was normalising against the fringe: the authored
-            // thatch band runs to 3.40 m, so that window is inside it.
-            let n = if plain_thatch[bin] >= 40.0 {
-                thatch[bin] / plain_thatch[bin]
-            } else {
-                f64::NAN
-            };
-            (d, n)
-        })
-        .collect();
-
-    // ## The median of recovered ground, not a fixed window
-    //
-    // A window near the edge of the region is exactly where the area per bin is
-    // smallest and the count noisiest, and normalising against it makes every
-    // other bin look wrong. On one seed it put the fringe at 1.50 of "open
-    // meadow" — a doubled density that was really a thin reference.
-    //
-    // A median over everything past the transition is robust to both: it is not
-    // moved by a couple of sparse bins, and it does not need the region to
-    // extend further than the page can honestly cover.
-    // Already a ratio, so open meadow is one by construction. Asserted rather
-    // than assumed: if the far bins do not come back at one, the two scenes are
-    // not the same world and nothing below means anything.
-    let mut reference: Vec<f64> = live_profile
-        .iter()
-        .filter(|(d, v)| (2.9..(ROI_M as f64 - 0.15)).contains(d) && v.is_finite())
-        .map(|(_, v)| *v)
-        .collect();
-    assert!(reference.len() >= 4, "only {} reference bins", reference.len());
-    reference.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
-    let open = reference[reference.len() / 2];
-    assert!(
-        (0.85..1.15).contains(&open),
-        "past the path the document changes the meadow by {open:.2}, so the \
-         two scenes are not the same world"
-    );
-
-    // Three-bin means throughout: at these counts a single bin's scatter is
-    // Poisson and gating on one measures the sample, not the ground.
-    let smooth = |profile: &[(f64, f64)], want: f64| -> f64 {
-        let taken: Vec<f64> = profile
+        // Production's own parameters, on both halves. `cycles_params` scales the
+        // populations sevenfold, and density sets the candidate *lattice* rather
+        // than only the final count — so it does not cancel in a ratio unless both
+        // halves share it. Measuring at defaults would be measuring a lattice
+        // production never uses.
+        // `terrain_cycles::plate::CYCLES_DENSITY` and `CYCLES_LENGTH`, restated
+        // here rather than imported: `terrain_bench` does not depend on the Cycles
+        // crate and adding that dependency to reach two constants would point the
+        // arrow the wrong way.
+        //
+        // An earlier version of this comment said they were "kept in step by the
+        // assertion below" and there was no such assertion — a claim about a check
+        // that does not exist is worse than no claim, because the next reader
+        // trusts it. There is no cheap way to assert it from here, so what stands
+        // instead is this note: if `plate::cycles_params` changes, this measures a
+        // lattice production does not use, and the transition numbers below stop
+        // meaning what they say.
+        const CYCLES_DENSITY: f32 = 7.0;
+        const CYCLES_LENGTH: f32 = 1.2;
+        let mut params = GrassParams {
+            seed: *seed,
+            ..GrassParams::default()
+        };
+        params.style.tufts *= CYCLES_DENSITY;
+        params.style.fine *= CYCLES_DENSITY;
+        params.style.thatch *= CYCLES_DENSITY;
+        params.style.leaves *= CYCLES_DENSITY;
+        params.style.blade_length.0 *= CYCLES_LENGTH;
+        params.style.blade_length.1 *= CYCLES_LENGTH;
+        let params = params;
+        let field =
+            WorldField::lit_by(params.seed, params.light).with_overlay(Arc::new(SemanticOverlay {
+                ground: Arc::clone(&compiled.ground),
+                interactions: Arc::clone(&compiled.interactions),
+                tuned: Arc::clone(&compiled.tuned),
+            }));
+        // ## The page is sized *from* the region, not guessed at
+        //
+        // A world square projects to a diamond, so the pixels a given square needs
+        // are not something to estimate — they are `to_pixel` of its corners. A
+        // guessed 1100 was not enough and the assertion below said so, which is
+        // what it is for.
+        let probe = Page::new(Vec2::ZERO, 1, 1);
+        let corners = [
+            Vec2::new(-ROI_M, -ROI_M),
+            Vec2::new(ROI_M, -ROI_M),
+            Vec2::new(-ROI_M, ROI_M),
+            Vec2::new(ROI_M, ROI_M),
+        ];
+        let pixels: Vec<Vec2> = corners
             .iter()
-            .filter(|(d, v)| (*d - want).abs() < BIN_M * 1.5 && v.is_finite())
-            .map(|(_, v)| v / open)
+            .map(|at| probe.to_pixel(at.extend(0.0)))
             .collect();
-        if taken.is_empty() {
-            f64::NAN
-        } else {
-            taken.iter().sum::<f64>() / taken.len() as f64
+        let low = pixels.iter().fold(Vec2::splat(f32::MAX), |a, b| a.min(*b));
+        let high = pixels.iter().fold(Vec2::splat(f32::MIN), |a, b| a.max(*b));
+        // A little margin, so a corner exactly on the edge is inside it.
+        let margin = 8.0f32;
+        let side_x = (high.x - low.x + margin * 2.0).ceil() as usize;
+        let side_y = (high.y - low.y + margin * 2.0).ceil() as usize;
+        let page = Page::new(low - Vec2::splat(margin), side_x, side_y);
+        // Every corner of the region has to fall inside the page, or the counts are
+        // taken from ground the page never grew.
+        let inside = |at: Vec2| -> bool {
+            let px = page.to_pixel(at.extend(0.0));
+            px.x >= 0.0 && px.y >= 0.0 && px.x <= side_x as f32 && px.y <= side_y as f32
+        };
+        for corner in corners {
+            assert!(
+                inside(corner),
+                "the page does not cover {corner:?}, so its area and its strokes \
+             describe different ground"
+            );
         }
-    };
+        let scene = GrassScene::build(page, &field, &params);
 
-    // The pure core grows nothing, and that is *every* tuned pass rather than
-    // the living ones only — a mat left behind on a bare track is as wrong as
-    // a blade.
-    // Every tuned pass, not the living ones only: a mat left behind on a bare
-    // track is as wrong as a blade. The thatch is compared against its own open
-    // density, since it is a count rather than a ratio.
-    let mut probe = 0.15;
-    while probe <= 1.05 {
-        let mat = smooth(&thatch_profile, probe);
-        // Fails closed. A bin with no measurement is a bin nobody checked, and
-        // silently skipping it is how a core gate passes on a plate that grew
-        // nothing there for an unrelated reason.
+        // ## The same document with the path taken out
+        //
+        // The tuned field grows colonies, statement passages and mounds of its own,
+        // and they are seed-dependent. They multiply whatever the document asks
+        // for, so a colony sitting on the fringe sharpens the measured transition
+        // and one just outside it flattens it — and neither has anything to do with
+        // the path. That is what made `2468ace0` look like a solver defect at
+        // 0.30 m and 1.53; both were the meadow's own structure being counted as
+        // the path's doing.
+        //
+        // ## And the control has to differ by the path *only*
+        //
+        // The first version of this divided by the laboratory meadow — no overlay
+        // at all — which removes the document's tuned population controls and every
+        // stone interaction along with the path. A ratio against that is a ratio
+        // against a world that differs in several ways at once, and agreeing in the
+        // far field cannot prove local equivalence where the measurement is taken.
+        //
+        // `prepare_without_source` drops the layers that read the path spline and
+        // nothing else, so materials, channels, populations, seeds, the tuned
+        // controls and the stones are identical on both sides. Same seed, same
+        // page, same parameters: a paired control with common random numbers, which
+        // is why dividing by a second stochastic scene is sound rather than noisy.
+        let plain_field =
+            WorldField::lit_by(params.seed, params.light).with_overlay(Arc::new(SemanticOverlay {
+                ground: Arc::clone(&control.ground),
+                interactions: Arc::clone(&control.interactions),
+                tuned: Arc::clone(&control.tuned),
+            }));
+        let plain = GrassScene::build(page, &plain_field, &params);
+
+        let spline = path_spline();
+        let bins = (8.0 / BIN_M) as usize;
+        let mut living = vec![0.0f64; bins];
+        let mut thatch = vec![0.0f64; bins];
+        let mut area = vec![0.0f64; bins];
+
+        let in_roi = |at: Vec2| at.x.abs() <= ROI_M && at.y.abs() <= ROI_M;
+
+        let mut plain_living = vec![0.0f64; bins];
+        let mut plain_thatch = vec![0.0f64; bins];
+        for (marks, living, thatch) in [
+            (&scene.marks, &mut living, &mut thatch),
+            (&plain.marks, &mut plain_living, &mut plain_thatch),
+        ] {
+            for stroke in marks {
+                let at = Vec2::new(stroke.root.x, stroke.root.y);
+                if !in_roi(at) {
+                    continue;
+                }
+                let bin = (distance_to(&spline, at) / BIN_M) as usize;
+                if bin >= bins {
+                    continue;
+                }
+                match stroke.pass {
+                    TunedPass::Thatch => thatch[bin] += 1.0,
+                    _ => living[bin] += 1.0,
+                }
+            }
+        }
+
+        // The same region, sampled for area.
+        let step = 0.04f32;
+        let mut u = -ROI_M;
+        while u < ROI_M {
+            let mut v = -ROI_M;
+            while v < ROI_M {
+                let bin = (distance_to(&spline, Vec2::new(u, v)) / BIN_M) as usize;
+                if bin < bins {
+                    area[bin] += (step * step) as f64;
+                }
+                v += step;
+            }
+            u += step;
+        }
+
+        // The document's effect alone: this world's grass over the same world's
+        // grass without a path in it, bin for bin.
+        let live_profile: Vec<(f64, f64)> = (0..bins)
+            .map(|bin| {
+                let d = (bin as f64 + 0.5) * BIN_M;
+                let n = if plain_living[bin] >= 40.0 {
+                    living[bin] / plain_living[bin]
+                } else {
+                    f64::NAN
+                };
+                (d, n)
+            })
+            .collect();
+        // The mat, as its own ratio. Separate from the living grass because they
+        // answer different questions: a mat that thickens where the canopy thins is
+        // correct authoring and would be invisible inside a total.
+        let thatch_profile: Vec<(f64, f64)> = (0..bins)
+            .map(|bin| {
+                let d = (bin as f64 + 0.5) * BIN_M;
+                // Against the *matched control*, bin for bin, like the living
+                // grass. Normalising against an open-density median sampled at
+                // 2.95–3.35 m was normalising against the fringe: the authored
+                // thatch band runs to 3.40 m, so that window is inside it.
+                let n = if plain_thatch[bin] >= 40.0 {
+                    thatch[bin] / plain_thatch[bin]
+                } else {
+                    f64::NAN
+                };
+                (d, n)
+            })
+            .collect();
+
+        // ## The median of recovered ground, not a fixed window
+        //
+        // A window near the edge of the region is exactly where the area per bin is
+        // smallest and the count noisiest, and normalising against it makes every
+        // other bin look wrong. On one seed it put the fringe at 1.50 of "open
+        // meadow" — a doubled density that was really a thin reference.
+        //
+        // A median over everything past the transition is robust to both: it is not
+        // moved by a couple of sparse bins, and it does not need the region to
+        // extend further than the page can honestly cover.
+        // Already a ratio, so open meadow is one by construction. Asserted rather
+        // than assumed: if the far bins do not come back at one, the two scenes are
+        // not the same world and nothing below means anything.
+        let mut reference: Vec<f64> = live_profile
+            .iter()
+            .filter(|(d, v)| (2.9..(ROI_M as f64 - 0.15)).contains(d) && v.is_finite())
+            .map(|(_, v)| *v)
+            .collect();
         assert!(
-            mat.is_finite(),
-            "seed {seed:016x}: no mat measurement at {probe:.2} m"
+            reference.len() >= 4,
+            "only {} reference bins",
+            reference.len()
         );
+        reference.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        let open = reference[reference.len() / 2];
         assert!(
-            mat < 0.03,
-            "seed {seed:016x}: at {probe:.2} m the track keeps {mat:.3} of the \
+            (0.85..1.15).contains(&open),
+            "past the path the document changes the meadow by {open:.2}, so the \
+         two scenes are not the same world"
+        );
+
+        // Three-bin means throughout: at these counts a single bin's scatter is
+        // Poisson and gating on one measures the sample, not the ground.
+        // ## Fails closed, and normalises nothing it was not given
+        //
+        // Two faults in the version this replaces. It filtered out non-finite bins,
+        // so a window with a hole in it returned the mean of what was left and no
+        // caller could tell — a gate that skips the bin it was asked about is a
+        // gate that passes for the wrong reason. And it divided *every* profile by
+        // the living grass's own open density, including the thatch, which is
+        // already a matched ratio and has no business being scaled by another
+        // pass's reference.
+        //
+        // Both profiles are paired ratios now, so the divisor is one by
+        // construction and is asserted to be. A window missing any of its three
+        // bins returns NaN, and every caller asserts finiteness before it asserts
+        // anything else.
+        let smooth = |profile: &[(f64, f64)], want: f64| -> f64 {
+            let taken: Vec<f64> = profile
+                .iter()
+                .filter(|(d, _)| (*d - want).abs() < BIN_M * 1.5)
+                .map(|(_, v)| *v)
+                .collect();
+            if taken.len() < 3 || taken.iter().any(|v| !v.is_finite()) {
+                f64::NAN
+            } else {
+                taken.iter().sum::<f64>() / taken.len() as f64
+            }
+        };
+
+        // The pure core grows nothing, and that is *every* tuned pass rather than
+        // the living ones only — a mat left behind on a bare track is as wrong as
+        // a blade.
+        // Every tuned pass, not the living ones only: a mat left behind on a bare
+        // track is as wrong as a blade. The thatch is compared against its own open
+        // density, since it is a count rather than a ratio.
+        let mut probe = 0.15;
+        while probe <= 1.05 {
+            let mat = smooth(&thatch_profile, probe);
+            // Fails closed. A bin with no measurement is a bin nobody checked, and
+            // silently skipping it is how a core gate passes on a plate that grew
+            // nothing there for an unrelated reason.
+            assert!(
+                mat.is_finite(),
+                "seed {seed:016x}: no mat measurement at {probe:.2} m"
+            );
+            assert!(
+                mat < 0.03,
+                "seed {seed:016x}: at {probe:.2} m the track keeps {mat:.3} of the \
              meadow's mat"
-        );
-        let combined = smooth(&live_profile, probe);
-        assert!(
-            combined.is_finite(),
-            "seed {seed:016x}: no grass measurement at {probe:.2} m"
-        );
-        assert!(
-            combined < 0.03,
-            "seed {seed:016x}: at {probe:.2} m the track carries {combined:.3} \
+            );
+            let combined = smooth(&live_profile, probe);
+            assert!(
+                combined.is_finite(),
+                "seed {seed:016x}: no grass measurement at {probe:.2} m"
+            );
+            assert!(
+                combined < 0.03,
+                "seed {seed:016x}: at {probe:.2} m the track carries {combined:.3} \
              of the meadow's tuned strokes"
-        );
-        probe += 0.10;
-    }
+            );
+            probe += 0.10;
+        }
 
-    // ## A bounded recovery, not a hard edge
-    //
-    // The crossings are taken off the *smoothed* curve. Off the raw one a
-    // single lucky bin sets `d90` and a collapse straight after it passes,
-    // which is the transient this is supposed to catch.
-    let crossing = |want: f64| -> f64 {
-        let mut d = 1.05;
-        while d < 6.0 {
-            if smooth(&live_profile, d) >= want {
-                return d;
+        // ## A bounded recovery, not a hard edge
+        //
+        // The crossings are taken off the *smoothed* curve. Off the raw one a
+        // single lucky bin sets `d90` and a collapse straight after it passes,
+        // which is the transient this is supposed to catch.
+        let crossing = |want: f64| -> f64 {
+            let mut d = 1.05;
+            while d < 6.0 {
+                if smooth(&live_profile, d) >= want {
+                    return d;
+                }
+                d += BIN_M;
+            }
+            f64::NAN
+        };
+        let d10 = crossing(0.10);
+        let d90 = crossing(0.90);
+        println!("seed {seed:016x}: living grass 10% at {d10:.2} m, 90% at {d90:.2} m");
+        assert!(
+            (1.05..3.40).contains(&d10) && d90 <= 3.40,
+            "seed {seed:016x}: the grass recovers from {d10:.2} m to {d90:.2} m, \
+         which is outside the document's own bands"
+        );
+        // ## And it has to be *wide*
+        //
+        // Ten to ninety per cent inside a single bin is a green wall however
+        // correct its endpoints are. Four tenths of a metre is the floor.
+        //
+        // An earlier revision of this listed `2468ace0` as a world that recovered
+        // in 0.30 m and overshot to 1.53 just past its own crossing, and called it
+        // seed-dependent width in the transition solver. It was neither. Both
+        // numbers were the *meadow's* own colonies at that seed being counted as
+        // the path's doing, and dividing by the same world without a document
+        // returns it to 0.80 m alongside everyone else. The list is gone.
+        let width = d90 - d10;
+        assert!(
+            width >= 0.40,
+            "seed {seed:016x}: the grass recovers over only {width:.2} m, which is \
+         a wall rather than a transition"
+        );
+
+        // And having recovered it stays recovered. A curve that touches ninety per
+        // cent and falls back has a hole in it.
+        let mut d = d90;
+        while d < ROI_M as f64 - 0.2 {
+            let n = smooth(&live_profile, d);
+            assert!(
+                n.is_finite(),
+                "seed {seed:016x}: no measurement at {d:.2} m, past the recovery"
+            );
+            {
+                assert!(
+                    n > 0.65,
+                    "seed {seed:016x}: past the recovery the grass falls to \
+                 {n:.2} at {d:.2} m"
+                );
             }
             d += BIN_M;
         }
-        f64::NAN
-    };
-    let d10 = crossing(0.10);
-    let d90 = crossing(0.90);
-    println!("seed {seed:016x}: living grass 10% at {d10:.2} m, 90% at {d90:.2} m");
-    assert!(
-        (1.05..3.40).contains(&d10) && d90 <= 3.40,
-        "seed {seed:016x}: the grass recovers from {d10:.2} m to {d90:.2} m, \
-         which is outside the document's own bands"
-    );
-    // ## And it has to be *wide*
-    //
-    // Ten to ninety per cent inside a single bin is a green wall however
-    // correct its endpoints are. Four tenths of a metre is the floor.
-    //
-    // An earlier revision of this listed `2468ace0` as a world that recovered
-    // in 0.30 m and overshot to 1.53 just past its own crossing, and called it
-    // seed-dependent width in the transition solver. It was neither. Both
-    // numbers were the *meadow's* own colonies at that seed being counted as
-    // the path's doing, and dividing by the same world without a document
-    // returns it to 0.80 m alongside everyone else. The list is gone.
-    let width = d90 - d10;
-    assert!(
-        width >= 0.40,
-        "seed {seed:016x}: the grass recovers over only {width:.2} m, which is \
-         a wall rather than a transition"
-    );
 
-    // And having recovered it stays recovered. A curve that touches ninety per
-    // cent and falls back has a hole in it.
-    let mut d = d90;
-    while d < ROI_M as f64 - 0.2 {
-        let n = smooth(&live_profile, d);
-        if n.is_finite() {
+        // ## And no doubled density across the fringe
+        //
+        // A run above the meadow's own density inside a transition is two
+        // populations claiming the same ground — the failure shared candidate
+        // domains and the ownership draw exist to prevent.
+        //
+        // Measured as a ratio to the same world without a path, so a colony sitting
+        // on the fringe cannot masquerade as one: that is exactly what produced a
+        // 1.53 "overshoot" on one seed before the division went in.
+        let mut d = 1.05;
+        while d < ROI_M as f64 - 0.2 {
+            let n = smooth(&live_profile, d);
             assert!(
-                n > 0.65,
-                "seed {seed:016x}: past the recovery the grass falls to \
-                 {n:.2} at {d:.2} m"
+                n.is_finite(),
+                "seed {seed:016x}: no measurement at {d:.2} m across the fringe"
             );
-        }
-        d += BIN_M;
-    }
-
-    // ## And no doubled density across the fringe
-    //
-    // A run above the meadow's own density inside a transition is two
-    // populations claiming the same ground — the failure shared candidate
-    // domains and the ownership draw exist to prevent.
-    //
-    // Measured as a ratio to the same world without a path, so a colony sitting
-    // on the fringe cannot masquerade as one: that is exactly what produced a
-    // 1.53 "overshoot" on one seed before the division went in.
-    let mut d = 1.05;
-    while d < ROI_M as f64 - 0.2 {
-        let n = smooth(&live_profile, d);
-        if n.is_finite() {
             assert!(
                 n < 1.35,
                 "seed {seed:016x}: the path leaves {n:.2} of the meadow's own \
-                 grass at {d:.2} m"
+             grass at {d:.2} m"
             );
+            d += BIN_M;
         }
-        d += BIN_M;
-    }
     }
 }
 

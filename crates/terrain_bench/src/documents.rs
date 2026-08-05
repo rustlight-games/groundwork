@@ -144,22 +144,31 @@ pub fn prepare(document: &Path) -> Result<Arc<PreparedTerrain>, LoadError> {
 pub fn prepare_without_source(
     document: &Path,
     source: &str,
-) -> Result<Arc<PreparedTerrain>, LoadError> {
+) -> Result<(Arc<PreparedTerrain>, Vec<String>), LoadError> {
     let mut loaded = terrain_format::load(document).map_err(|error| LoadError::Read {
         path: document.display().to_string(),
         message: error.to_string(),
     })?;
 
-    let before = loaded.document.layers.len();
+    // The exact intervention, handed back rather than counted. An instrument
+    // that only knows *some* layer went cannot say which, and a control is only
+    // as trustworthy as the list of what it removed.
+    let removed: Vec<String> = loaded
+        .document
+        .layers
+        .iter()
+        .filter(|layer| layer.mask.source().map(|key| key.as_str()) == Some(source))
+        .map(|layer| layer.key.as_str().to_string())
+        .collect();
+    assert!(
+        !removed.is_empty(),
+        "{}: no layer reads `{source}`, so this control is the document itself",
+        document.display()
+    );
     loaded
         .document
         .layers
         .retain(|layer| layer.mask.source().map(|key| key.as_str()) != Some(source));
-    assert!(
-        loaded.document.layers.len() < before,
-        "{}: no layer reads `{source}`, so this control is the document itself",
-        document.display()
-    );
 
     let assets = BesideDocument {
         root: asset_root(document),
@@ -181,7 +190,7 @@ pub fn prepare_without_source(
         });
     }
 
-    terrain_core::prepare(
+    let prepared = terrain_core::prepare(
         &loaded.document,
         &assets,
         &terrain_core::SourceRegistry::new(),
@@ -193,7 +202,8 @@ pub fn prepare_without_source(
     .map_err(|report| LoadError::Prepare {
         path: document.display().to_string(),
         message: report.to_string(),
-    })
+    })?;
+    Ok((prepared, removed))
 }
 
 /// The documents shipped in the repository, by name.
