@@ -945,14 +945,56 @@ impl WorldField {
             // Multiplied into the tuned density rather than replacing it, so a
             // meadow the document leaves alone keeps every clump and channel the
             // procedural field gave it.
-            ground.density *= vegetated * abundance;
+            ground.density *= vegetated * abundance.max(0.0);
             // Bareness takes whichever is barer. A document that says "this is a
             // track" must be able to expose ground the mound field thought was
             // lush, and ground the procedural field already thinned must not be
             // covered up by a document that said nothing about it.
-            ground.bare = ground.bare.max(1.0 - vegetated);
+            //
+            // ## Abundance belongs in here, and used not to be
+            //
+            // Bareness came from vegetation *support* alone — from what the
+            // ground allows — so lowering an authored abundance grew a tenth as
+            // much grass and reported no bare earth at all. What came out was
+            // holes punched in an otherwise closed canopy: the tuft pass thinned
+            // and every bare-ground response stayed switched off, so the soil
+            // between the clumps went on being shaded as though a canopy were
+            // still over it.
+            //
+            // A genuinely sparse stand is not a lush one with pieces missing.
+            // It is short, dry, pale at the root, with the earth reading through
+            // — and all of that is what `bare` turns on.
+            ground.bare = ground.bare.max(Self::semantic_bare(vegetated, abundance));
         }
         ground
+    }
+
+    /// How sharply bareness follows a falling cover.
+    ///
+    /// One: linear, and pinned in a constant so that changing it is a
+    /// deliberate look change with a version behind it rather than a number
+    /// somebody nudged. A measured response curve may replace it; it must not
+    /// arrive by accident.
+    pub const BARE_RESPONSE_GAMMA: f32 = 1.0;
+
+    /// How much earth an authored cover ought to expose, `0..1`.
+    ///
+    /// One function, called by both [`WorldField::sample`] and
+    /// [`WorldField::exposed_share`]. They used to compute it separately and
+    /// disagreed: `sample` folded in abundance and `exposed_share` returned the
+    /// complement of support, so the ground mesh and the grass on it had
+    /// different ideas about where the earth showed.
+    ///
+    /// Linear in version one, and deliberately so. A physically exact uncovered
+    /// fraction would need calibrated projected footprints and overlap
+    /// statistics for every tuned pass; the tuned generator's `bare` is an
+    /// artistic control rather than a measured Boolean union of blade shadows,
+    /// and pretending otherwise would add false precision to a number that is
+    /// already doing an honest job.
+    pub fn semantic_bare(support: f32, abundance: f32) -> f32 {
+        // Above one may thicken the canopy; it may not create negative earth.
+        let cover = support * abundance.clamp(0.0, 1.0);
+        (1.0 - cover.powf(Self::BARE_RESPONSE_GAMMA)).clamp(0.0, 1.0)
     }
 
     /// How much of this point is *not* ground that plants grow on, `0..1`.
@@ -969,7 +1011,15 @@ impl WorldField {
     pub fn exposed_share(&self, world: Vec2) -> f32 {
         match &self.overlay {
             None => 0.0,
-            Some(overlay) => 1.0 - overlay.ground.vegetation_support(world),
+            // The same function `sample` uses, not a second formula that agrees
+            // with it today. They disagreed before this: `sample` folded in
+            // abundance and this returned the complement of support, so the
+            // ground mesh and the grass standing on it had different ideas
+            // about where the earth showed.
+            Some(overlay) => Self::semantic_bare(
+                overlay.ground.vegetation_support(world),
+                overlay.ground.abundance(world),
+            ),
         }
     }
 
@@ -1393,6 +1443,56 @@ impl WorldField {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn lowering_abundance_exposes_earth_rather_than_punching_holes() {
+        // The defect this fixed. Bareness came from vegetation *support* alone,
+        // so a document that halved its abundance grew half as much grass and
+        // reported no bare earth at all: what came out was holes in an
+        // otherwise closed canopy, with every bare-ground response still
+        // switched off and the soil between the clumps shaded as though a
+        // canopy were over it.
+        let full = WorldField::semantic_bare(1.0, 1.0);
+        let half = WorldField::semantic_bare(1.0, 0.5);
+        let none = WorldField::semantic_bare(1.0, 0.0);
+        assert_eq!(full, 0.0, "a full stand exposes nothing");
+        assert!(half > 0.0, "halving the abundance exposed no earth at all");
+        assert_eq!(none, 1.0, "no vegetation at all is entirely bare");
+        assert!(half < none);
+    }
+
+    #[test]
+    fn ground_that_supports_nothing_is_bare_however_much_was_asked_for() {
+        // A track is a track. An author raising the abundance over compacted
+        // dirt is asking for grass the ground cannot grow, and the answer is
+        // still bare earth.
+        assert_eq!(WorldField::semantic_bare(0.0, 1.0), 1.0);
+        assert_eq!(WorldField::semantic_bare(0.0, 4.0), 1.0);
+    }
+
+    #[test]
+    fn abundance_above_one_cannot_make_negative_earth() {
+        // A thicker canopy than the style's is a legitimate request; a surface
+        // that is less than zero percent bare is not, and a negative `bare`
+        // reaching the tuned generator drives its responses backwards.
+        for abundance in [1.0f32, 1.5, 4.0, 1.0e6] {
+            let bare = WorldField::semantic_bare(1.0, abundance);
+            assert!((0.0..=1.0).contains(&bare), "{abundance} gave {bare}");
+        }
+    }
+
+    #[test]
+    fn semantic_bareness_is_monotone_in_abundance() {
+        // Monotone, so an author turning a density down never gets *less*
+        // visible earth. Not obvious once a gamma is in the expression, and the
+        // thing that would break silently if one were introduced.
+        let mut previous = 1.0;
+        for step in 0..=20 {
+            let bare = WorldField::semantic_bare(1.0, step as f32 / 20.0);
+            assert!(bare <= previous + 1.0e-6, "bareness rose at {step}");
+            previous = bare;
+        }
+    }
     use super::*;
 
     /// The early rejection in [`WorldField::mounds`] is only sound while

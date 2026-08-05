@@ -704,9 +704,14 @@ def appearance_builders(settings):
         "plant.flower_petal": lambda: petal_material(settings),
         "plant.flower_disk": lambda: disk_material(settings),
         "plant.undergrowth_leaf": lambda: blade_material(settings),
-        "surface.stone": lambda: stone_material(settings, [0.055, 0.052, 0.048]),
-        "surface.shell_fragment": lambda: stone_material(settings, [0.34, 0.32, 0.28]),
-        "surface.organic_fragment": lambda: stone_material(settings, [0.020, 0.015, 0.011]),
+        # Weathered granite, measured off a reference rather than guessed at.
+        # The first value here was 0.055, which is darker than wet asphalt: the
+        # stones rendered as holes in the grass rather than as objects sitting
+        # in it. Dry silicate rock in daylight sits around a fifth, and reads
+        # slightly cool against the warm soil beside it.
+        "surface.stone": lambda: stone_material(settings, [0.180, 0.178, 0.172]),
+        "surface.shell_fragment": lambda: stone_material(settings, [0.42, 0.40, 0.35]),
+        "surface.organic_fragment": lambda: stone_material(settings, [0.045, 0.033, 0.024]),
         # Every ground material shares one implementation. What a particular
         # soil looks like is its *profile*, not its appearance key — see
         # `assets/terrain/materials/`.
