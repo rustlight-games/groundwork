@@ -3,30 +3,30 @@
 // A row that moves without a phase behind it is a regression.
 
 [meadow_path]
-scene = c5c7aac774c427049642ea138396b1bc
-candidates = 338249 generated, 18875 accepted, 0 unowned
-marks = 24076, placements = 18875, prototypes = 0, interactions = 27
+scene = db08e94f8d103b91c5404bcab4726a58
+candidates = 338249 generated, 17815 accepted, 0 unowned
+marks = 23016, placements = 17815, prototypes = 0, interactions = 27
   field_stones = secondary, 27 marks
-  loose_grit = secondary, 9243 marks
+  loose_grit = secondary, 8678 marks
   meadow_fine_grass = tuned(fine), 0 marks
   meadow_flowers = secondary, 3677 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
   meadow_undergrowth = secondary, 2317 marks
-  path_clods = secondary, 8812 marks
+  path_clods = secondary, 8317 marks
 
 [narrow_track]
-scene = 8f287e36008a06b28967520afe5ac6a5
-candidates = 107021 generated, 2706 accepted, 0 unowned
-marks = 5280, placements = 2706, prototypes = 0, interactions = 3
+scene = 1f61559ebf2c5a2032630c7bdebc8ef8
+candidates = 107021 generated, 2580 accepted, 0 unowned
+marks = 5154, placements = 2580, prototypes = 0, interactions = 3
   field_stones = secondary, 3 marks
-  loose_grit = secondary, 1179 marks
+  loose_grit = secondary, 1105 marks
   meadow_fine_grass = tuned(fine), 0 marks
   meadow_flowers = secondary, 1897 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
   meadow_undergrowth = secondary, 1061 marks
-  track_grit_scatter = secondary, 1140 marks
+  track_grit_scatter = secondary, 1088 marks
 
 [flower_meadow]
 scene = 9d5bef1f90f18c4e73988a4dd36fd1f9
@@ -62,10 +62,10 @@ marks = 224, placements = 34, prototypes = 0, interactions = 0
   meadow_undergrowth = secondary, 200 marks
 
 [wet_and_dry]
-scene = e963fbede8382833432b9695357e1f17
-candidates = 635151 generated, 39809 accepted, 0 unowned
-marks = 40860, placements = 39809, prototypes = 0, interactions = 0
-  loose_grit = secondary, 39646 marks
+scene = ab533e8f687939cc35913618125019fb
+candidates = 635151 generated, 29212 accepted, 0 unowned
+marks = 30263, placements = 29212, prototypes = 0, interactions = 0
+  loose_grit = secondary, 29049 marks
   meadow_fine_grass = tuned(fine), 0 marks
   meadow_flowers = secondary, 713 marks
   meadow_thatch = tuned(thatch), 0 marks
