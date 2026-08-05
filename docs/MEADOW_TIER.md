@@ -90,7 +90,21 @@ document → PreparedTerrain → TerrainFieldStack → GroundEvaluator
 - [x] Stones use four reusable superellipsoid prototypes and explicit instances.
 - [x] Stones are visibly buried, by a fraction of their own height, addressed
       per stone so no common horizon line appears.
-- [x] Undergrowth is low, broad-leaved and patchy.
+- [x] Undergrowth is a rosette of arching, folded, broad leaves — swept ribbons
+      with a midrib, not flat lozenges. The first version instanced a horizontal
+      superellipsoid with a yaw, so every leaf in a plate had the same pitch and
+      the same normal, and it rendered as green stains on the soil.
+      `families.rs::MeadowUndergrowth`, `bridge.rs::Lowering::Leaf`.
+- [x] Every position, bearing and normal the bridge writes crosses the mirror.
+      It did not, for the whole of this module's first life, and the symptom was
+      flowers standing on a track that no amount of suppression tuning would
+      clear — see below.
+- [x] A sward can carry an optional dead bottom layer, authored by a channel in
+      the `DeadLitter` role. Zero unless a document asks, so
+      `refactor_fingerprints` holds bit for bit. `dead_layer.rs`.
+- [x] A plant population that named its materials places nothing at all where
+      the dominant substrate is not one of them. Categorical, because a ramp
+      always leaves a tail. `plants_on_dirt.rs`.
 - [x] Dirt clods remain `Deferred`: the ground profile's aggregate band already
       carries clod-scale structure and drawing both would count one physical
       signal twice. Reported on every compile, never silently dropped.
@@ -114,6 +128,15 @@ Seven pinned laboratories, six kinds of measurement, no Blender, about a second.
       match.
 - [x] Every laboratory passes. Compaction cuts Sq by 71%; saturation leaves 55%
       of the relief, which is exactly the profile's declared 0.45 flattening.
+- [x] Every stage is timed, over three repetitions after a named warm-up, with
+      the content counters in the same report. No speed claim is valid unless the
+      compared runs have equal counts, and a reader can only check that if both
+      numbers are in front of them. `run`, `performance` and `artifacts` are
+      filled; `ground_benchmark.rs` asserts the shape the schema declares rather
+      than only that the keys exist.
+- [x] The renderer fields of a machine identity *say* there is no renderer
+      rather than being blank. "None, by design" and "nobody recorded it" are
+      different facts.
 
 ### The two soils are two soils
 
@@ -137,24 +160,40 @@ Stated because an unenumerated gap is worse than a known one.
   `ShardManifest` and `ShardLayout`; the job that filled a shard went with the
   rasteriser. This is the largest single piece between here and training, and it
   is a rewrite against the matrix rather than a repair.
-- **The performance recorder does not exist.** `run`, `performance` and
-  `artifacts` in the report schema are unfilled, and `ground_benchmark.rs`
-  enumerates exactly which keys and why — a downstream tool reading a missing
-  key gets null and reports zero, which is indistinguishable from a measurement
-  of zero.
 - **No render-half benchmark.** FLIP, AOV comparison and the resolution ladder
   need Blender and belong on the visual gate.
-- **A few flowers still stand on ground that reads as bare.** Not a broken
-  control: `plants_on_dirt.rs` reports the vegetation channel at every plant root
-  by quintile and no plant sits below a quarter. Grass is what covers ground, so
-  thinning it to a quarter makes the ground look bare while leaving two flowers
-  a square metre legible. It is a document question, and that test is the
-  instrument for settling it rather than the eye.
 - **`constant_grass` and `blend_lab` cannot compile.** They name recipes from
   the older population registry. Recorded in `documents::NOT_COMPILABLE` with a
   test that fails if one of them starts working without anyone saying so.
 - **The world is still flat**, transcendental determinism is still
   same-platform, and `write_package` is still off the production path.
+
+## The flowers on the track were never on the track
+
+Worth recording, because two rounds of work went into the wrong half of it.
+
+A render kept showing daisies and rosettes standing on bare compacted earth.
+Every instrument said the placement was correct: `plants_on_dirt.rs` reported the
+vegetation channel at every plant root and found nothing below three quarters,
+and a map of the plate showed every plant root strictly inside the meadow with
+none in the track or even in its fringe. Two suppression bands were widened
+anyway, on the evidence of the picture.
+
+The placement was correct. **The bridge was writing game-world coordinates into
+a renderer that is given a reflected world** — `terrain_cycles` swaps the two
+ground axes to turn this framework's left-handed isometric convention into the
+right-handed space a path tracer wants, and every blade the tuned exporter writes
+goes through that swap. Nothing in `bridge.rs` did.
+
+A reflection across `x = y` maps a meadow onto a meadow, which is why it survived
+so long: a plate of scattered flowers came out as a plate of scattered flowers.
+It only becomes visible when a document has a *track* in it, and then the
+transpose of the meadow lands on the path while an equal area of grass holds
+nothing.
+
+`bridge.rs::every_lowered_position_crosses_the_mirror` asserts it at an
+asymmetric point — a symmetric one is a fixed point of the reflection and would
+have passed before the fix as happily as after it.
 
 ## Before the neural renderer
 

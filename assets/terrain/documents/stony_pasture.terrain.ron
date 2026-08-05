@@ -50,6 +50,21 @@
                 role: Some("VegetationDensity"),
             ),
             (
+                key: "dead_layer",
+                display_name: "Dead bottom layer",
+                range: (0.0, 1.0),
+                // The high end, and the reason the channel is authored per
+                // document rather than fixed. Thin soil over stone grows grass
+                // that dies back every summer and has nowhere to rot down to,
+                // so a pasture like this is more last year's straw than this
+                // year's green — which is most of what makes it read as poor
+                // ground rather than as a lawn with rocks on it.
+                default_value: 0.58,
+                composition: "Max",
+                unit: "Unitless",
+                role: Some("DeadLitter"),
+            ),
+            (
                 key: "thatch_density",
                 display_name: "Thatch density",
                 range: (0.0, 2.0),

@@ -56,6 +56,18 @@
 
         modifier_channels: [
             (
+                key: "dead_layer",
+                display_name: "Dead bottom layer",
+                range: (0.0, 1.0),
+                // The middle of the range. A verge beside a footpath is neither
+                // a hay meadow nor a summer-burnt pasture; it is ordinary grass
+                // with an ordinary amount of last year's under it.
+                default_value: 0.30,
+                composition: "Max",
+                unit: "Unitless",
+                role: Some("DeadLitter"),
+            ),
+            (
                 key: "vegetation_density",
                 display_name: "Vegetation density",
                 range: (0.0, 1.5),

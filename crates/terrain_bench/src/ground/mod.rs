@@ -27,6 +27,7 @@
 
 pub mod field;
 pub mod optics;
+pub mod performance;
 pub mod psd;
 pub mod report;
 pub mod run;
@@ -35,6 +36,7 @@ pub mod semivariogram;
 pub mod topography;
 
 pub use field::{AnalysisGrid, GroundField};
+pub use performance::{ArtifactRecord, PerformanceMetrics, Recorder};
 pub use report::{BenchmarkVerdict, GateResult, GateStatus, GroundBenchmarkReport};
 pub use run::{DEFAULT_SEED, run};
 pub use scenarios::{GROUND_SCENARIOS, GroundScenario};

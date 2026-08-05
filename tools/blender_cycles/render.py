@@ -44,7 +44,7 @@ from mathutils import Matrix, Vector
 # are in different languages and cannot share a constant, so the version number
 # is the only thing standing between a stale renderer and a picture that is
 # quietly missing a section.
-SCENE_FORMAT_VERSION = 2
+SCENE_FORMAT_VERSION = 3
 
 
 def jobs_from_argv():
@@ -393,6 +393,8 @@ def build_secondary_ribbons(spans, vertices, indices, materials, settings, cache
         normals = []
         along = []
         across = []
+        tints = []
+        variations = []
         triangles = []
         base = 0
         for span in members:
@@ -403,6 +405,11 @@ def build_secondary_ribbons(spans, vertices, indices, materials, settings, cache
             normals.append(block[:, 3:6])
             along.append(block[:, 6])
             across.append(block[:, 7])
+            # The per-plant tint. Ribbons merge into one mesh per material, so
+            # unlike an instance there is no Object Info to read it from — see
+            # `terrain_cycles::secondary::RibbonVertex`.
+            tints.append(block[:, 8:11])
+            variations.append(block[:, 11])
             local = indices[
                 span["index_offset"] : span["index_offset"] + span["index_count"]
             ]
@@ -434,6 +441,16 @@ def build_secondary_ribbons(spans, vertices, indices, materials, settings, cache
         ribbon_along.data.foreach_set("value", np.concatenate(along))
         ribbon_across = mesh.attributes.new("across", "FLOAT", "POINT")
         ribbon_across.data.foreach_set("value", np.concatenate(across))
+        ribbon_variation = mesh.attributes.new("variation", "FLOAT", "POINT")
+        ribbon_variation.data.foreach_set("value", np.concatenate(variations))
+        # As a colour rather than three floats, so the shader reads it with one
+        # node. Alpha is one throughout: the tint is a multiplier on the base
+        # colour and nothing here is transparent.
+        tint = np.concatenate(tints)
+        rgba = np.ones((tint.shape[0], 4), dtype=np.float32)
+        rgba[:, 0:3] = tint
+        ribbon_tint = mesh.color_attributes.new("tint", "FLOAT_COLOR", "POINT")
+        ribbon_tint.data.foreach_set("color", rgba.ravel())
 
         mesh.materials.append(
             secondary_material(material_index, materials, settings, cache)
@@ -839,35 +856,93 @@ def disk_material(settings):
 
 
 def leaf_material(settings):
-    """A broad ground leaf: a thin two-sided sheet, greener than a blade.
+    """A broad ground leaf: a thin membrane, greener than a blade.
 
-    Transmission for the same reason the blade material uses it — a leaf is a
-    membrane, and the ones lying away from the sun glow with light that came
-    through them. More of it than a blade gets, because a ground leaf is
-    broader and thinner and that is most of what distinguishes it at a glance.
+    ## Translucency rather than subsurface
 
-    The tint comes from the instance, so one material serves the whole sward
-    and the variation between plants is a decision Rust made and recorded.
+    The first version asked for a subsurface weight, which is the right idea and
+    the wrong node for this geometry. Subsurface scattering models light walking
+    a distance *inside* a solid; the leaf here is a tessellated ribbon with no
+    thickness at all, so there is no interior for the walk to happen in and the
+    setting bought nothing but noise.
+
+    What a membrane actually does is pass light straight through, and the node
+    for that is a translucent BSDF mixed behind the surface one. It is also the
+    single thing that most distinguishes a broad leaf from a blade at a glance:
+    the leaves lying away from the sun glow, and the ones between the camera and
+    the sun go bright and yellow-green while their neighbours stay dark.
+
+    ## The tint comes from the mesh, not from the object
+
+    Ribbons merge into one object per material, so Object Info would give every
+    leaf in the plate the same colour — which is exactly the flatness the
+    undergrowth was rebuilt to escape. The per-plant tint arrives as a colour
+    attribute instead. See `terrain_cycles::secondary::RibbonVertex`.
     """
     _ = settings
     material = bpy.data.materials.new("undergrowth-leaf")
+    # A sheet has two sides and both are the same leaf. Without this, Cycles
+    # culls nothing but the shading normal points away on half the fold and the
+    # leaf reads as if it had a hole in it.
+    material.use_backface_culling = False
     material.use_nodes = True
     tree = material.node_tree
+    output = tree.nodes["Material Output"]
     principled = tree.nodes["Principled BSDF"]
-    principled.inputs["Roughness"].default_value = 0.48
-    if "Subsurface Weight" in principled.inputs:
-        principled.inputs["Subsurface Weight"].default_value = 0.42
-        principled.inputs["Subsurface Radius"].default_value = (0.006, 0.010, 0.004)
+    principled.location = (-100, 200)
+    # Waxier than soil and duller than a wet blade. A ground leaf carries a
+    # broad, weak sheen rather than a highlight.
+    principled.inputs["Roughness"].default_value = 0.42
 
-    info = tree.nodes.new("ShaderNodeObjectInfo")
-    info.location = (-600, 0)
-    tinted = tree.nodes.new("ShaderNodeMixRGB")
-    tinted.location = (-350, 0)
-    tinted.blend_type = "MULTIPLY"
-    tinted.inputs["Fac"].default_value = 1.0
-    tinted.inputs["Color1"].default_value = (0.048, 0.098, 0.026, 1.0)
-    tree.links.new(info.outputs["Color"], tinted.inputs["Color2"])
-    tree.links.new(tinted.outputs["Color"], principled.inputs["Base Color"])
+    # The per-plant tint, from the mesh.
+    tint = tree.nodes.new("ShaderNodeVertexColor")
+    tint.layer_name = "tint"
+    tint.location = (-900, 300)
+
+    # Darker at the crown, and a touch warmer at the tip. Both are true of a
+    # real rosette — the base sits in its own shadow and the tip is the newest,
+    # thinnest tissue — and together they stop one leaf being one flat colour.
+    along = tree.nodes.new("ShaderNodeAttribute")
+    along.attribute_name = "along"
+    along.location = (-900, 40)
+    gradient = tree.nodes.new("ShaderNodeValToRGB")
+    gradient.location = (-700, 40)
+    gradient.color_ramp.elements[0].position = 0.0
+    gradient.color_ramp.elements[0].color = (0.030, 0.062, 0.018, 1.0)
+    gradient.color_ramp.elements[1].position = 1.0
+    gradient.color_ramp.elements[1].color = (0.062, 0.122, 0.030, 1.0)
+    tree.links.new(along.outputs["Fac"], gradient.inputs["Fac"])
+
+    base = tree.nodes.new("ShaderNodeMixRGB")
+    base.location = (-450, 160)
+    base.blend_type = "MULTIPLY"
+    base.inputs["Fac"].default_value = 1.0
+    tree.links.new(gradient.outputs["Color"], base.inputs["Color1"])
+    tree.links.new(tint.outputs["Color"], base.inputs["Color2"])
+    tree.links.new(base.outputs["Color"], principled.inputs["Base Color"])
+
+    # The light that came through. Brighter and yellower than the reflected
+    # colour, because chlorophyll transmits in a narrower band than it reflects.
+    through = tree.nodes.new("ShaderNodeMixRGB")
+    through.location = (-450, -160)
+    through.blend_type = "MULTIPLY"
+    through.inputs["Fac"].default_value = 1.0
+    through.inputs["Color1"].default_value = (0.155, 0.230, 0.045, 1.0)
+    tree.links.new(tint.outputs["Color"], through.inputs["Color2"])
+
+    translucent = tree.nodes.new("ShaderNodeBsdfTranslucent")
+    translucent.location = (-100, -160)
+    tree.links.new(through.outputs["Color"], translucent.inputs["Color"])
+
+    mix = tree.nodes.new("ShaderNodeMixShader")
+    mix.location = (150, 0)
+    # A third, which is a membrane rather than a pane of glass. Higher than this
+    # and the leaves stop casting a shadow, and the shadow under a rosette is
+    # most of what tells the eye it is a separate object sitting on the ground.
+    mix.inputs["Fac"].default_value = 0.34
+    tree.links.new(principled.outputs["BSDF"], mix.inputs[1])
+    tree.links.new(translucent.outputs["BSDF"], mix.inputs[2])
+    tree.links.new(mix.outputs["Shader"], output.inputs["Surface"])
     return material
 
 
@@ -2018,7 +2093,10 @@ def check_version(spec):
     """
     version = spec.get("version")
     if version is None:
-        raise SystemExit("scene.json declares no version; this build reads 2")
+        raise SystemExit(
+            "scene.json declares no version; this build reads "
+            f"{SCENE_FORMAT_VERSION}"
+        )
     if version != SCENE_FORMAT_VERSION:
         raise SystemExit(
             f"scene.json is format version {version}; this build reads "

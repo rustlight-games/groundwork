@@ -1366,8 +1366,8 @@ fn compile(args: &CompileArgs) -> ExitCode {
         compile_time.as_secs_f64()
     );
     println!(
-        "  drawn    {} secondary plant(s) as {} instance(s)",
-        plate.secondary_groups, plate.secondary_instances
+        "  drawn    {} secondary plant(s) as {} instance(s) and {} ribbon(s)",
+        plate.secondary_groups, plate.secondary_instances, plate.secondary_ribbons
     );
     println!("\nreplay:");
     println!(

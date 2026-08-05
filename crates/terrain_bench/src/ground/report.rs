@@ -213,11 +213,28 @@ pub struct SourceIdentity {
     pub generator_version: u32,
 }
 
+/// Which run this was, and on what.
+///
+/// Distinct from [`SourceIdentity`], which says what was *measured*. This says
+/// what did the measuring, and the two move independently: the same laboratory
+/// benchmarked on two machines is one source and two runs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunIdentity {
+    /// Derived from the inputs rather than drawn, so the same run on the same
+    /// checkout has the same id and a committed report does not churn.
+    pub run_id: String,
+    pub notes: Vec<String>,
+}
+
 /// One complete run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroundBenchmarkReport {
     pub schema_version: u32,
     pub source: SourceIdentity,
+    pub run: RunIdentity,
+    pub performance: super::performance::PerformanceMetrics,
+    /// Files this run wrote. Empty unless a caller asked for them.
+    pub artifacts: Vec<super::performance::ArtifactRecord>,
     pub scenario_asks: String,
     pub grid: super::AnalysisGrid,
     pub topography: TopographyMetrics,
@@ -252,6 +269,41 @@ impl GroundBenchmarkReport {
                     "row_order": "BottomUp",
                 },
             },
+            "run": {
+                "run_id": self.run.run_id,
+                "machine": {
+                    "os": self.performance.machine.os,
+                    "arch": self.performance.machine.arch,
+                    "cpu": self.performance.machine.cpu,
+                    "gpu": self.performance.machine.gpu,
+                    "rustc": self.performance.machine.rustc,
+                    "cargo_profile": self.performance.machine.cargo_profile,
+                    "blender": self.performance.machine.blender,
+                    "cycles_device": self.performance.machine.cycles_device,
+                    "logical_threads": self.performance.machine.logical_threads,
+                },
+                "repetitions": self.performance.repetitions,
+                "warmup_repetitions": self.performance.warmup_repetitions,
+                "notes": self.run.notes,
+            },
+            "performance": {
+                "total_median_ms": finite(self.performance.total_median_ms),
+                "total_p95_ms": finite(self.performance.total_p95_ms),
+                "peak_bytes": self.performance.peak_bytes,
+                "stages": self.performance.stages.iter().map(|s| json!({
+                    "stage": s.stage,
+                    "median_ms": finite(s.median_ms),
+                    "mad_ms": finite(s.mad_ms),
+                    "p95_ms": finite(s.p95_ms),
+                    "peak_bytes": s.peak_bytes,
+                })).collect::<Vec<_>>(),
+            },
+            "artifacts": self.artifacts.iter().map(|a| json!({
+                "kind": a.kind,
+                "path": a.path,
+                "checksum": a.checksum,
+                "bytes": a.bytes,
+            })).collect::<Vec<_>>(),
             "counts": self.counts,
             "topography": {
                 "height_m": summary_json(&self.topography.height_m),
@@ -381,6 +433,24 @@ impl GroundBenchmarkReport {
                 band.declared_wavelength_m,
                 band.dominant_wavelength_m,
                 band.energy_share * 100.0
+            );
+        }
+        // The timing, with the counters on the same line. A speed number without
+        // a content count is not a measurement of anything — the easiest way to
+        // make any of this faster is to do less of it. See `ground::performance`.
+        let _ = writeln!(
+            out,
+            "  time     {:.1} ms median, {:.1} ms p95 over {} rep(s), {} sample(s)",
+            self.performance.total_median_ms,
+            self.performance.total_p95_ms,
+            self.performance.repetitions,
+            self.counts.get("analysis_samples").copied().unwrap_or(0),
+        );
+        for stage in &self.performance.stages {
+            let _ = writeln!(
+                out,
+                "    {:<14} {:>7.2} ms  ±{:.2}",
+                stage.stage, stage.median_ms, stage.mad_ms
             );
         }
         for gate in &self.verdict.gates {

@@ -106,6 +106,32 @@
                 unit: "Unitless",
             ),
             (
+                key: "dead_layer",
+                display_name: "Dead bottom layer",
+                range: (0.0, 1.0),
+                // A third of the mat, everywhere, which is the point of the
+                // default being non-zero. Real turf is two crops standing in
+                // the same place — this season's green blades screening last
+                // season's straw — and a meadow with none of that reads as a
+                // lawn that was mown yesterday however varied its greens are.
+                //
+                // A third rather than a half because the tuned mat is *dark*
+                // thatch and the straw ramp is pale: at half the bottom layer
+                // stops reading as a floor under the canopy and starts reading
+                // as the ground itself.
+                default_value: 0.32,
+                // Max, because deadness has independent causes and two of them
+                // should not compound into a hay field: the base age of the
+                // sward and the wear at a path fringe are the same fact arrived
+                // at two ways.
+                composition: "Max",
+                unit: "Unitless",
+                // The role, not the key. A consumer looking for the string
+                // `dead_layer` would find nothing in the next document that
+                // called it `straw`. See `ModifierRole`.
+                role: Some("DeadLitter"),
+            ),
+            (
                 key: "flower_abundance",
                 display_name: "Flower abundance",
                 range: (0.0, 4.0),
@@ -310,9 +336,25 @@
                 // still two flowers you can see.
                 //
                 // So the band runs to where the grass has genuinely returned.
+                // The inner radius covers the *whole material band*, and that
+                // is the whole of the fix.
+                //
+                // A `SmoothBand` is one only inside `inner_m` and ramps to zero
+                // at `outer_m`. With the inner radius at 1.05 the suppression
+                // was full only at the very centre of the track, and by two
+                // metres out — still bare dirt, because the material band runs
+                // to 2.45 — the mask had fallen to about six tenths and two
+                // flowers in five survived. Measured rather than guessed:
+                // `plants_on_dirt.rs` showed the vegetation channel at every
+                // plant root, and none of them were where the control was
+                // strong.
+                //
+                // So the inner radius sits *past* the material band's outer
+                // edge, and the ramp happens over ground that is already
+                // meadow.
                 mask: Profile((
                     source: "main_path",
-                    shape: SmoothBand((inner_m: 1.05, outer_m: 4.40)),
+                    shape: SmoothBand((inner_m: 2.60, outer_m: 4.60)),
                 )),
                 operation: Modifier((
                     channel: "flower_abundance",
@@ -325,9 +367,10 @@
                 // The same for the rosettes, and for the same reason. A
                 // plantain in a track is a real thing, but it is a thing an
                 // author asks for rather than one that arrives by default.
+                // Past the material band too, for the same reason.
                 mask: Profile((
                     source: "main_path",
-                    shape: SmoothBand((inner_m: 1.05, outer_m: 3.90)),
+                    shape: SmoothBand((inner_m: 2.55, outer_m: 4.10)),
                 )),
                 operation: Modifier((
                     channel: "undergrowth_abundance",
@@ -347,6 +390,27 @@
                     channel: "thatch_density",
                     mode: "Max",
                     value: 1.1,
+                )),
+            ),
+            (
+                key: "path_fringe_litter",
+                mask: Profile((
+                    source: "main_path",
+                    // Wider than the thatch ring and starting further out. The
+                    // fringe of a track is where grass is worn but not gone,
+                    // and worn grass is old grass — so the dead share peaks
+                    // *outside* the band where the thatch itself collects and
+                    // falls away into the untouched meadow beyond.
+                    shape: SmoothBand((inner_m: 2.40, outer_m: 4.60)),
+                )),
+                operation: Modifier((
+                    channel: "dead_layer",
+                    mode: "Max",
+                    // Not one. A completely dead fringe is a hay bale laid
+                    // beside the path; two-thirds leaves enough green in the
+                    // mat that the fringe reads as tired rather than as a
+                    // different material.
+                    value: 0.66,
                 )),
             ),
             (

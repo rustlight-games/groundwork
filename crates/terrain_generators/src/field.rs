@@ -338,6 +338,32 @@ pub struct Ground {
     /// is what supplies "broad regions of darker, lighter, denser and shorter
     /// grass" — the reading the plate measured furthest from the reference at.
     pub resolution: f32,
+    /// How dead the bottom of the sward is here, `0..1`.
+    ///
+    /// ## Why a separate field and not more `bare` or less `density`
+    ///
+    /// Turf is two crops standing in the same place. This season's growth is
+    /// green and upright and is what a viewer thinks of as the grass; under it
+    /// is last season's, collapsed into a straw mat that never went anywhere.
+    /// Look at a lawn from a hand's width and the green is a *screen* with a
+    /// pale tangle behind it — and in most real grass there is far more of that
+    /// tangle than a generator ever puts in.
+    ///
+    /// Neither existing field can say it. Lowering `density` removes the mat
+    /// instead of ageing it, and the ground shows through. Raising `bare`
+    /// exposes soil, and a dead mat covers soil exactly as well as a live one
+    /// does. What changes is only the *colour and light* of the layer that was
+    /// already there, which is why it is its own axis.
+    ///
+    /// ## Zero unless a document asks
+    ///
+    /// The reference art this generator was tuned against has a dark green mat,
+    /// not a straw one, and every pinned fixture in the workspace measures that
+    /// meadow. So the default is zero and the tuned look is unmoved; an author
+    /// turns it on with a channel in the [`DeadLitter`] role.
+    ///
+    /// [`DeadLitter`]: terrain_core::document::ModifierRole::DeadLitter
+    pub litter: f32,
 }
 
 impl Ground {
@@ -357,6 +383,7 @@ impl Ground {
         colony: 0.0,
         statement: 0.0,
         resolution: 0.0,
+        litter: 0.0,
     };
 }
 
@@ -976,6 +1003,17 @@ impl WorldField {
             // It is short, dry, pale at the root, with the earth reading through
             // — and all of that is what `bare` turns on.
             ground.bare = ground.bare.max(Self::semantic_bare(vegetated, abundance));
+            // Read straight through rather than combined with anything. Litter
+            // is an authored fact about the sward and the procedural field has
+            // no opinion on it — there is nothing to modulate, which is what
+            // makes this the one overlay term that is an assignment.
+            //
+            // Suppressed where the earth shows, though, and that is not a
+            // stylistic choice. A dead mat is grass that grew and died; ground
+            // that never grew anything has none of it, and straw scattered
+            // across a bare track is litter blown onto it rather than the
+            // bottom of a sward.
+            ground.litter = overlay.ground.dead_litter(world) * (1.0 - ground.bare).max(0.0);
         }
         ground
     }
@@ -1208,6 +1246,9 @@ impl WorldField {
             crown,
             density,
             tint,
+            // The style half has no opinion on litter. It is authored or it is
+            // absent — see `Ground::litter` — and `sample` fills it in.
+            litter: 0.0,
             // Turned back into a *world* azimuth, which is the frame everything
             // that reads it works in — a stroke's `azimuth` steps its position
             // through world x and y.

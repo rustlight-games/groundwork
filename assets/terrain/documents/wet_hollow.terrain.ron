@@ -52,6 +52,21 @@
                 role: Some("VegetationDensity"),
             ),
             (
+                key: "dead_layer",
+                display_name: "Dead bottom layer",
+                range: (0.0, 1.0),
+                // Almost none, which is the case that proves the channel is a
+                // real semantic rather than a look. Dead matter in a wet hollow
+                // does not accumulate — it rots. So the wettest document in the
+                // set is the one with the least litter, and if that ever
+                // inverts, something is driving this from brightness rather
+                // than from meaning.
+                default_value: 0.08,
+                composition: "Max",
+                unit: "Unitless",
+                role: Some("DeadLitter"),
+            ),
+            (
                 key: "thatch_density",
                 display_name: "Thatch density",
                 range: (0.0, 2.0),

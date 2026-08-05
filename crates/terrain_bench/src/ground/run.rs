@@ -108,15 +108,88 @@ fn spacing_for(scenario: &GroundScenario) -> f64 {
         .min(0.05 / ANALYSIS_SAMPLES_PER_WAVELENGTH)
 }
 
+/// How many measured repetitions a default run takes, after the warm-up.
+///
+/// Three, which is the smallest number with a median that is not one of the
+/// endpoints. Two would report a mean wearing a median's name; five would treble
+/// the benchmark's wall clock to sharpen a figure nobody makes decisions from at
+/// that precision. A caller that wants a real distribution asks for one.
+pub const DEFAULT_REPETITIONS: usize = 3;
+
 /// Run one laboratory and reach a verdict.
 pub fn run(scenario: &GroundScenario, seed: u64) -> GroundBenchmarkReport {
+    run_repeated(scenario, seed, DEFAULT_REPETITIONS)
+}
+
+/// The same, with the timing sample size named.
+///
+/// ## Why the whole analysis repeats rather than a stage at a time
+///
+/// A repetition here re-runs everything from sampling the evaluator onward, and
+/// throws the answers away every time but the last. That is more work than
+/// timing each stage in its own loop, and it is the honest shape: the stages
+/// share caches, and a stage measured with its predecessor's data still warm in
+/// L2 is measured under conditions the real pipeline never gives it.
+///
+/// It also means the answers a report carries came from the *last* repetition
+/// rather than from a special untimed pass, so there is no path through this
+/// function that computes a number the timings did not pay for.
+pub fn run_repeated(
+    scenario: &GroundScenario,
+    seed: u64,
+    repetitions: usize,
+) -> GroundBenchmarkReport {
+    let mut recorder = super::performance::Recorder::new();
+    // The warm-up, run and named rather than folded in. The first pass through
+    // anything on a modern machine pays for cold caches and a page-faulted heap.
+    let mut report = measure_once(scenario, seed, &mut recorder);
+    recorder.discard_as_warmup();
+    for _ in 0..repetitions.max(1) {
+        report = measure_once(scenario, seed, &mut recorder);
+        recorder.finish_repetition();
+    }
+
+    let performance = recorder.finish();
+    GroundBenchmarkReport {
+        run: super::report::RunIdentity {
+            // Derived, not drawn. The same laboratory at the same seed on the
+            // same generator is the same run, so a committed report does not
+            // churn — see the module note on why no timestamp is recorded.
+            run_id: format!(
+                "{}-{seed:016x}-g{}",
+                scenario.name,
+                crate::fingerprint::GENERATOR_VERSION
+            ),
+            notes: vec![
+                "geometry half only: no renderer, no image, no Blender".to_string(),
+                format!(
+                    "timings are the median of {} repetitions after {} warm-up",
+                    performance.repetitions, performance.warmup_repetitions
+                ),
+            ],
+        },
+        counts: performance
+            .counters
+            .iter()
+            .map(|(key, value)| (key.clone(), *value))
+            .collect(),
+        performance,
+        ..report
+    }
+}
+
+fn measure_once(
+    scenario: &GroundScenario,
+    seed: u64,
+    recorder: &mut super::performance::Recorder,
+) -> GroundBenchmarkReport {
     let spacing = spacing_for(scenario);
     let side = effective_side_m(scenario);
     let ground = evaluator(scenario, seed, side, spacing);
     let profile = profile_for(scenario);
 
     let grid = AnalysisGrid::square(WorldPoint::ORIGIN, side, spacing);
-    let field = GroundField::sample(&ground, grid, 1);
+    let field = recorder.stage("sample", || GroundField::sample(&ground, grid, 1));
 
     // The margin excludes the ring where derivative estimates ran off the end
     // and the spectral window saw a discontinuity the terrain never had.
@@ -139,7 +212,9 @@ pub fn run(scenario: &GroundScenario, seed: u64) -> GroundBenchmarkReport {
             [w * 0.25, w, w * 2.0]
         })
         .collect();
-    let topography = topography::measure(&height, Some(&cavity), columns, rows, spacing, &lags);
+    let topography = recorder.stage("topography", || {
+        topography::measure(&height, Some(&cavity), columns, rows, spacing, &lags)
+    });
 
     let (residual, _) = topography::detrend(&height, columns, rows, spacing);
     let (cropped, spectral_side, _) = psd::crop_to_power_of_two(&residual, columns, rows);
@@ -156,18 +231,23 @@ pub fn run(scenario: &GroundScenario, seed: u64) -> GroundBenchmarkReport {
         .map(|v| (*v as f64 - cropped_mean).powi(2))
         .sum::<f64>()
         / cropped.len().max(1) as f64;
-    let spectrum = psd::measure(&cropped, spectral_side, spectral_side, spacing, &bands);
+    let spectrum = recorder.stage("spectrum", || {
+        psd::measure(&cropped, spectral_side, spectral_side, spacing, &bands)
+    });
 
     let max_lag = ((coarsest * 2.0 / spacing).ceil() as usize).min(columns / 3);
-    let semivariograms: Vec<_> = [0.0, std::f64::consts::FRAC_PI_2]
-        .into_iter()
-        .map(|direction| {
-            semivariogram::measure(&residual, columns, rows, spacing, direction, max_lag)
-        })
-        .collect();
+    let semivariograms: Vec<_> = recorder.stage("semivariogram", || {
+        [0.0, std::f64::consts::FRAC_PI_2]
+            .into_iter()
+            .map(|direction| {
+                semivariogram::measure(&residual, columns, rows, spacing, direction, max_lag)
+            })
+            .collect()
+    });
 
-    let optics = optics::measure(&profile, 9);
-    let composability = compare_windows(scenario, seed, spacing);
+    let optics = recorder.stage("optics", || optics::measure(&profile, 9));
+    let composability =
+        recorder.stage("composability", || compare_windows(scenario, seed, spacing));
 
     let gates = gates(
         scenario,
@@ -179,6 +259,9 @@ pub fn run(scenario: &GroundScenario, seed: u64) -> GroundBenchmarkReport {
         cropped_variance,
     );
 
+    // The counters every timing above has to be read against. No speed claim is
+    // valid unless the compared runs have equal content counts — see the module
+    // note on `performance`.
     let mut counts = std::collections::BTreeMap::new();
     counts.insert("analysis_samples".to_string(), columns * rows);
     counts.insert(
@@ -186,6 +269,22 @@ pub fn run(scenario: &GroundScenario, seed: u64) -> GroundBenchmarkReport {
         spectral_side * spectral_side,
     );
     counts.insert("relief_bands".to_string(), profile.structure.bands.len());
+    for (key, value) in &counts {
+        recorder.count(key, *value);
+    }
+
+    // Declared working sets, not observed peaks. See `StageTiming::peak_bytes`:
+    // there is no allocator hook here, and a number produced by guessing at one
+    // would be believed.
+    const F32: usize = std::mem::size_of::<f32>();
+    const F64: usize = std::mem::size_of::<f64>();
+    // Height, cavity and the state planes the field carries.
+    recorder.bytes("sample", grid.columns * grid.rows * F32 * 4);
+    recorder.bytes("topography", columns * rows * F32 * 2);
+    // The FFT works in complex doubles over the cropped square.
+    recorder.bytes("spectrum", spectral_side * spectral_side * F64 * 2);
+    recorder.bytes("semivariogram", columns * rows * F32);
+    recorder.bytes("composability", columns * rows * F32 * 2);
 
     GroundBenchmarkReport {
         schema_version: SCHEMA_VERSION,
@@ -195,6 +294,14 @@ pub fn run(scenario: &GroundScenario, seed: u64) -> GroundBenchmarkReport {
             profile_digest: profile_digest(&profile),
             generator_version: crate::fingerprint::GENERATOR_VERSION,
         },
+        run: super::report::RunIdentity {
+            run_id: String::new(),
+            notes: Vec::new(),
+        },
+        // Filled by `run_repeated` from the whole sample. One pass through here
+        // has one timing per stage, which is not a measurement.
+        performance: super::performance::Recorder::new().finish(),
+        artifacts: Vec::new(),
         scenario_asks: scenario.asks.to_string(),
         grid,
         topography,

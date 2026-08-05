@@ -704,7 +704,13 @@ fn check_composition(document: &TerrainDocument, report: &mut DiagnosticReport) 
         let read = document
             .populations
             .iter()
-            .any(|p| p.abundance_channel.as_ref() == Some(&channel.key));
+            .any(|p| p.abundance_channel.as_ref() == Some(&channel.key))
+            // A channel with a role is read *by role*, by a consumer this
+            // document cannot see. Warning that nothing reads it was true of
+            // the document and false of the world, and it fired on every
+            // moisture and compaction channel in the asset set — which is the
+            // fastest way to teach a reader to ignore a warning class.
+            || channel.role.is_some();
         if !written && !read {
             report.warning(
                 "unused_channel",

@@ -327,10 +327,22 @@ pub enum ModifierRole {
     WindExposure,
     /// How much water arrives here, `0..1`, before any is redistributed.
     WaterSupply,
+    /// How dead the *bottom* of the sward is, `0..1`.
+    ///
+    /// Not how dry the standing grass is, and not how much thatch there is.
+    /// Real turf carries a layer of last season's growth underneath this
+    /// season's: the blades you see are green and the mat they stand in is
+    /// straw, and the two are different ages of the same plant rather than two
+    /// amounts of one.
+    ///
+    /// Zero — the default when no channel claims the role — is the sward as
+    /// tuned, so a document that says nothing renders exactly as it did before
+    /// this existed. One is a mat that is entirely last year's.
+    DeadLitter,
 }
 
 impl ModifierRole {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::VegetationDensity,
         Self::SoilMoisture,
         Self::SoilCompaction,
@@ -340,6 +352,7 @@ impl ModifierRole {
         Self::OrganicMatter,
         Self::WindExposure,
         Self::WaterSupply,
+        Self::DeadLitter,
     ];
 
     pub fn name(self) -> &'static str {
@@ -353,6 +366,7 @@ impl ModifierRole {
             Self::OrganicMatter => "OrganicMatter",
             Self::WindExposure => "WindExposure",
             Self::WaterSupply => "WaterSupply",
+            Self::DeadLitter => "DeadLitter",
         }
     }
 

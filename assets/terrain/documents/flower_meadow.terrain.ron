@@ -55,6 +55,19 @@
                 role: Some("VegetationDensity"),
             ),
             (
+                key: "dead_layer",
+                display_name: "Dead bottom layer",
+                range: (0.0, 1.0),
+                // Low. This is the young, rich, well-watered end of the range:
+                // a hay meadow in its growing season, where this year's growth
+                // has buried most of last year's. Enough straw to say the sward
+                // has a history, not enough to say it is tired.
+                default_value: 0.18,
+                composition: "Max",
+                unit: "Unitless",
+                role: Some("DeadLitter"),
+            ),
+            (
                 key: "thatch_density",
                 display_name: "Thatch density",
                 range: (0.0, 2.0),

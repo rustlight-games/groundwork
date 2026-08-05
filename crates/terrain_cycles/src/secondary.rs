@@ -47,7 +47,13 @@ use std::path::Path;
 /// makes the version mandatory rather than advisory: a reader that finds a
 /// number it does not know must refuse, because the alternative is producing a
 /// plausible picture from a misread file.
-pub const CYCLES_SCENE_FORMAT_VERSION: u32 = 2;
+///
+/// Three widens the ribbon vertex. Ribbons merge into one mesh per material, so
+/// unlike an instance they have no Object Info to carry a per-plant tint — every
+/// leaf in a plate shaded identically, which is exactly the flatness the
+/// undergrowth was rebuilt to escape. The tint therefore travels per vertex,
+/// constant along one leaf, and the version moves because the stride did.
+pub const CYCLES_SCENE_FORMAT_VERSION: u32 = 3;
 
 /// Whether a piece of secondary geometry is in the picture or only lighting it.
 ///
@@ -72,11 +78,20 @@ pub struct RibbonVertex {
     pub along: f32,
     /// Across the ribbon, `-1` at one edge and `1` at the other.
     pub across: f32,
+    /// A multiplier on the shader's base colour, constant along one ribbon.
+    ///
+    /// The same contract an [`Instance`] gets from Object Info, delivered as an
+    /// attribute because a merged mesh has one object between thousands of
+    /// plants. Written per vertex and *not* interpolated across a seam: two
+    /// leaves never share a vertex, so a constant per ribbon stays constant.
+    pub tint: [f32; 3],
+    /// The plant's own latent, `0..1`. Free variation for a shader to spend.
+    pub variation: f32,
 }
 
 impl RibbonVertex {
     /// Bytes one vertex occupies in `secondary-ribbons.bin`.
-    pub const STRIDE: usize = 8 * 4;
+    pub const STRIDE: usize = 12 * 4;
 
     fn write(&self, out: &mut Vec<u8>) {
         for value in self.position {
@@ -87,6 +102,10 @@ impl RibbonVertex {
         }
         out.extend_from_slice(&self.along.to_le_bytes());
         out.extend_from_slice(&self.across.to_le_bytes());
+        for value in self.tint {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out.extend_from_slice(&self.variation.to_le_bytes());
     }
 }
 
@@ -672,6 +691,8 @@ mod tests {
             normal: [0.0, 0.0, 1.0],
             along: 0.0,
             across: 0.0,
+            tint: [1.0, 1.0, 1.0],
+            variation: 0.0,
         }
         .write(&mut bytes);
         assert_eq!(bytes.len(), RibbonVertex::STRIDE);

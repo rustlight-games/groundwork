@@ -840,13 +840,44 @@ impl TerrainRecipe for MeadowFlowers {
 /// The tuned generator already grows four layers of grass and a fifth would be
 /// more of the same at a lower quality. What a meadow has that none of those
 /// four supply is *broad* leaves near the ground — plantain, dock, sorrel —
-/// which read completely differently because they are wide, flat and nearly
-/// horizontal where every grass blade is narrow and upright.
+/// which read completely differently because they are wide, curved and low
+/// where every grass blade is narrow and upright.
 ///
 /// That difference is most of the value. A canopy of nothing but blades reads
 /// as one plant repeated however varied its lengths are, and the eye finds the
 /// repetition long before it can name it. One broad leaf per square metre
 /// breaks it.
+///
+/// ## What went wrong the first time, and what an arch fixes
+///
+/// The first version emitted each leaf as a flattened lozenge lying *flat* on
+/// the ground at a fixed lift, with only a yaw to tell one from another. Every
+/// leaf in a plate was therefore the same shape, at the same pitch, with the
+/// same normal — so every one of them took the same light. What that renders as
+/// is not undergrowth: it is a scatter of green stains on the soil, and the
+/// larger the plate the more obviously they are stamps of one decal.
+///
+/// A real ground leaf is not flat and its silhouette is not the point. It
+/// *arches*: it leaves the crown steeply, rolls over past the horizontal and
+/// droops its tip back toward the earth, and it is folded along a midrib so that
+/// the two halves face different ways. Both of those are what makes a rosette
+/// read — the arch gives it height and a shadow of its own, the fold gives it a
+/// lit half and a dark half from any sun angle. Neither survives being drawn as
+/// a horizontal ellipse.
+///
+/// So a leaf here is a [`RibbonGeometry`] like every other piece of foliage in
+/// the framework: bent past vertical, curled at the tip, twisted about its own
+/// axis and ridged along its centre. It costs a tessellated ribbon instead of an
+/// instance, which at one to two plants a square metre is nothing.
+///
+/// ## A rosette is not a starburst
+///
+/// The leaves of one plant are not interchangeable. The outer ones are longer,
+/// splay further and lie almost on the ground; the inner ones are shorter,
+/// stand nearly upright and are narrower. Growing every leaf from one
+/// distribution produces a pinwheel — radially symmetric, uniformly pitched,
+/// and unmistakably generated. The ladder from outer to inner is applied by
+/// leaf index below, and it is most of what separates this from the lozenges.
 ///
 /// ## Visible where the grass is not
 ///
@@ -895,8 +926,15 @@ impl TerrainRecipe for MeadowUndergrowth {
     }
 
     fn maximum_reach_m(&self, parameters: &ParameterObject) -> f64 {
-        // Crown radius plus the longest leaf, both at their upper latent.
-        read(parameters, "crown_radius_m", 0.02) + read(parameters, "leaf_length_m", 0.12) * 1.3
+        // Crown radius plus the longest leaf, both at their upper latent. An
+        // arc of length L cannot put its tip further than L from its root
+        // whatever the bend does, so the length bound holds without knowing the
+        // curvature — the same argument `RibbonGeometry::reach_m` makes. The
+        // half-width is added because a leaf is wide, and a ribbon's edge is
+        // further out than its centreline.
+        read(parameters, "crown_radius_m", 0.02)
+            + read(parameters, "leaf_length_m", 0.12) * LEAF_LENGTH_MAX as f64
+            + read(parameters, "leaf_width_m", 0.035) * 0.75
     }
 
     fn validate(
@@ -922,9 +960,12 @@ impl TerrainRecipe for MeadowUndergrowth {
         let base_width = read(context.parameters, "leaf_width_m", 0.035) as f32;
         let crown = read(context.parameters, "crown_radius_m", 0.02) as f32;
 
-        // Three to eight leaves. Addressed rather than drawn, so adding a leaf
+        // Four to nine leaves. Addressed rather than drawn, so adding a leaf
         // parameter later cannot shift any other decision this plant makes.
-        let leaves = 3 + (candidate.latent(seeds, &stream("rosette_leaves")) * 5.0) as u16;
+        //
+        // Three was too few once the leaves stopped lying flat: a rosette of
+        // three arches is a tripod, and the eye counts the legs.
+        let leaves = 4 + (candidate.latent(seeds, &stream("rosette_leaves")) * 6.0) as u16;
         let phase =
             candidate.latent_range(seeds, &stream("rosette_phase"), 0.0, std::f32::consts::TAU);
 
@@ -977,6 +1018,16 @@ impl TerrainRecipe for MeadowUndergrowth {
             let angle = (rs * (1.0 - flow_mix) + fs * flow_mix)
                 .atan2(rc * (1.0 - flow_mix) + fc * flow_mix);
 
+            // Where this leaf sits on the outer-to-inner ladder. Zero is the
+            // outermost, one the innermost. Index order is arbitrary and that is
+            // fine: what matters is that a plant holds the whole range rather
+            // than that any particular leaf is on the outside.
+            let rank = if leaves > 1 {
+                index as f32 / (leaves - 1) as f32
+            } else {
+                0.0
+            };
+
             let length = base_length
                 * candidate.latent_range(
                     seeds,
@@ -985,25 +1036,86 @@ impl TerrainRecipe for MeadowUndergrowth {
                     } else {
                         "rosette_len_b"
                     }),
-                    0.65,
-                    1.25,
-                );
-            let width = base_width * (0.8 + 0.4 * variation);
-            // Set out from the crown, and lifted a little at its middle: a
-            // ground leaf rises from its base and droops at the tip rather than
-            // lying flat, and the rise is what catches the sun.
-            let reach = crown + length * 0.5;
-            output.emit(EmittedMark::Analytic {
-                centre: [
-                    candidate.position.u_m + (reach * angle.cos()) as f64,
-                    candidate.position.v_m + (reach * angle.sin()) as f64,
-                    context.surface_z_m + (length * 0.09) as f64,
+                    LEAF_LENGTH_MIN,
+                    LEAF_LENGTH_MAX,
+                )
+                // The outer leaves are the long ones. Real rosettes grow from
+                // the centre out, so the oldest leaf is the outermost and has
+                // had the longest to get there.
+                * (1.0 - 0.35 * rank);
+
+            // Bend past vertical, which is what makes it an arch rather than a
+            // fan. A leaf at π/2 points straight out sideways; everything above
+            // that is a tip on its way back down to the ground.
+            //
+            // The outer leaves fall furthest — they are long enough that their
+            // own weight beats them — and the innermost stand close to upright.
+            let bend = candidate.latent_range(
+                seeds,
+                &stream(if index % 2 == 0 {
+                    "rosette_bend_a"
+                } else {
+                    "rosette_bend_b"
+                }),
+                -0.16,
+                0.16,
+            ) + 2.15
+                - 1.05 * rank;
+
+            // Narrower toward the centre, and never so narrow that it reads as
+            // a blade of grass — the width is the whole reason this family
+            // exists beside the tuned passes.
+            let width = base_width * 0.5 * (0.82 + 0.36 * variation) * (1.0 - 0.28 * rank);
+
+            output.emit(EmittedMark::Ribbon {
+                // Every leaf of one plant leaves the same crown. A rosette whose
+                // leaves start at scattered points is a patch of separate
+                // seedlings, and it reads as one.
+                root: [
+                    candidate.position.u_m + (crown * 0.35 * angle.cos()) as f64,
+                    candidate.position.v_m + (crown * 0.35 * angle.sin()) as f64,
+                    context.surface_z_m,
                 ],
-                radius_m: [length * 0.5, width * 0.5],
-                // Thin. A ground leaf is a sheet, and thickness here reads as a
-                // slug rather than as a plant.
-                height_m: width * 0.14,
-                rotation_rad: angle,
+                geometry: RibbonGeometry {
+                    length_m: length,
+                    azimuth_rad: angle,
+                    bend_rad: bend,
+                    // The hook at the tip. On a leaf this is the last centimetre
+                    // turning down into the grass rather than ending in mid-air,
+                    // and it is where the shadow under the plant comes from.
+                    curl_rad: candidate.latent_range(seeds, &stream("rosette_curl"), 0.10, 0.55)
+                        * (0.4 + 0.6 * (1.0 - rank)),
+                    // A leaf that leaves the crown straight and stays straight
+                    // is a ruler. A slight lateral drift is what a real one does
+                    // reaching for its own gap in the canopy.
+                    sway_rad: candidate.latent_range(seeds, &stream("rosette_sway"), -0.45, 0.45),
+                    // No kink. A grass blade gets an elbow because it is thin
+                    // enough to be broken by a foot; a broad leaf with a midrib
+                    // creases rather than kinks, and the crease is the ridge.
+                    kink_rad: 0.0,
+                    kink_at: 0.5,
+                    kink_turn_rad: 0.0,
+                    // Rolled about its own axis, so the two halves of the fold
+                    // present different faces to the sun. Half a radian is not
+                    // subtle and it is not meant to be: it is the difference
+                    // between a rosette and a cut-out.
+                    twist_rad: candidate.latent_range(seeds, &stream("rosette_twist"), -0.6, 0.6),
+                    width_m: width,
+                    // A blunt tip rather than a needle. Plantain and dock end in
+                    // a short point on a wide blade, and tapering to nothing
+                    // makes the last third read as grass.
+                    tip_width_m: width * 0.22,
+                    // Narrow at the attachment, broadest a third of the way out,
+                    // then a long taper. What a ground leaf does, and what the
+                    // profile was named for.
+                    profile: WidthProfile::Leaf,
+                    tip: TipShape::Pointed,
+                    // The midrib. Strongly folded, because this is the parameter
+                    // that gives one leaf a lit half and a shaded half — the
+                    // single largest difference between the arch and the lozenge
+                    // it replaced.
+                    ridge: candidate.latent_range(seeds, &stream("rosette_ridge"), 0.34, 0.62),
+                },
                 attributes: MarkAttributes {
                     maturity: 0.55,
                     moisture: context.ground_sample.state.moisture,
@@ -1011,11 +1123,23 @@ impl TerrainRecipe for MeadowUndergrowth {
                     tint,
                     variation,
                 },
+                stratum: Stratum::Ground,
                 appearance: 0,
             });
         }
     }
 }
+
+/// The narrowest and widest a leaf is drawn, as a multiple of the authored
+/// length.
+///
+/// Named because [`MeadowUndergrowth::maximum_reach_m`] has to agree with
+/// [`MeadowUndergrowth::emit`] exactly: a reach bound below what the emitter
+/// actually grows makes a leaf present on one side of a page join and missing on
+/// the other, which is the one artefact in this framework that no amount of
+/// looking at a single plate will reveal.
+const LEAF_LENGTH_MIN: f32 = 0.65;
+const LEAF_LENGTH_MAX: f32 = 1.25;
 
 // ---------------------------------------------------------------------------
 // Stones

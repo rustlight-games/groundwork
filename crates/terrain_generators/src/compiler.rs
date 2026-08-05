@@ -579,16 +579,60 @@ pub fn compile_scene(
             // stops being a track, and a half is where it is properly soil.
             let support = smoothstep(0.20, 0.55, ground.support_for(&substrate));
 
+            // ## And a hard denial on ground the population did not name
+            //
+            // Everything above is a *ramp*, and a ramp always leaves a tail. A
+            // fortieth of two flowers a square metre over ten square metres of
+            // track is still half a flower, and half a flower rounds to one you
+            // can see standing on bare compacted earth.
+            //
+            // For a plant that is not a subtlety worth preserving. Grass thins
+            // through a transition because a sward genuinely does; a daisy does
+            // not grow in a footpath at any density. So a population that named
+            // its materials is denied outright wherever the *dominant* substrate
+            // is not one of them — no ramp, no tail, no document layer needed.
+            //
+            // The ramps above still do their job on ground the population *did*
+            // name: they are what makes the fringe a fringe rather than an edge.
+            let dominant_is_named = |claimant: &Claimant| {
+                if claimant.affinity.is_empty() {
+                    return true;
+                }
+                match substrate.dominant() {
+                    None => true,
+                    Some((material, _)) => claimant
+                        .affinity
+                        .iter()
+                        .any(|(named, weight)| *named == material && *weight > 0.0),
+                }
+            };
+
             // ## What the author said about vegetation, applied to vegetation
             //
             // The support threshold above answers "can this ground grow
             // anything", which is a property of the *material*. It is not the
-            // same question as "does anything grow here", and the track showed
-            // why: `path_vegetation_suppression` takes the grass down to four
-            // percent across a band wider than the dirt, so the ground reads as
-            // bare while its material is still mostly meadow soil. Support is
-            // high, the threshold passes, and flowers stood on what every
-            // viewer correctly saw as a track.
+            // same question as "does anything grow here":
+            // `path_vegetation_suppression` takes the grass down to four percent
+            // across a band wider than the dirt, so the ground can read as bare
+            // while its material is still mostly meadow soil. Support is high,
+            // the threshold passes, and a flower on that ground stands on what a
+            // viewer correctly calls a track.
+            //
+            // ## This was not, however, the bug it was written for
+            //
+            // It went in against a render showing daisies on bare earth, and it
+            // did not fix that render, because nothing here was broken. The
+            // bridge was writing game-world coordinates into a renderer that is
+            // given a reflected world, so the plants were the transpose of where
+            // they had been placed — see `terrain_cycles::bridge`. Every
+            // instrument pointed at the compiler agreed the placement was right,
+            // and every one of them was correct.
+            //
+            // The gate stays because it is the right rule on its own terms and
+            // an author will reach for it the moment a document suppresses
+            // vegetation without changing the material. It is recorded here as
+            // *not* the fix so the next person reading it does not conclude the
+            // symptom is what proves it works.
             //
             // The channel that already says so carries the `VegetationDensity`
             // role. A flower is vegetation; a stone is not. So every population
@@ -599,6 +643,9 @@ pub fn compile_scene(
             options_buffer.clear();
             let mut target = 0.0f64;
             for claimant in &members {
+                if !dominant_is_named(claimant) {
+                    continue;
+                }
                 let affinity = claimant.affinity_for(&substrate)
                     * if claimant.affinity.is_empty() {
                         1.0

@@ -292,6 +292,12 @@ pub struct Plate {
     pub secondary_groups: usize,
     /// Prototype instances lowered: heads, petals and stones.
     pub secondary_instances: usize,
+    /// Tessellated ribbons: the broad ground leaves.
+    ///
+    /// Counted apart from the instances because they are a different kind of
+    /// geometry with a different cost, and because a leaf that stopped being
+    /// drawn would otherwise be invisible in a total dominated by petals.
+    pub secondary_ribbons: usize,
     pub plan: PlatePlan,
 }
 
@@ -468,6 +474,7 @@ pub fn trace(
     let mut blades = 0usize;
     let mut secondary_groups = 0usize;
     let mut secondary_instances = 0usize;
+    let mut secondary_ribbons = 0usize;
 
     for row in 0..plan.tiles_across {
         for column in 0..plan.tiles_across {
@@ -550,6 +557,7 @@ pub fn trace(
                 }
                 secondary_groups += report.total_groups();
                 secondary_instances += report.instances;
+                secondary_ribbons += report.ribbons;
                 scene.secondary = geometry;
             }
 
@@ -607,6 +615,7 @@ pub fn trace(
         blades,
         secondary_groups,
         secondary_instances,
+        secondary_ribbons,
         plan,
     })
 }

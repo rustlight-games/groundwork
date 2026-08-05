@@ -17,6 +17,29 @@
 //! union of everything it grew, and the whole group is kept, made halo-only, or
 //! omitted together.
 //!
+//! ## Everything crosses the mirror on the way out
+//!
+//! Blender is given a *reflected* world: the two ground axes are swapped, which
+//! is what turns this framework's left-handed isometric convention into the
+//! right-handed space a path tracer wants. Every blade the tuned exporter writes
+//! goes through [`cycles::to_blender`], and so must every flower, stone and leaf
+//! that leaves this module.
+//!
+//! This module did not, for its whole first life, and the symptom is worth
+//! recording because it is the failure mode a reflection always has: nothing
+//! looked broken. A reflection across `x = y` maps a meadow onto a meadow, so a
+//! plate of scattered flowers came out looking exactly like a plate of scattered
+//! flowers — until a document had a *track* in it, and then half the daisies
+//! stood on bare compacted earth while an equal area of grass beside them held
+//! none. Two rounds of tuning went into the suppression bands that were supposed
+//! to prevent that, and the placement had been correct the entire time.
+//!
+//! So the rule is the one `terrain_cycles`'s own module note states: nothing
+//! reaches Blender in game-world coordinates. It is applied here at the three
+//! points where geometry is written — instance translations, curve points and
+//! ribbon vertices — rather than at the call sites that build them, because a
+//! builder that forgets is exactly what happened.
+//!
 //! ## Tuned grass never comes through here
 //!
 //! The compiled scene contains generic grass, fine grass and thatch as well.
@@ -33,8 +56,27 @@ use terrain_scene::mark::{AnchorIndex, SceneMark};
 use terrain_scene::scene::TerrainScene;
 
 use crate::secondary::{
-    CurveSpan, Instance, MaterialBinding, Prototype, PrototypeFamily, SecondaryGeometry, Visibility,
+    CurveSpan, Instance, MaterialBinding, Prototype, PrototypeFamily, RibbonSpan, RibbonVertex,
+    SecondaryGeometry, Visibility,
 };
+
+/// One scene point, reflected into the space Blender is given.
+///
+/// The whole of the handedness fix, and the only conversion in this module. See
+/// the module note for what its absence looked like.
+fn to_blender(point: terrain_scene::projection::ScenePoint) -> [f32; 3] {
+    let swapped = crate::cycles::to_blender(glam::Vec3::new(
+        point.u_m as f32,
+        point.v_m as f32,
+        point.z_m as f32,
+    ));
+    [swapped.x, swapped.y, swapped.z]
+}
+
+/// A raw position, already in world units, reflected the same way.
+fn swap_xy(position: [f32; 3]) -> [f32; 3] {
+    [position[1], position[0], position[2]]
+}
 
 /// How many points a bent stem's centreline is sampled at.
 ///
@@ -54,9 +96,9 @@ fn lowering(appearance: &str) -> Option<Lowering> {
         "flower.stem" => Lowering::Curve,
         "flower.head" => Lowering::Disk,
         "flower.petal" => Lowering::Petal,
-        // A ground leaf is a flattened lozenge too: broad, thin, and nearly
-        // horizontal. The difference from a petal is its proportions and its
-        // shader, both of which the bridge picks from the key.
+        // A ground leaf is a swept ribbon: it arches out of the crown, rolls
+        // past the horizontal and folds along a midrib, and none of those three
+        // survive an instanced lozenge. See `Lowering::Leaf`.
         "plant.undergrowth_leaf" => Lowering::Leaf,
         "rock.rounded" => Lowering::Stone,
         "rock.fractured" => Lowering::Stone,
@@ -74,7 +116,19 @@ enum Lowering {
     Curve,
     /// A shallow disk instance: a flower head.
     Disk,
-    /// A flattened lozenge instance: one ground leaf.
+    /// A tessellated ribbon: one broad ground leaf.
+    ///
+    /// The one lowering here that is not an instance, and the reason is that a
+    /// ground leaf's shape is the point. It arches — leaving the crown steeply,
+    /// rolling past the horizontal, dropping its tip back toward the soil — and
+    /// it is folded along a midrib so the two halves take light differently.
+    ///
+    /// The first version instanced a flattened superellipsoid with a yaw, which
+    /// gave every leaf in a plate the same pitch and the same normal. Both of
+    /// the things above were missing and what rendered was a scatter of green
+    /// stains rather than a plant. An instance transform cannot supply an arch:
+    /// a rigid body has one orientation, and the leaf needs a different one at
+    /// every point along its length.
     Leaf,
     /// A flattened lozenge instance: one petal.
     ///
@@ -97,6 +151,7 @@ pub struct BridgeReport {
     pub groups_halo: usize,
     pub groups_omitted: usize,
     pub curves: usize,
+    pub ribbons: usize,
     pub instances: usize,
     /// Appearance keys with no lowering, and how many marks named each.
     ///
@@ -228,11 +283,7 @@ pub fn lower(
                         prototype,
                         material_variant: 0,
                         visibility,
-                        translation: [
-                            head.centre.u_m as f32,
-                            head.centre.v_m as f32,
-                            head.centre.z_m as f32,
-                        ],
+                        translation: to_blender(head.centre),
                         rotation_xyzw: yaw_quaternion(head.rotation_rad),
                         scale: [
                             head.radius_m[0],
@@ -244,36 +295,19 @@ pub fn lower(
                     });
                     report.instances += 1;
                 }
-                (Lowering::Leaf, SceneMark::Analytic(leaf)) => {
-                    let prototype = bind(
-                        &mut out,
-                        &mut prototypes,
-                        "undergrowth.leaf.v1",
-                        PrototypeFamily::Petal,
+                (Lowering::Leaf, SceneMark::Ribbon(leaf)) => {
+                    let vertex_offset = out.ribbon_vertices.len() as u32;
+                    let index_offset = out.ribbon_indices.len() as u32;
+                    tessellate_leaf(leaf, &mut out.ribbon_vertices, &mut out.ribbon_indices);
+                    out.ribbons.push(RibbonSpan {
+                        vertex_offset,
+                        vertex_count: out.ribbon_vertices.len() as u32 - vertex_offset,
+                        index_offset,
+                        index_count: out.ribbon_indices.len() as u32 - index_offset,
                         material,
-                    );
-                    out.instances.push(Instance {
-                        prototype,
-                        material_variant: 0,
                         visibility,
-                        translation: [
-                            leaf.centre.u_m as f32,
-                            leaf.centre.v_m as f32,
-                            leaf.centre.z_m as f32,
-                        ],
-                        rotation_xyzw: yaw_quaternion(leaf.rotation_rad),
-                        scale: [
-                            leaf.radius_m[0].max(1.0e-4),
-                            leaf.radius_m[1].max(1.0e-4),
-                            leaf.height_m.max(1.0e-5),
-                        ],
-                        // A green tint rather than a hue wheel: a ground leaf is
-                        // a leaf, and the variation between plants is in how
-                        // yellow or how blue-green rather than in which colour.
-                        tint: leaf_tint(leaf.attributes.tint),
-                        variation: leaf.attributes.variation,
                     });
-                    report.instances += 1;
+                    report.ribbons += 1;
                 }
                 (Lowering::Petal, SceneMark::Analytic(petal)) => {
                     let prototype = bind(
@@ -287,11 +321,7 @@ pub fn lower(
                         prototype,
                         material_variant: 0,
                         visibility,
-                        translation: [
-                            petal.centre.u_m as f32,
-                            petal.centre.v_m as f32,
-                            petal.centre.z_m as f32,
-                        ],
+                        translation: to_blender(petal.centre),
                         rotation_xyzw: yaw_quaternion(petal.rotation_rad),
                         scale: [
                             petal.radius_m[0].max(1.0e-4),
@@ -319,11 +349,7 @@ pub fn lower(
                         prototype,
                         material_variant: 0,
                         visibility,
-                        translation: [
-                            stone.centre.u_m as f32,
-                            stone.centre.v_m as f32,
-                            stone.centre.z_m as f32,
-                        ],
+                        translation: to_blender(stone.centre),
                         rotation_xyzw: yaw_quaternion(stone.rotation_rad),
                         scale: [
                             stone.radius_m[0].max(1.0e-4),
@@ -445,9 +471,216 @@ fn bind(
     index
 }
 
-/// A quaternion for a turn about the vertical axis.
+/// Cross-sections along one tessellated leaf.
+///
+/// Nine, and the number comes from the arch rather than from a budget. The
+/// centreline turns through more than two radians between the crown and the tip,
+/// so eight segments put about fifteen degrees between consecutive tangents —
+/// close enough that the silhouette of a twelve-centimetre leaf reads as a curve
+/// at any framing this project renders at, and few enough that a plate of two
+/// hundred rosettes is a hundred thousand triangles rather than a million.
+const LEAF_SECTIONS: usize = 9;
+
+/// Points across one cross-section.
+///
+/// Five rather than three, because three cannot describe a fold: the midrib
+/// would be a single crease with flat faces either side, and the highlight along
+/// it would be a hard line. Five gives the fold two facets a side, which is
+/// enough for the specular roll-off that makes it read as a curved surface.
+const LEAF_ACROSS: usize = 5;
+
+/// Turn one arching, folded ground leaf into triangles.
+///
+/// ## The frame, and why it is built from the azimuth rather than parallel
+/// transported
+///
+/// A ribbon needs a coordinate frame at every point: a tangent along it and an
+/// across direction to lay the width on. The general answer is a parallel
+/// transported frame, which is what a swept tube wants — but a leaf is not a
+/// tube. Its "across" is the direction it is *wide* in, and for a plant leaving
+/// the ground on a fixed azimuth that direction is the horizontal perpendicular
+/// to the azimuth, all the way along. Building it from the azimuth directly is
+/// therefore both simpler and more correct: it is exactly perpendicular to the
+/// tangent at every point (the tangent has no component along it, by
+/// construction), and it never accumulates the drift a transported frame does.
+///
+/// The twist is then applied *on top* of that frame rather than being the frame,
+/// which is what makes it an authored parameter with a meaning rather than an
+/// artefact of the integration.
+///
+/// ## Why the centreline is integrated rather than evaluated
+///
+/// A constant-curvature arc has a closed form and the stems use it. This one
+/// does not: the bend accelerates through the curl in the last third and the
+/// azimuth drifts under the sway, so the tangent is a function of `s` with no
+/// useful antiderivative. Eight forward steps at this segment count cost
+/// nothing and are exact at the vertices, which is where the geometry is.
+fn tessellate_leaf(
+    leaf: &terrain_scene::mark::RibbonMark,
+    vertices: &mut Vec<RibbonVertex>,
+    indices: &mut Vec<u32>,
+) {
+    let geometry = &leaf.geometry;
+    let tint = leaf_tint(leaf.attributes.tint);
+    let variation = leaf.attributes.variation;
+    let base = vertices.len() as u32;
+
+    let mut position = [
+        leaf.root.u_m as f32,
+        leaf.root.v_m as f32,
+        leaf.root.z_m as f32,
+    ];
+
+    for section in 0..LEAF_SECTIONS {
+        let s = section as f32 / (LEAF_SECTIONS - 1) as f32;
+
+        // The tangent's angle away from vertical. The curl is squared over the
+        // last third so it arrives as an acceleration rather than as a step —
+        // a discontinuity in curvature is visible as a crease across the leaf.
+        let curl_at = ((s - 2.0 / 3.0) * 3.0).max(0.0);
+        let bend = geometry.bend_rad * s + geometry.curl_rad * curl_at * curl_at;
+        let azimuth = geometry.azimuth_rad + geometry.sway_rad * s;
+
+        let (sin_bend, cos_bend) = bend.sin_cos();
+        let (sin_az, cos_az) = azimuth.sin_cos();
+        let tangent = [sin_bend * cos_az, sin_bend * sin_az, cos_bend];
+
+        if section > 0 {
+            // A midpoint would be more accurate; at fifteen degrees a step it
+            // is not worth the second trigonometric evaluation. What matters is
+            // that consecutive sections are joined by the tangent they share, so
+            // the surface has no gaps.
+            let step = geometry.length_m / (LEAF_SECTIONS - 1) as f32;
+            for axis in 0..3 {
+                position[axis] += tangent[axis] * step;
+            }
+        }
+
+        // Across, before the twist: the horizontal perpendicular to the
+        // azimuth. Exactly perpendicular to the tangent for every bend.
+        let flat = [-sin_az, cos_az, 0.0];
+        // And the face normal, completing the frame.
+        let face = cross(tangent, flat);
+
+        let (sin_twist, cos_twist) = (geometry.twist_rad * s).sin_cos();
+        let across_dir = [
+            flat[0] * cos_twist + face[0] * sin_twist,
+            flat[1] * cos_twist + face[1] * sin_twist,
+            flat[2] * cos_twist + face[2] * sin_twist,
+        ];
+        let face_dir = [
+            face[0] * cos_twist - flat[0] * sin_twist,
+            face[1] * cos_twist - flat[1] * sin_twist,
+            face[2] * cos_twist - flat[2] * sin_twist,
+        ];
+
+        let half = (geometry.width_m * width_shape(geometry.profile, s)).max(geometry.tip_width_m);
+        let ridge = geometry.ridge;
+
+        for column in 0..LEAF_ACROSS {
+            let t = column as f32 / (LEAF_ACROSS - 1) as f32 * 2.0 - 1.0;
+            // The fold: a parabola standing proud at the midrib and meeting the
+            // plane at both edges.
+            let lift = ridge * half * (1.0 - t * t);
+            let point = [
+                position[0] + across_dir[0] * half * t + face_dir[0] * lift,
+                position[1] + across_dir[1] * half * t + face_dir[1] * lift,
+                position[2] + across_dir[2] * half * t + face_dir[2] * lift,
+            ];
+
+            // The surface normal, in closed form. With `N = T × S` the cross
+            // products collapse: `T × ∂P/∂t = N + 2·ridge·t·S`, so no numerical
+            // differencing is needed and the normal is exact at every vertex
+            // including the edges, where a difference would be one-sided.
+            let normal = normalise([
+                face_dir[0] + 2.0 * ridge * t * across_dir[0],
+                face_dir[1] + 2.0 * ridge * t * across_dir[1],
+                face_dir[2] + 2.0 * ridge * t * across_dir[2],
+            ]);
+
+            vertices.push(RibbonVertex {
+                // Across the mirror with everything else. The normal too: a
+                // reflected surface with an unreflected normal is lit from the
+                // wrong side, which on a translucent leaf is the difference
+                // between glowing and being in shadow.
+                position: swap_xy(point),
+                normal: swap_xy(normal),
+                along: s,
+                across: t,
+                tint,
+                variation,
+            });
+        }
+    }
+
+    for section in 0..LEAF_SECTIONS - 1 {
+        for column in 0..LEAF_ACROSS - 1 {
+            let a = base + (section * LEAF_ACROSS + column) as u32;
+            let b = a + 1;
+            let c = a + LEAF_ACROSS as u32;
+            let d = c + 1;
+            // Wound the opposite way round, because the mirror flips
+            // handedness. A reflected triangle with its original winding faces
+            // backwards, and Cycles' geometric normal — which is what decides
+            // which side of a thin sheet is the front — would point into the
+            // ground.
+            indices.extend_from_slice(&[a, b, c, b, d, c]);
+        }
+    }
+}
+
+/// A ribbon's half-width at `s`, as a fraction of its root half-width.
+fn width_shape(profile: terrain_scene::mark::WidthProfile, s: f32) -> f32 {
+    use terrain_scene::mark::WidthProfile;
+    match profile {
+        WidthProfile::Stem => 1.0,
+        WidthProfile::Tapered => (1.0 - s).max(0.0),
+        WidthProfile::Oval => (std::f32::consts::PI * s).sin(),
+        // Narrow where it attaches, broadest a third of the way out, then a
+        // long taper to a quick point. The shape of an actual ground leaf, and
+        // the reason the variant is named `Leaf`.
+        WidthProfile::Leaf => {
+            const PEAK: f32 = 0.33;
+            if s < PEAK {
+                0.40 + 0.60 * (s / PEAK)
+            } else {
+                let u = (s - PEAK) / (1.0 - PEAK);
+                (1.0 - u * u).max(0.0).powf(0.55)
+            }
+        }
+        // A profile this build does not know narrows like a blade rather than
+        // vanishing. Silently emitting a zero-width ribbon would look like the
+        // leaf was never placed.
+        _ => (1.0 - s).max(0.0),
+    }
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn normalise(v: [f32; 3]) -> [f32; 3] {
+    let length = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if length > 1.0e-12 {
+        [v[0] / length, v[1] / length, v[2] / length]
+    } else {
+        [0.0, 0.0, 1.0]
+    }
+}
+
+/// A quaternion for a turn about the vertical axis, reflected.
+///
+/// The bearing crosses the mirror with the position. Swapping the ground axes
+/// turns an angle measured from `+u` toward `+v` into its complement, so an
+/// instance placed correctly and rotated in the unreflected frame would sit in
+/// the right spot facing the wrong way — which on a stone is a different stone
+/// and on a petal whorl is a flower that no longer matches its own stem.
 fn yaw_quaternion(yaw_rad: f32) -> [f32; 4] {
-    let half = yaw_rad * 0.5;
+    let half = crate::cycles::bearing_to_blender(yaw_rad) * 0.5;
     [0.0, 0.0, half.sin(), half.cos()]
 }
 
@@ -541,7 +774,7 @@ fn stem_points(curve: &terrain_scene::mark::CurveMark) -> Vec<[f32; 3]> {
     let (sin_a, cos_a) = curve.azimuth_rad.sin_cos();
 
     if bend.abs() < 1.0e-3 {
-        return vec![root, [root[0], root[1], root[2] + length]];
+        return vec![swap_xy(root), swap_xy([root[0], root[1], root[2] + length])];
     }
 
     // Enough segments that no one of them turns more than about ten degrees,
@@ -554,11 +787,11 @@ fn stem_points(curve: &terrain_scene::mark::CurveMark) -> Vec<[f32; 3]> {
             let angle = bend * s;
             let horizontal = radius * (1.0 - angle.cos());
             let vertical = radius * angle.sin();
-            [
+            swap_xy([
                 root[0] + horizontal * cos_a,
                 root[1] + horizontal * sin_a,
                 root[2] + vertical,
-            ]
+            ])
         })
         .collect()
 }
@@ -819,7 +1052,10 @@ mod tests {
         };
         let points = stem_points(curve);
         let tip = points.last().expect("a stem has a tip");
-        let (sin_a, cos_a) = curve.azimuth_rad.sin_cos();
+        // Against the *reflected* bearing, because `stem_points` hands back the
+        // centreline already across the mirror. Checking it against the raw
+        // azimuth would be checking that the swap did not happen.
+        let (sin_a, cos_a) = crate::cycles::bearing_to_blender(curve.azimuth_rad).sin_cos();
         let horizontal = ((tip[0] - points[0][0]).powi(2) + (tip[1] - points[0][1]).powi(2)).sqrt();
         assert!(horizontal > 0.0, "a bent stem did not lean at all");
         // And it leaned along its own azimuth rather than somewhere else.
@@ -887,5 +1123,70 @@ mod tests {
             );
         }
         assert_eq!(tint_from(0.0), [1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn every_lowered_position_crosses_the_mirror() {
+        // ## The bug this exists because of
+        //
+        // Blender is given a reflected world — the two ground axes are swapped
+        // — and this module wrote game-world coordinates straight through for
+        // its whole first life. Nothing looked broken, because a reflection
+        // across `x = y` maps a meadow onto a meadow: a plate of scattered
+        // flowers came out as a plate of scattered flowers.
+        //
+        // It only became visible when a document had a *track* in it, and then
+        // half the daisies stood on bare compacted earth while an equal area of
+        // grass beside them held none. Two rounds of tuning went into the
+        // suppression bands meant to stop that, and the placement had been
+        // right the whole time.
+        //
+        // So the assertion is on an *asymmetric* point. A symmetric one — the
+        // origin, or anything on `u = v` — is a fixed point of the reflection
+        // and would have passed before the fix as happily as after it.
+        let at = (1.25, -0.5);
+        let scene = scene_with_flower(at);
+        let (geometry, report) = lower(&scene, rect((-2.0, -2.0), (2.0, 2.0)), 0.2);
+        assert_eq!(report.groups_camera, 1);
+
+        // The stem's first point is its root, reflected.
+        let stem = geometry
+            .curve_points
+            .first()
+            .copied()
+            .expect("the stem lowered");
+        assert!(
+            (stem[0] - at.1 as f32).abs() < 1.0e-5 && (stem[1] - at.0 as f32).abs() < 1.0e-5,
+            "the stem root is at {stem:?}, not the swap of {at:?}"
+        );
+
+        // And the head instance, which sits five centimetres along `+u` from
+        // the root — so after the swap it is five centimetres along `+y`.
+        let head = geometry.instances.first().expect("the head lowered");
+        assert!(
+            (head.translation[0] - at.1 as f32).abs() < 1.0e-5
+                && (head.translation[1] - (at.0 as f32 + 0.05)).abs() < 1.0e-5,
+            "the head is at {:?}, not the swap of its own centre",
+            head.translation
+        );
+    }
+
+    #[test]
+    fn a_yaw_crosses_the_mirror_with_its_position() {
+        // A reflection turns a bearing into its complement. An instance placed
+        // correctly and rotated in the unreflected frame sits in the right spot
+        // facing the wrong way, which on a stone is a different stone and on a
+        // petal whorl is a flower that no longer matches its own stem.
+        for yaw in [0.0f32, 0.4, 1.2, -0.9] {
+            let q = yaw_quaternion(yaw);
+            let recovered = 2.0 * q[2].atan2(q[3]);
+            let expected = std::f32::consts::FRAC_PI_2 - yaw;
+            let gap = (recovered - expected).rem_euclid(std::f32::consts::TAU);
+            let gap = gap.min(std::f32::consts::TAU - gap);
+            assert!(
+                gap < 1.0e-5,
+                "yaw {yaw} became {recovered}, wanted {expected}"
+            );
+        }
     }
 }

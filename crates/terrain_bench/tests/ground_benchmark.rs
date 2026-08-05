@@ -144,11 +144,6 @@ fn no_laboratory_fails_a_gate() {
 /// a measurement of zero — so the gap has to be a fact somebody wrote down.
 const UNFILLED: &[(&str, &str)] = &[
     (
-        "run",
-        "machine identity and repetition counts belong to the timing half, \
-         which needs a performance recorder this phase does not build",
-    ),
-    (
         "relief_plan",
         "the fingerprinted tier assignment arrives with the relief-plan phase; \
          until then no band has a recorded representation owner",
@@ -159,15 +154,6 @@ const UNFILLED: &[(&str, &str)] = &[
         "render",
         "the render half needs Blender and runs on the visual gate rather than \
          on every commit",
-    ),
-    (
-        "performance",
-        "stage timings need the performance recorder; see `run`",
-    ),
-    (
-        "artifacts",
-        "nothing is written to disk by the topography half, so there is nothing \
-         to checksum",
     ),
 ];
 
@@ -292,4 +278,108 @@ fn compaction_flattens_more_than_saturation_does() {
         wet.topography.sq_m
     );
     assert!(packed.topography.sq_m < dry.topography.sq_m);
+}
+
+#[test]
+fn the_run_and_performance_sections_match_the_schema_they_claim() {
+    // Filling a key is not the same as filling it correctly. The schema names
+    // every field of these three sections as required, and a report that
+    // supplied an object with two of them would satisfy the drift check above
+    // and still be unreadable downstream.
+    let report = ground::run(
+        ground::scenarios::scenario("ground_band_coarse_only").expect("the scenario exists"),
+        ground::DEFAULT_SEED,
+    );
+    let json = report.to_json();
+
+    let run = json["run"].as_object().expect("run is an object");
+    for key in ["run_id", "machine", "repetitions", "warmup_repetitions"] {
+        assert!(run.contains_key(key), "run is missing {key}");
+    }
+    let machine = run["machine"].as_object().expect("machine is an object");
+    for key in [
+        "os",
+        "arch",
+        "cpu",
+        "gpu",
+        "rustc",
+        "blender",
+        "cycles_device",
+    ] {
+        let value = machine[key].as_str().unwrap_or_default();
+        assert!(!value.is_empty(), "machine.{key} is empty");
+    }
+    // The renderer fields have to *say* there is no renderer rather than be
+    // blank or plausible. A reader comparing two reports needs to be able to
+    // tell "none, by design" from "nobody recorded it".
+    for key in ["gpu", "blender", "cycles_device"] {
+        assert!(
+            machine[key].as_str().unwrap_or_default().contains("none"),
+            "machine.{key} does not say there is no renderer: {}",
+            machine[key]
+        );
+    }
+    assert!(run["repetitions"].as_u64().unwrap_or(0) >= 1);
+
+    let performance = json["performance"]
+        .as_object()
+        .expect("performance is an object");
+    for key in ["total_median_ms", "total_p95_ms", "peak_bytes", "stages"] {
+        assert!(
+            performance.contains_key(key),
+            "performance is missing {key}"
+        );
+    }
+    let stages = performance["stages"]
+        .as_array()
+        .expect("stages is an array");
+    assert!(
+        stages.len() >= 5,
+        "only {} stages timed — the analysis has more than that",
+        stages.len()
+    );
+    for stage in stages {
+        for key in ["stage", "median_ms", "mad_ms", "p95_ms", "peak_bytes"] {
+            assert!(
+                stage.get(key).is_some(),
+                "a stage is missing {key}: {stage}"
+            );
+        }
+        assert!(stage["median_ms"].as_f64().unwrap_or(-1.0) >= 0.0);
+    }
+    // The total decomposes into the parts a reader is shown. A total that did
+    // not would leave "which stage got slower" unanswerable from the report.
+    let summed: f64 = stages
+        .iter()
+        .map(|s| s["median_ms"].as_f64().unwrap_or(0.0))
+        .sum();
+    let total = performance["total_median_ms"].as_f64().unwrap_or(0.0);
+    assert!(
+        (total - summed).abs() < 1.0e-9,
+        "the total is {total} and the stages sum to {summed}"
+    );
+
+    assert!(json["artifacts"].is_array(), "artifacts is not an array");
+}
+
+#[test]
+fn a_timing_is_reported_beside_the_counters_it_has_to_be_read_against() {
+    // The rule from `ground::performance`, asserted rather than left in a
+    // comment: no speed claim is valid unless the compared runs have equal
+    // content counts, and the only way a reader can check that is to have both
+    // numbers in the same report.
+    let report = ground::run(
+        ground::scenarios::scenario("ground_band_coarse_only").expect("the scenario exists"),
+        ground::DEFAULT_SEED,
+    );
+    for key in ["analysis_samples", "spectral_samples", "relief_bands"] {
+        assert!(
+            report.counts.contains_key(key),
+            "the report times its stages but does not carry {key}"
+        );
+    }
+    assert!(
+        report.performance.total_median_ms > 0.0,
+        "every stage measured zero milliseconds"
+    );
 }

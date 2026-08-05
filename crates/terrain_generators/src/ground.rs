@@ -261,6 +261,7 @@ struct Roles {
     desiccation: Option<ModifierIndex>,
     water_supply: Option<ModifierIndex>,
     vegetation_density: Option<ModifierIndex>,
+    dead_litter: Option<ModifierIndex>,
 }
 
 impl std::fmt::Debug for GroundEvaluator {
@@ -317,6 +318,7 @@ impl GroundEvaluator {
                 desiccation: terrain.role_channel(ModifierRole::Desiccation),
                 water_supply: terrain.role_channel(ModifierRole::WaterSupply),
                 vegetation_density: terrain.role_channel(ModifierRole::VegetationDensity),
+                dead_litter: terrain.role_channel(ModifierRole::DeadLitter),
             },
         }
     }
@@ -416,6 +418,31 @@ impl GroundEvaluator {
         }
     }
 
+    /// How dead the bottom of the sward is here, `0..1`.
+    ///
+    /// **Zero when no channel claims the role**, and that default is the whole
+    /// contract: a document that says nothing about litter renders the sward
+    /// exactly as the reference art tuned it, so every pinned fixture in this
+    /// workspace holds. See [`ModifierRole::DeadLitter`].
+    ///
+    /// Separate from abundance and from bareness because it is a different
+    /// question from either. Litter is not less grass — the mat is as thick as
+    /// ever — and it is not exposed earth, because a dead mat covers the ground
+    /// as completely as a live one. It is the *age* of what is down there.
+    pub fn dead_litter(&self, world: Vec2) -> f32 {
+        match self.roles.dead_litter {
+            None => 0.0,
+            Some(channel) => self
+                .fields
+                .modifier(
+                    channel,
+                    WorldPoint::new(world.x as f64, world.y as f64),
+                    0.0,
+                )
+                .clamp(0.0, 1.0),
+        }
+    }
+
     /// The profile key each material resolved to, in material-index order.
     ///
     /// What an exporter needs to map a realised weight onto a weight plane
@@ -500,6 +527,15 @@ impl GroundEvaluator {
             .map(|(material, weight)| weight * self.affinity(material))
             .sum::<f32>()
             .clamp(0.0, 1.0)
+    }
+
+    /// One material's vegetation affinity, `0..1`.
+    ///
+    /// One where the material is unknown, which is the honest answer: an
+    /// evaluator with no material table is a laboratory, and a laboratory's
+    /// ground grows things.
+    pub fn material_affinity(&self, material: MaterialIndex) -> f32 {
+        self.affinity(material)
     }
 
     fn affinity(&self, material: MaterialIndex) -> f32 {

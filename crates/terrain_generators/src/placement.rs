@@ -542,7 +542,28 @@ fn plant_light(draw: &mut Draw, ground: &Ground, params: &GrassParams) -> f32 {
 }
 
 /// The dark mat: short, hooked, and almost entirely buried.
+///
+/// ## Where the dead layer lives
+///
+/// This is the bottom of the sward, so this is where [`Ground::litter`] spends
+/// itself. A share of the mat equal to the litter value is drawn as straw
+/// instead of thatch, and the share is a *per-stroke* chance rather than a blend
+/// on all of them: half-dead grass is not a colour halfway between green and
+/// straw, it is some blades of each. Blending would produce an olive mat, which
+/// is a third material nobody has ever seen and reads as a tinted filter over
+/// the layer rather than as its composition.
 fn mat_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &GrassParams) -> Stroke {
+    // Short-circuited, and that is load-bearing rather than an optimisation.
+    // `Draw` is a sequential stream, so a `chance` that is always taken advances
+    // it — and a meadow with no litter would then draw every subsequent value
+    // one position later than the one the reference art was tuned against. The
+    // whole sward would move for a feature nobody switched on.
+    //
+    // With the guard, litter is exactly free at zero: `refactor_fingerprints`
+    // holds bit for bit across this change. A document that *does* ask for
+    // litter reshuffles its own stream, which is what an authored change is
+    // entitled to do.
+    let dead = ground.litter > 0.0 && draw.chance(ground.litter);
     Stroke {
         root: root.extend(0.0),
         // Loosely along the flow, and much more loosely than a blade: the mat is
@@ -564,7 +585,14 @@ fn mat_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &GrassParams
         // the floor of a thick canopy; laid across pale soil in a clearing it is
         // a scatter of dark commas, which is exactly what a clearing must not
         // look like.
-        tone: if ground.resolution < 0.4 || ground.bare > 0.3 {
+        //
+        // The dead share is tested first because it is the strongest statement
+        // of the three: a document that asked for litter asked for straw, and
+        // deferring to the clearing rule would silently withdraw it from exactly
+        // the thin ground where dead matter actually accumulates.
+        tone: if dead {
+            Tone::Dry
+        } else if ground.resolution < 0.4 || ground.bare > 0.3 {
             Tone::Grass
         } else {
             Tone::Thatch
@@ -573,8 +601,13 @@ fn mat_stroke(draw: &mut Draw, root: Vec2, ground: &Ground, params: &GrassParams
             + draw.normal() * 0.16
             + ground.crown * 0.06
             + (1.0 - ground.resolution) * 0.06
-            + ground.bare * 0.18)
-            .clamp(0.1, 0.9),
+            + ground.bare * 0.18
+            // Straw is pale. The mat's brightness was tuned for a dark tangle
+            // under a canopy, and leaving a dead stroke at it produces a
+            // straw-coloured shape at thatch luminance — which reads as a stain
+            // rather than as dry grass.
+            + if dead { 0.16 } else { 0.0 })
+        .clamp(0.1, 0.9),
         tip_light: 0.14,
         side_light: params.style.side_light * 0.6,
         under: params.style.under * 0.5 * (1.0 - ground.bare * 0.85),
@@ -1048,6 +1081,16 @@ fn grow_tuft(
     for _ in 0..understorey {
         let local = crown.sample(&mut inner);
         let outward = local.normalize_or(flow);
+        // The second place the dead layer lives, and it has to be here as well
+        // as in the mat. A tuft's understorey is what fills the *inside* of a
+        // clump, and a document that greyed the open mat while every clump
+        // stayed green at its heart would produce dead ground with live islands
+        // on it rather than one sward with an old bottom.
+        //
+        // Slightly less than the open mat: the inside of a vigorous clump is
+        // where the plant is actually growing, so the newest tissue is there.
+        // Short-circuited for the same reason as the mat's. See `mat_stroke`.
+        let dead = ground.litter > 0.0 && inner.chance(ground.litter * 0.85);
         emit(
             marks,
             page,
@@ -1062,8 +1105,10 @@ fn grow_tuft(
                 width: inner.range(0.55, 1.05),
                 tip_width: 0.24,
                 profile: Profile::Tapered,
-                tone: Tone::Thatch,
-                base_light: (params.style.base_light - inner.range(0.10, 0.22)).max(0.05),
+                tone: if dead { Tone::Dry } else { Tone::Thatch },
+                base_light: (params.style.base_light - inner.range(0.10, 0.22)
+                    + if dead { 0.14 } else { 0.0 })
+                .max(0.05),
                 tip_light: 0.06,
                 glint: 0.0,
                 side_light: params.style.side_light * 0.5,
@@ -2052,6 +2097,7 @@ mod tests {
             height: 0.1,
             crown: 0.5,
             lit: 0.0,
+            litter: 0.0,
             flow: 0.0,
             hue: 0.0,
             density: 1.3,
@@ -2101,6 +2147,7 @@ mod tests {
             height: 0.1,
             crown: 0.5,
             lit: 0.0,
+            litter: 0.0,
             flow: 0.0,
             hue: 0.0,
             density: 1.0,

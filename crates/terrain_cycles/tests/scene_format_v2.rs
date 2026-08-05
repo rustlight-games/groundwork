@@ -53,7 +53,12 @@ fn the_header_declares_the_format_version() {
         header.contains(&format!("\"version\": {CYCLES_SCENE_FORMAT_VERSION}")),
         "{header}"
     );
-    assert_eq!(CYCLES_SCENE_FORMAT_VERSION, 2);
+    // Pinned, so bumping the constant is a deliberate act with a Python-side
+    // edit beside it rather than something that drifts. Two added the secondary
+    // sections; three widened the ribbon vertex to carry a per-plant tint,
+    // because a merged ribbon mesh has one object between thousands of plants
+    // and Object Info could only ever give them all the same colour.
+    assert_eq!(CYCLES_SCENE_FORMAT_VERSION, 3);
 }
 
 #[test]
@@ -175,6 +180,8 @@ fn populated() -> SecondaryGeometry {
         normal: [0.0, 0.0, 1.0],
         along,
         across,
+        tint: [1.0, 1.0, 1.0],
+        variation: 0.5,
     };
     SecondaryGeometry {
         materials: vec![

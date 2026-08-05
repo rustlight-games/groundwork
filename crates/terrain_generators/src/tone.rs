@@ -15,7 +15,7 @@
 ///
 /// A small closed set on purpose: every material in the field is one of these,
 /// and a pixel that cannot say which one it is has no business being drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum Tone {
     /// Bare earth: olive-brown, never reddish.
