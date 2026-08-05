@@ -1,0 +1,33 @@
+# What copytree should not carry.
+#
+# .gitignore already removes build output, transient benchmark runs and the
+# reference plates. This file removes the things that are committed, but are
+# not the code someone needs to read to understand the pipeline.
+
+# Lockfile. Machine-written, 150 KB, says nothing about the design.
+Cargo.lock
+
+# Benchmarks: the harness, the accepted baselines, and the reference plate.
+# The pinned scenarios live in terrain_bench; none of it is the pipeline.
+benchmarks/
+crates/*/benches/
+crates/terrain_bench/
+
+# Authored content. The document format is the interesting part, not four
+# variations on it — meadow_path is kept below as the worked example.
+assets/terrain/documents/*.terrain.ron
+assets/terrain/features/*.spline.ron
+!assets/terrain/documents/meadow_path.terrain.ron
+!assets/terrain/features/main_path.spline.ron
+
+# Example binaries. Render drivers and lab harnesses, not library code.
+crates/*/examples/
+
+# Prose. The crate-level //! docs carry the reasoning that matters for code;
+# the long-form specs and material notes are read on their own, not alongside
+# the source.
+docs/
+
+# Editor and OS leftovers that .gitignore does not already name.
+.DS_Store
+*.swp
