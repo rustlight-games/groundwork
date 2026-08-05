@@ -160,6 +160,12 @@ pub struct CyclesScene {
     pub visible_blades: usize,
     /// Cross-sections each blade was described with.
     ribs: usize,
+    /// Everything in the scene that is not tuned grass.
+    ///
+    /// Empty until the compiled `TerrainScene` is wired in. The section is
+    /// written either way, so that the day it stops being empty the *format*
+    /// has already been proven not to move the tuned image.
+    pub secondary: crate::secondary::SecondaryGeometry,
 }
 
 /// The orthographic camera that reproduces [`crate::iso`] exactly.
@@ -455,6 +461,7 @@ impl CyclesScene {
             settings,
             visible_blades,
             ribs,
+            secondary: crate::secondary::SecondaryGeometry::default(),
         }
     }
 
@@ -488,6 +495,22 @@ impl CyclesScene {
             write_f32(&directory.join(format!("{name}.bin")), plane.iter())?;
         }
 
+        // Refused before writing rather than discovered in Python. A package
+        // whose indices are out of range does not crash Blender; it draws a
+        // different triangle, or puts a stone at a plausible wrong transform,
+        // and the render succeeds.
+        let problems = self.secondary.problems();
+        if !problems.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "the secondary geometry is not writable:\n  {}",
+                    problems.join("\n  ")
+                ),
+            ));
+        }
+        self.secondary.write(directory)?;
+
         let header = directory.join("scene.json");
         std::fs::write(&header, self.header_json())?;
         Ok(header)
@@ -501,7 +524,7 @@ impl CyclesScene {
         let basis = camera.basis;
         format!(
             r#"{{
-  "version": 1,
+  "version": {},
   "page": {{
     "origin": [{:.6}, {:.6}],
     "width": {},
@@ -540,9 +563,11 @@ impl CyclesScene {
     "vertices_per_rib": {},
     "attributes_per_blade": {}
   }},
-  "ground": {}
+  "ground": {},
+  "secondary": {}
 }}
 "#,
+            crate::secondary::CYCLES_SCENE_FORMAT_VERSION,
             self.page.origin.x,
             self.page.origin.y,
             self.page.width,
@@ -587,6 +612,7 @@ impl CyclesScene {
             VERTICES_PER_RIB,
             ATTRIBUTES_PER_BLADE,
             self.ground_json(low, high),
+            self.secondary.header_json(),
         )
     }
 
@@ -1540,6 +1566,7 @@ mod tests {
             let header = format!(
                 "{{ \"ground\": {} }}",
                 CyclesScene {
+                    secondary: crate::secondary::SecondaryGeometry::default(),
                     page: Page::new(Vec2::ZERO, 16, 16),
                     points: Vec::new(),
                     attributes: Vec::new(),

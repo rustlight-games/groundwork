@@ -36,6 +36,7 @@ pub mod cycles;
 pub mod export;
 pub mod package;
 pub mod plate;
+pub mod secondary;
 
 pub use aov::{OutputPass, OutputRequest};
 pub use cycles::{Camera, CyclesScene, RenderSettings, blender_path, render};

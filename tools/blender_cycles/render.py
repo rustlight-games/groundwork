@@ -37,6 +37,15 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 
+# The scene-package format this reader understands.
+#
+# Kept in step with `terrain_cycles::secondary::CYCLES_SCENE_FORMAT_VERSION` by
+# hand, and checked at load rather than assumed. The two halves of this pipeline
+# are in different languages and cannot share a constant, so the version number
+# is the only thing standing between a stale renderer and a picture that is
+# quietly missing a section.
+SCENE_FORMAT_VERSION = 2
+
 
 def jobs_from_argv():
     """One scene, or a manifest of many.
@@ -205,6 +214,385 @@ def build_blade_span(name, raw, attributes, count, ribs, across, material):
     return obj
 
 
+def build_secondary(scene_dir, spec, settings):
+    """Flowers, stones and undergrowth: everything the tuned generator does not grow.
+
+    Blender's whole job here is transfer. Rust decided every position, every
+    rotation, every prototype choice and every tint; this reads the tables and
+    builds the objects. It draws no random values and makes no placement
+    decisions — see the specification's rejected alternatives, and in particular
+    why scattering in Python would break addressed world determinism and leave
+    the conditioning metadata unable to name the objects actually rendered.
+
+    Returns the objects it created, which is empty while the section is.
+    """
+    if not spec:
+        return []
+
+    objects = []
+    materials = spec.get("materials", [])
+    cache = {}
+
+    curves = spec.get("curves", {})
+    curve_spans = curves.get("spans", [])
+    if curve_spans:
+        points = read_floats(
+            scene_dir,
+            curves["path"],
+            curves["point_count"] * 3,
+            "secondary curve points",
+        ).reshape(-1, 3)
+        objects.extend(
+            build_secondary_curves(curve_spans, points, materials, settings, cache)
+        )
+
+    ribbons = spec.get("ribbons", {})
+    ribbon_spans = ribbons.get("spans", [])
+    if ribbon_spans:
+        stride = ribbons["vertex_stride"] // 4
+        vertices = read_floats(
+            scene_dir,
+            ribbons["path"],
+            ribbons["vertex_count"] * stride,
+            "secondary ribbon vertices",
+        ).reshape(-1, stride)
+        indices = np.fromfile(
+            os.path.join(scene_dir, ribbons["indices"]), dtype=np.uint32
+        )
+        if indices.size != ribbons["index_count"]:
+            raise SystemExit(
+                f"{ribbons['indices']} has {indices.size} indices, "
+                f"expected {ribbons['index_count']}"
+            )
+        objects.extend(
+            build_secondary_ribbons(
+                ribbon_spans, vertices, indices, materials, settings, cache
+            )
+        )
+
+    instances = spec.get("instances", {})
+    if instances.get("count", 0):
+        objects.extend(
+            build_instances(
+                scene_dir,
+                instances,
+                spec.get("prototypes", []),
+                materials,
+                settings,
+                cache,
+            )
+        )
+
+    if objects:
+        print(f"[blender_cycles] secondary: {len(objects)} object(s)")
+    return objects
+
+
+def read_floats(scene_dir, name, expected, what):
+    """Load a float table and check its length before anything reads it.
+
+    Length-checked because the failure of a short read is not an exception. It
+    is a reshape that happens to succeed at the wrong stride, and then a scene of
+    geometry that is subtly wrong everywhere.
+    """
+    raw = np.fromfile(os.path.join(scene_dir, name), dtype=np.float32)
+    if raw.size != expected:
+        raise SystemExit(f"{name} has {raw.size} floats, expected {expected} ({what})")
+    return raw
+
+
+def apply_visibility(obj, visibility):
+    """Camera-visible, or a shadow caster only.
+
+    The same split the tuned blades already use. A halo object is dropped from
+    camera rays and kept for every other kind, so a stone just outside the frame
+    still darkens the grass inside it. Dropping it instead takes its shadow with
+    it and leaves a bright rim exactly at the edge of the picture.
+    """
+    if visibility != "halo":
+        return
+    obj.visible_camera = False
+    obj.visible_shadow = True
+    obj.visible_diffuse = True
+    obj.visible_glossy = True
+    obj.visible_transmission = True
+
+
+def secondary_material(index, materials, settings, cache):
+    """The shader one secondary span asks for."""
+    if index < 0 or index >= len(materials):
+        raise SystemExit(
+            f"a secondary span names material {index} of {len(materials)}"
+        )
+    binding = materials[index]
+    return material_for(binding["appearance"], settings, cache)
+
+
+def build_secondary_curves(spans, points, materials, settings, cache):
+    """Stems, as bevelled Blender curves.
+
+    Curves rather than transferred tubes, and this is the one place the format
+    keeps a description instead of vertices. A stem *is* a centreline plus a
+    radius: Blender bevels that more cheaply than a mesh upload, and the
+    centreline is the exact geometry rather than an approximation of it.
+
+    One object per material and visibility class, not one per stem. A thousand
+    Blender objects costs more in scene synchronisation than the geometry costs
+    to trace.
+    """
+    grouped = {}
+    for span in spans:
+        grouped.setdefault((span["material"], span["visibility"]), []).append(span)
+
+    objects = []
+    for (material_index, visibility), members in sorted(grouped.items()):
+        data = bpy.data.curves.new(f"secondary-curves-{material_index}", "CURVE")
+        data.dimensions = "3D"
+        data.resolution_u = 3
+        data.bevel_depth = 1.0
+        data.bevel_resolution = 2
+        for span in members:
+            first = span["point_offset"]
+            count = span["point_count"]
+            spline = data.splines.new("POLY")
+            spline.points.add(count - 1)
+            block = points[first : first + count]
+            flat = np.ones((count, 4), dtype=np.float32)
+            flat[:, :3] = block
+            spline.points.foreach_set("co", flat.ravel())
+            # Radius is a multiplier on `bevel_depth`, which is why the depth
+            # above is one: the per-point radius carries the real metres, and
+            # the taper from root to tip comes out of the interpolation.
+            radii = np.linspace(
+                span["radius_root_m"], span["radius_tip_m"], count, dtype=np.float32
+            )
+            spline.points.foreach_set("radius", radii)
+        obj = bpy.data.objects.new(f"secondary-curves-{material_index}", data)
+        data.materials.append(secondary_material(material_index, materials, settings, cache))
+        bpy.context.collection.objects.link(obj)
+        apply_visibility(obj, visibility)
+        objects.append(obj)
+    return objects
+
+
+def build_secondary_ribbons(spans, vertices, indices, materials, settings, cache):
+    """Petals, leaves and undergrowth, already tessellated in Rust.
+
+    Positions, normals and the two ribbon coordinates arrive as vertices. Python
+    does not reinterpret plant morphology — see the module note in
+    `terrain_cycles::secondary` for why the tessellation belongs on the Rust side
+    of the boundary.
+    """
+    grouped = {}
+    for span in spans:
+        grouped.setdefault((span["material"], span["visibility"]), []).append(span)
+
+    objects = []
+    for (material_index, visibility), members in sorted(grouped.items()):
+        positions = []
+        normals = []
+        along = []
+        across = []
+        triangles = []
+        base = 0
+        for span in members:
+            first = span["vertex_offset"]
+            count = span["vertex_count"]
+            block = vertices[first : first + count]
+            positions.append(block[:, 0:3])
+            normals.append(block[:, 3:6])
+            along.append(block[:, 6])
+            across.append(block[:, 7])
+            local = indices[
+                span["index_offset"] : span["index_offset"] + span["index_count"]
+            ]
+            # Rebased, because each span indexes its own vertices from zero and
+            # the merged mesh concatenates them.
+            triangles.append(local.astype(np.int64) - first + base)
+            base += count
+
+        positions = np.concatenate(positions).ravel()
+        normals = np.concatenate(normals)
+        triangles = np.concatenate(triangles)
+        mesh = bpy.data.meshes.new(f"secondary-ribbons-{material_index}")
+        mesh.vertices.add(base)
+        mesh.vertices.foreach_set("co", positions)
+        faces = triangles.size // 3
+        mesh.loops.add(triangles.size)
+        mesh.loops.foreach_set("vertex_index", triangles)
+        mesh.polygons.add(faces)
+        mesh.polygons.foreach_set("loop_start", np.arange(faces, dtype=np.int32) * 3)
+        mesh.polygons.foreach_set("loop_total", np.full(faces, 3, dtype=np.int32))
+        mesh.update()
+        mesh.validate()
+        # Rust-authored normals rather than Blender's face normals: a petal is
+        # a one-sided ribbon whose shading normal is the plant's, not the
+        # triangle's.
+        mesh.normals_split_custom_set_from_vertices(normals)
+
+        ribbon_along = mesh.attributes.new("along", "FLOAT", "POINT")
+        ribbon_along.data.foreach_set("value", np.concatenate(along))
+        ribbon_across = mesh.attributes.new("across", "FLOAT", "POINT")
+        ribbon_across.data.foreach_set("value", np.concatenate(across))
+
+        mesh.materials.append(
+            secondary_material(material_index, materials, settings, cache)
+        )
+        obj = bpy.data.objects.new(f"secondary-ribbons-{material_index}", mesh)
+        bpy.context.collection.objects.link(obj)
+        apply_visibility(obj, visibility)
+        objects.append(obj)
+    return objects
+
+
+def build_instances(scene_dir, spec, prototypes, materials, settings, cache):
+    """Prototype meshes, built once each, linked at explicit transforms.
+
+    Linked duplicates share mesh data and keep independent transforms, which is
+    the intended memory model for a few thousand stones drawn from six shapes.
+    """
+    count = spec["count"]
+    stride = spec["stride"]
+    raw = np.fromfile(os.path.join(scene_dir, spec["path"]), dtype=np.uint8)
+    if raw.size != count * stride:
+        raise SystemExit(
+            f"{spec['path']} has {raw.size} bytes, expected {count * stride}"
+        )
+    records = raw.reshape(count, stride)
+    header = records[:, :8].copy().view(np.uint32).reshape(count, 2)
+    floats = records[:, 8:].copy().view(np.float32).reshape(count, 14)
+
+    built = [
+        build_prototype_mesh(prototype, index, materials, settings, cache)
+        for index, prototype in enumerate(prototypes)
+    ]
+
+    objects = []
+    for row in range(count):
+        prototype_index = int(header[row, 0])
+        if prototype_index >= len(built):
+            raise SystemExit(
+                f"instance {row} names prototype {prototype_index} of {len(built)}"
+            )
+        visibility = "halo" if (int(header[row, 1]) >> 16) & 0xFF else "camera"
+        obj = bpy.data.objects.new(f"instance-{row}", built[prototype_index])
+        obj.location = tuple(float(v) for v in floats[row, 0:3])
+        obj.rotation_mode = "QUATERNION"
+        x, y, z, w = (float(v) for v in floats[row, 3:7])
+        obj.rotation_quaternion = (w, x, y, z)
+        obj.scale = tuple(float(v) for v in floats[row, 7:10])
+        bpy.context.collection.objects.link(obj)
+        apply_visibility(obj, visibility)
+        objects.append(obj)
+    return objects
+
+
+def build_prototype_mesh(spec, index, materials, settings, cache):
+    """One prototype, built deterministically from its declared parameters."""
+    family = spec["family"]
+    if family == "superellipsoid":
+        vertices, triangles = superellipsoid(
+            spec["semi_axes_m"],
+            spec["exponents"],
+            spec["tessellation"],
+            spec["deformation"],
+            spec["clips"],
+        )
+    elif family == "disk":
+        vertices, triangles = oblate_disk(spec["semi_axes_m"], spec["tessellation"])
+    else:
+        raise SystemExit(f"prototype `{spec['key']}` names unknown family `{family}`")
+
+    mesh = bpy.data.meshes.new(spec["key"])
+    mesh.from_pydata(vertices.tolist(), [], triangles.tolist())
+    mesh.update()
+    mesh.validate()
+    mesh.materials.append(
+        secondary_material(spec["material"], materials, settings, cache)
+    )
+    _ = index
+    return mesh
+
+
+def signed_power(values, exponent):
+    """`sign(x) * |x| ** e`, finite at zero for every exponent."""
+    return np.sign(values) * np.abs(values) ** exponent
+
+
+def superellipsoid(semi_axes, exponents, tessellation, deformation, clips):
+    """A superquadric surface, deformed and clipped by explicit parameters.
+
+    Barr's parameterisation. The signed power is what lets one family span
+    rounded, blocky, flattened and pinched silhouettes from two exponents, which
+    is why a handful of prototypes can carry a field of stones without repeating
+    visibly.
+    """
+    rings, segments = int(tessellation[0]), int(tessellation[1])
+    eta = np.linspace(-np.pi / 2, np.pi / 2, rings)
+    omega = np.linspace(-np.pi, np.pi, segments, endpoint=False)
+    grid_eta, grid_omega = np.meshgrid(eta, omega, indexing="ij")
+
+    e1, e2 = float(exponents[0]), float(exponents[1])
+    cos_eta = signed_power(np.cos(grid_eta), e1)
+    sin_eta = signed_power(np.sin(grid_eta), e1)
+    x = cos_eta * signed_power(np.cos(grid_omega), e2)
+    y = cos_eta * signed_power(np.sin(grid_omega), e2)
+    z = sin_eta
+
+    # Low-order radial deformation, over the whole object rather than as
+    # high-frequency noise: a small stone displaced at high frequency becomes a
+    # noisy potato, and the silhouette is what makes a stone recognisable.
+    scale = np.ones_like(x)
+    for amplitude, frequency, phase in deformation:
+        scale += amplitude * np.sin(frequency * grid_omega + phase) * np.cos(grid_eta)
+    x, y, z = x * scale, y * scale, z * scale
+
+    x *= float(semi_axes[0])
+    y *= float(semi_axes[1])
+    z *= float(semi_axes[2])
+    points = np.stack([x.ravel(), y.ravel(), z.ravel()], axis=1)
+
+    # Clipping projects rather than deletes, so the topology is fixed and the
+    # triangle list below does not depend on which vertices survived.
+    for nx, ny, nz, d in clips:
+        normal = np.array([nx, ny, nz], dtype=np.float64)
+        distance = points @ normal - d
+        outside = distance > 0.0
+        points[outside] -= np.outer(distance[outside], normal)
+
+    triangles = []
+    for ring in range(rings - 1):
+        for segment in range(segments):
+            a = ring * segments + segment
+            b = ring * segments + (segment + 1) % segments
+            c = a + segments
+            d = b + segments
+            triangles.append((a, c, d))
+            triangles.append((a, d, b))
+    return points, np.array(triangles, dtype=np.int64)
+
+
+def oblate_disk(semi_axes, tessellation):
+    """A shallow bevelled disk: a flower receptacle."""
+    rings, segments = int(tessellation[0]), int(tessellation[1])
+    radii = np.linspace(0.0, 1.0, rings)
+    omega = np.linspace(-np.pi, np.pi, segments, endpoint=False)
+    grid_r, grid_o = np.meshgrid(radii, omega, indexing="ij")
+    x = grid_r * np.cos(grid_o) * float(semi_axes[0])
+    y = grid_r * np.sin(grid_o) * float(semi_axes[1])
+    z = np.sqrt(np.maximum(0.0, 1.0 - grid_r**2)) * float(semi_axes[2])
+    points = np.stack([x.ravel(), y.ravel(), z.ravel()], axis=1)
+
+    triangles = []
+    for ring in range(rings - 1):
+        for segment in range(segments):
+            a = ring * segments + segment
+            b = ring * segments + (segment + 1) % segments
+            triangles.append((a, a + segments, b + segments))
+            triangles.append((a, b + segments, b))
+    return points, np.array(triangles, dtype=np.int64)
+
+
 def build_ground(scene_dir, spec):
     """A displaced grid over the page's world footprint."""
     rows, columns = spec["rows"], spec["columns"]
@@ -308,6 +696,17 @@ def appearance_builders(settings):
         "plant.broad_leaf": lambda: blade_material(settings),
         "plant.thatch": lambda: blade_material(settings),
         "plant.dry_stem": lambda: blade_material(settings),
+        # Secondary content: flowers, stones, undergrowth. Each is a distinct
+        # key even where two currently share an implementation, so that giving
+        # petals their own shader later is an edit here rather than a rename
+        # everywhere.
+        "plant.flower_stem": lambda: stem_material(settings),
+        "plant.flower_petal": lambda: petal_material(settings),
+        "plant.flower_disk": lambda: disk_material(settings),
+        "plant.undergrowth_leaf": lambda: blade_material(settings),
+        "surface.stone": lambda: stone_material(settings, [0.055, 0.052, 0.048]),
+        "surface.shell_fragment": lambda: stone_material(settings, [0.34, 0.32, 0.28]),
+        "surface.organic_fragment": lambda: stone_material(settings, [0.020, 0.015, 0.011]),
         # Every ground material shares one implementation. What a particular
         # soil looks like is its *profile*, not its appearance key — see
         # `assets/terrain/materials/`.
@@ -343,6 +742,74 @@ def material_for(appearance, settings, cache):
 # --------------------------------------------------------------------------
 # Materials
 # --------------------------------------------------------------------------
+
+
+def stem_material(settings):
+    """A flower stem: a rough green dielectric, slightly waxy.
+
+    Simple on purpose. A stem is a couple of millimetres across at the target
+    framing and its job in the image is to hold the head at the right height and
+    catch a rim of light; a subsurface model here would cost trace time and be
+    invisible.
+    """
+    _ = settings
+    material = bpy.data.materials.new("flower-stem")
+    material.use_nodes = True
+    principled = material.node_tree.nodes["Principled BSDF"]
+    principled.inputs["Base Color"].default_value = (0.055, 0.090, 0.030, 1.0)
+    principled.inputs["Roughness"].default_value = 0.55
+    if "Subsurface Weight" in principled.inputs:
+        principled.inputs["Subsurface Weight"].default_value = 0.08
+    return material
+
+
+def petal_material(settings):
+    """A petal: a thin two-sided sheet that light passes through.
+
+    Transmission rather than a flat diffuse, for the same reason the blade
+    material uses it — a petal is a translucent membrane, and a flower reads as a
+    flower largely because its far petals glow with light that came through them.
+    Restrained, because a petal that transmits too freely stops having a
+    silhouette.
+    """
+    _ = settings
+    material = bpy.data.materials.new("flower-petal")
+    material.use_nodes = True
+    principled = material.node_tree.nodes["Principled BSDF"]
+    principled.inputs["Base Color"].default_value = (0.72, 0.70, 0.66, 1.0)
+    principled.inputs["Roughness"].default_value = 0.42
+    if "Subsurface Weight" in principled.inputs:
+        principled.inputs["Subsurface Weight"].default_value = 0.35
+        principled.inputs["Subsurface Radius"].default_value = (0.004, 0.004, 0.004)
+    return material
+
+
+def disk_material(settings):
+    """A flower's central disk: warm, rough, and darker than its petals."""
+    _ = settings
+    material = bpy.data.materials.new("flower-disk")
+    material.use_nodes = True
+    principled = material.node_tree.nodes["Principled BSDF"]
+    principled.inputs["Base Color"].default_value = (0.28, 0.19, 0.035, 1.0)
+    principled.inputs["Roughness"].default_value = 0.72
+    return material
+
+
+def stone_material(settings, base_colour):
+    """A stone or fragment: a rough dielectric with per-instance tint.
+
+    The colour arrives as an argument rather than being chosen here, because
+    `surface.stone` and `surface.shell_fragment` are the same shader at two
+    reflectances and writing it twice would be two places to fix a roughness.
+    """
+    _ = settings
+    material = bpy.data.materials.new("stone")
+    material.use_nodes = True
+    principled = material.node_tree.nodes["Principled BSDF"]
+    principled.inputs["Base Color"].default_value = (*base_colour, 1.0)
+    principled.inputs["Roughness"].default_value = 0.78
+    principled.inputs["IOR"].default_value = 1.52
+    return material
 
 
 def blade_material(settings):
@@ -1331,12 +1798,32 @@ def enable_passes(scene):
     layer.cycles.denoising_store_passes = True
 
 
+def check_version(spec):
+    """Refuse a package this build does not understand.
+
+    A version mismatch is not a warning. The failure mode of reading a newer
+    package with an older reader is not an error message — it is a plausible
+    picture with a section silently missing from it, and a missing flower looks
+    exactly like a flower that was never placed.
+    """
+    version = spec.get("version")
+    if version is None:
+        raise SystemExit("scene.json declares no version; this build reads 2")
+    if version != SCENE_FORMAT_VERSION:
+        raise SystemExit(
+            f"scene.json is format version {version}; this build reads "
+            f"{SCENE_FORMAT_VERSION}. Rebuild the exporter or the renderer, "
+            "do not render it anyway."
+        )
+
+
 def render_one(header_path, output):
     started = time.time()
 
     with open(header_path, "r", encoding="utf-8") as handle:
         spec = json.load(handle)
     scene_dir = os.path.dirname(os.path.abspath(header_path))
+    check_version(spec)
 
     clear_scene()
     build_world(spec["sky"])
@@ -1344,6 +1831,7 @@ def render_one(header_path, output):
     build_camera(spec["camera"], spec["page"])
     ground = build_ground(scene_dir, spec["ground"])
     blades = build_blades(scene_dir, spec["blades"], spec)
+    secondary = build_secondary(scene_dir, spec.get("secondary"), spec)
     configure_render(spec["render"], spec["camera"], output)
     if spec["render"].get("passes"):
         enable_passes(bpy.context.scene)
@@ -1356,6 +1844,7 @@ def render_one(header_path, output):
     if not blades:
         print("[blender_cycles] warning: no blades in this scene")
     _ = ground
+    _ = secondary
 
     bpy.ops.render.render(write_still=True)
     print(f"[blender_cycles] rendered in {time.time() - built:.1f}s -> {output}")
