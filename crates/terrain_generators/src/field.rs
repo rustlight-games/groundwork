@@ -403,6 +403,8 @@ pub struct SemanticOverlay {
     pub density_channel: Option<terrain_core::ids::ModifierIndex>,
     /// The channel saying how wet the ground is, if the document declares one.
     pub moisture_channel: Option<terrain_core::ids::ModifierIndex>,
+    /// The channel saying how packed it is, if the document declares one.
+    pub compaction_channel: Option<terrain_core::ids::ModifierIndex>,
 }
 
 impl std::fmt::Debug for SemanticOverlay {
@@ -460,6 +462,21 @@ impl SemanticOverlay {
             })
             .unwrap_or(0.0);
         declared.max(collected * 0.8)
+    }
+
+    /// How packed the ground is here, `0..1`.
+    fn compaction(&self, world: Vec2) -> f32 {
+        match self.compaction_channel {
+            None => 0.0,
+            Some(channel) => self
+                .fields
+                .modifier(
+                    channel,
+                    terrain_core::coords::WorldPoint::new(world.x as f64, world.y as f64),
+                    0.0,
+                )
+                .clamp(0.0, 1.0),
+        }
     }
 
     /// The declared abundance channel here, or one.
@@ -1030,6 +1047,66 @@ impl WorldField {
             None => 0.0,
             Some(overlay) => 1.0 - overlay.vegetated_share(world),
         }
+    }
+
+    /// Clod and crumb relief on exposed earth, in metres.
+    ///
+    /// Zero under grass and zero without a document, so the laboratory meadow's
+    /// ground is exactly the surface it always was.
+    ///
+    /// Three bands, at the scales bare ground actually has — measured off
+    /// `docs/references/grass_to_mud_bumpy.jpg` and checked against soil
+    /// literature:
+    ///
+    /// ```text
+    /// clods / aggregates   2 - 8 cm across, standing ~a third of that
+    /// loose crumb          2 - 15 mm
+    /// grain                0.5 - 2 mm      (shader bump, not geometry)
+    /// ```
+    ///
+    /// Only the first two are geometry. The third is below what any sane mesh
+    /// resolves and belongs in the material — but the first two are *silhouette*,
+    /// and a normal map cannot make a lump occlude its own shadow. That is the
+    /// whole reason bare ground rendered flat: the height field was sampled at
+    /// four centimetres on the assumption that blades hide the surface, which
+    /// stops being true the moment a document says the ground is a track.
+    ///
+    /// Compaction flattens it. A worn path is smoother than the loose shoulder
+    /// beside it, and that difference is most of what makes a track read as
+    /// walked on rather than as a strip of different-coloured ground.
+    pub fn earth_relief(&self, world: Vec2) -> f32 {
+        let Some(overlay) = &self.overlay else {
+            return 0.0;
+        };
+        let earth = 1.0 - overlay.vegetated_share(world);
+        if earth <= 0.0 {
+            return 0.0;
+        }
+        let compaction = overlay.compaction(world);
+        // Loose ground clods; compacted ground barely does.
+        let looseness = 1.0 - 0.75 * compaction;
+
+        // 5 cm clods: the band that casts shadows.
+        let clods = fbm(
+            self.seed ^ 0x0C10D5,
+            Stream::Soil,
+            world.x * 20.0,
+            world.y * 20.0,
+            2,
+        ) - 0.5;
+        // 8 mm crumb, riding on top of them.
+        let crumb = fbm(
+            self.seed ^ 0xC20B15,
+            Stream::Soil,
+            world.x * 125.0 + 41.0,
+            world.y * 125.0 - 17.0,
+            2,
+        ) - 0.5;
+
+        // Amplitudes from the measured bands: clods 2-8 cm across stand about a
+        // third of their width, so +-2.75 cm of relief on fully loose ground,
+        // falling to a few millimetres where a track has been packed down.
+        earth * looseness * (clods * 0.055 + crumb * 0.009)
     }
 
     /// How wet that earth is, `0..1`.

@@ -126,6 +126,18 @@ struct CompileArgs {
     /// Where to write the plate.
     #[arg(long, default_value = "target/plate.png")]
     out: PathBuf,
+    /// Samples per pixel, when tracing.
+    #[arg(long, default_value_t = 128)]
+    samples: u32,
+    /// Split the plate into this many slices on each axis, for memory.
+    #[arg(long, default_value_t = 1)]
+    trace_tiles_across: usize,
+    /// Trace on the CPU rather than the GPU.
+    #[arg(long)]
+    cpu: bool,
+    /// Supersample factor for the trace.
+    #[arg(long, default_value_t = 2)]
+    supersample: usize,
 }
 
 #[derive(Args, Debug)]
@@ -1511,30 +1523,78 @@ fn compile(args: &CompileArgs) -> ExitCode {
             .channel_index(&terrain_core::ModifierKey::new("vegetation_density").expect("valid")),
         moisture_channel: terrain
             .channel_index(&terrain_core::ModifierKey::new("soil_moisture").expect("valid")),
+        compaction_channel: terrain
+            .channel_index(&terrain_core::ModifierKey::new("soil_compaction").expect("valid")),
     });
 
-    let params = BakeParams {
-        seed: seed,
-        quality: args.quality,
-        visible: framing_visible(&frame),
-        overlay: Some(overlay),
-        ..BakeParams::default()
+    // Cycles, and only Cycles. See CLAUDE.md: this framework builds geometry and
+    // a path tracer renders it. There is no second renderer to fall back to and
+    // no cheap tier to compare against — the low-fidelity representation of this
+    // terrain is the field stack, not a smaller picture of it.
+    let params = plate::cycles_params(&GrassParams {
+        seed,
+        ..GrassParams::default()
+    });
+    let field =
+        terrain_generators::WorldField::lit_by(params.seed, params.light).with_overlay(overlay);
+
+    let visible = frame.layout.visible_bounds();
+    let request = PlateRequest {
+        width: args.width as usize,
+        height: args.height as usize,
+        origin: terrain_bake::bake::vec2(frame.cache_origin[0], frame.cache_origin[1]),
+        px_per_metre: frame.pixels_per_metre,
+        supersample: args.supersample,
+        tiles: args.trace_tiles_across,
+        blade_width: 0.0,
+        visible: Some((
+            terrain_bake::bake::vec2(visible.min.u_m as f32, visible.min.v_m as f32),
+            terrain_bake::bake::vec2(visible.max.u_m as f32, visible.max.v_m as f32),
+        )),
+        settings: RenderSettings {
+            samples: args.samples,
+            device: if args.cpu { "CPU" } else { "GPU" }.to_string(),
+            view_transform: "AgX".to_string(),
+            ..RenderSettings::default()
+        },
+        scene_dir: std::env::temp_dir().join("terrain-compile-scene"),
+        keep_scene: false,
     };
-    let page = Page::at_detail(
-        terrain_bake::bake::vec2(frame.cache_origin[0], frame.cache_origin[1]),
-        args.width as usize,
-        args.height as usize,
-        frame.pixels_per_metre / terrain_generators::iso::PX_PER_METRE,
+
+    let plan = PlatePlan::resolve(&request, &params);
+    println!(
+        "  tracing at {:.0} px/m ({}x), {} ribs, ~{:.1}M blades",
+        plan.trace_px_per_metre,
+        plan.supersample,
+        plan.ribs,
+        plan.estimated_blades / 1.0e6,
     );
 
     let started = std::time::Instant::now();
-    let plate = terrain_bake::bake::bake_padded_image(page, &params);
+    let mut progress = |p: Progress| {
+        if p.tiles > 1 {
+            println!("  slice {}/{}", p.tile, p.tiles);
+        }
+    };
+    let plate = match plate::trace(&request, &params, &field, &mut progress) {
+        Ok(plate) => plate,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let render_time = started.elapsed();
 
     if let Some(parent) = args.out.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Err(error) = save_rgba(&args.out, &plate) {
+    if let Err(error) = image::save_buffer(
+        &args.out,
+        &plate.pixels,
+        plate.width as u32,
+        plate.height as u32,
+        image::ColorType::Rgba8,
+    ) {
         eprintln!("cannot write {}: {error}", args.out.display());
         return ExitCode::FAILURE;
     }
@@ -1570,9 +1630,10 @@ fn compile(args: &CompileArgs) -> ExitCode {
         compiled.scene.mark_density()
     );
     println!(
-        "  time     compile {:.2}s, render {:.2}s",
-        compile_time.as_secs_f64(),
-        render_time.as_secs_f64()
+        "  traced   {} blades in {:.0}s (compile {:.2}s)",
+        plate.blades,
+        render_time.as_secs_f64(),
+        compile_time.as_secs_f64()
     );
     println!("\nreplay:");
     println!(

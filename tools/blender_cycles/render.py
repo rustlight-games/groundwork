@@ -238,6 +238,20 @@ def build_ground(scene_dir, spec):
     mesh.update()
     mesh.shade_smooth()
 
+    # How much of each vertex is bare earth, carried as a mesh attribute so the
+    # material can shade a track as earth and a meadow floor as meadow floor.
+    #
+    # One material with an attribute rather than two materials with a boundary
+    # between them, because the boundary is a *blend*: the compiler already
+    # decided the ragged edge, and splitting the mesh at it would quantise that
+    # edge to the triangle grid and undo the work.
+    earth_path = spec.get("earth")
+    if earth_path:
+        earth = np.fromfile(os.path.join(scene_dir, earth_path), dtype=np.float32)
+        if earth.size == rows * columns:
+            layer = mesh.attributes.new(name="earth", type="FLOAT", domain="POINT")
+            layer.data.foreach_set("value", earth.tolist())
+
     obj = bpy.data.objects.new("ground", mesh)
     bpy.context.collection.objects.link(obj)
     obj.data.materials.append(ground_material())
@@ -678,14 +692,67 @@ def ground_material():
     live(grained.inputs, "Factor").default_value = 0.55
     links.new(live(earth.outputs, "Result"), live(grained.inputs, "A"))
     links.new(live(grain.outputs, "Color"), live(grained.inputs, "B"))
-    links.new(live(grained.outputs, "Result"), principled.inputs["Base Color"])
+    # ## Exposed earth is a different material from the floor between blades
+    #
+    # The two ramps above are deliberately dark — they are glimpses of ground
+    # seen *between* plants, and anything brighter starts reading as a rock lying
+    # on the canopy. That reasoning is right for a meadow floor and wrong for a
+    # track, where the earth is the subject rather than the gap.
+    #
+    # Measured off `docs/references/grass_to_mud_bumpy.jpg`: the mud there runs
+    # from linear 0.061 in its shadows to 0.195 at its brightest, and its channel
+    # ratios are steady at G/R 0.63, B/R 0.36. The floor ramps sit at G/R near
+    # one, which is why a whole track of them read as sand rather than as earth —
+    # the error was the green, not the brightness.
+    #
+    # The `earth` attribute comes from the compiler, which realised the ragged
+    # boundary through the same function that decided where the grass thinned. So
+    # the colour changes exactly where the vegetation does rather than a
+    # centimetre away from it.
+    bare = nodes.new("ShaderNodeValToRGB")
+    bare.location = (-1350, -40)
+    bare.color_ramp.elements[0].position = 0.10
+    bare.color_ramp.elements[1].position = 0.90
+    bare.color_ramp.elements[0].color = (0.0500, 0.0315, 0.0180, 1.0)
+    bare.color_ramp.elements[1].color = (0.1550, 0.0977, 0.0558, 1.0)
+    links.new(patch.outputs["Fac"], bare.inputs["Fac"])
+
+    exposure = nodes.new("ShaderNodeAttribute")
+    exposure.location = (-1600, -400)
+    exposure.attribute_name = "earth"
+
+    # Eased, so the shading boundary is not harder than the geometry under it.
+    exposed = nodes.new("ShaderNodeMapRange")
+    exposed.location = (-1350, -400)
+    exposed.inputs["From Min"].default_value = 0.05
+    exposed.inputs["From Max"].default_value = 0.75
+    exposed.clamp = True
+    links.new(exposure.outputs["Fac"], exposed.inputs["Value"])
+
+    surfaced = nodes.new("ShaderNodeMix")
+    surfaced.data_type = "RGBA"
+    surfaced.location = (-640, 220)
+    links.new(live(grained.outputs, "Result"), live(surfaced.inputs, "A"))
+    links.new(live(bare.outputs, "Color"), live(surfaced.inputs, "B"))
+    links.new(exposed.outputs["Result"], live(surfaced.inputs, "Factor"))
+    links.new(live(surfaced.outputs, "Result"), principled.inputs["Base Color"])
 
     # The bump. Two scales, because soil has both clods and grit, and a single
     # frequency reads as sandpaper.
+    # Stronger on bare ground than under a canopy. Grain that is barely visible
+    # between blades is the whole surface on a track, and the mesh already
+    # carries the clods themselves — this is the band below what the grid
+    # resolves, which is grain rather than lumps.
+    bump_strength = nodes.new("ShaderNodeMapRange")
+    bump_strength.location = (-800, -180)
+    bump_strength.inputs["To Min"].default_value = 0.55
+    bump_strength.inputs["To Max"].default_value = 1.00
+    links.new(exposed.outputs["Result"], bump_strength.inputs["Value"])
+
     clods = nodes.new("ShaderNodeBump")
     clods.location = (-620, -180)
-    clods.inputs["Strength"].default_value = 0.85
     clods.inputs["Distance"].default_value = 0.022
+    links.new(bump_strength.outputs["Result"], clods.inputs["Strength"])
     links.new(grain.outputs["Fac"], clods.inputs["Height"])
 
     fine = nodes.new("ShaderNodeBump")

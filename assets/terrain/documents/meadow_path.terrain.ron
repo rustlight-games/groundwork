@@ -223,14 +223,19 @@
             ),
             (
                 key: "path_compaction",
+                // The *core* only, and much narrower than the material band.
+                // A track is packed down where it is walked and loose at its
+                // shoulders, and that difference is most of what makes one read
+                // as walked on rather than as a strip of different-coloured
+                // ground: the middle is smooth and the edges are cloddy.
                 mask: Profile((
                     source: "main_path",
-                    shape: SmoothBand((inner_m: 0.80, outer_m: 2.30)),
+                    shape: SmoothBand((inner_m: 0.45, outer_m: 1.30)),
                 )),
                 operation: Modifier((
                     channel: "soil_compaction",
                     mode: "Max",
-                    value: 0.95,
+                    value: 0.90,
                 )),
             ),
             (

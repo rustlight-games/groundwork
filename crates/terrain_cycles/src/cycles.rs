@@ -142,6 +142,8 @@ pub struct CyclesScene {
     pub attributes: Vec<[f32; ATTRIBUTES_PER_BLADE]>,
     /// Ground heights over [`CyclesScene::footprint`], row-major.
     pub ground: Vec<f32>,
+    /// Bare-earth share per ground sample, `0..1`.
+    pub earth: Vec<f32>,
     pub ground_rows: usize,
     pub ground_columns: usize,
     /// World-space AABB the ground grid spans.
@@ -427,7 +429,7 @@ impl CyclesScene {
         points.append(&mut halo_points);
         attributes.append(&mut halo_attributes);
 
-        let (footprint, ground, rows, columns) =
+        let (footprint, ground, earth, rows, columns) =
             sample_ground(&page, field, settings.visible_ground);
         let camera = Camera::for_page(&page, scene.canopy_ceiling());
 
@@ -436,6 +438,7 @@ impl CyclesScene {
             points,
             attributes,
             ground,
+            earth,
             ground_rows: rows,
             ground_columns: columns,
             footprint,
@@ -465,6 +468,7 @@ impl CyclesScene {
             self.attributes.iter().flatten(),
         )?;
         write_f32(&directory.join("ground.bin"), self.ground.iter())?;
+        write_f32(&directory.join("earth.bin"), self.earth.iter())?;
 
         let header = directory.join("scene.json");
         std::fs::write(&header, self.header_json())?;
@@ -520,6 +524,7 @@ impl CyclesScene {
   }},
   "ground": {{
     "path": "ground.bin",
+    "earth": "earth.bin",
     "rows": {},
     "columns": {},
     "low": [{:.6}, {:.6}],
@@ -691,11 +696,12 @@ const GROUND_RELIEF: f32 = 0.34;
 /// outside the frame. That waste is the cheapest correct option: a grid aligned
 /// to the diamond would have to be re-derived for every page shape, and the
 /// corners cost four triangles.
+#[allow(clippy::type_complexity)]
 fn sample_ground(
     page: &Page,
     field: &WorldField,
     visible: Option<(Vec2, Vec2)>,
-) -> ((Vec2, Vec2), Vec<f32>, usize, usize) {
+) -> ((Vec2, Vec2), Vec<f32>, Vec<f32>, usize, usize) {
     let (low, high) = match visible {
         // The ground ends exactly at the layout, because that edge *is* the
         // picture's silhouette. A margin here would put a rim of unowned ground
@@ -726,15 +732,28 @@ fn sample_ground(
         }
     };
 
-    // A grid step of about four centimetres. The mound field's finest feature is
-    // a good deal broader than that, and the blades hide the surface almost
-    // everywhere it matters.
-    const STEP: f32 = 0.04;
+    // A grid step of a centimetre and a half.
+    //
+    // It was four centimetres, on the reasoning that the mound field's finest
+    // feature is broader than that and the blades hide the surface anyway. That
+    // reasoning holds for a meadow and fails completely for a track: where a
+    // document exposes bare earth there are no blades to hide anything, and the
+    // ground's own clods — two to eight centimetres across — are the entire
+    // texture. At four centimetres they were below the sampling rate, which is
+    // why bare ground rendered as a smooth plane.
+    //
+    // A centimetre and a half puts three or four samples across the smallest
+    // clod. See `WorldField::earth_relief`.
+    const STEP: f32 = 0.015;
     let span = high - low;
     let columns = ((span.x / STEP).ceil() as usize + 1).clamp(2, 2048);
     let rows = ((span.y / STEP).ceil() as usize + 1).clamp(2, 2048);
 
     let mut heights = Vec::with_capacity(rows * columns);
+    // How much of each grid point is bare earth, so the ground material can
+    // shade a track as earth and a meadow floor as meadow floor rather than
+    // painting every substrate the same colour.
+    let mut earth = Vec::with_capacity(rows * columns);
     for row in 0..rows {
         for column in 0..columns {
             let blender = Vec2::new(
@@ -744,10 +763,14 @@ fn sample_ground(
             // The grid is laid out in Blender's reflected space, so the field —
             // which only knows the game's — is asked about the swapped point.
             let world = Vec2::new(blender.y, blender.x);
-            heights.push(field.sample(world).height * GROUND_RELIEF);
+            // Mound relief, plus whatever the exposed earth has of its own.
+            // The second term is zero under grass and zero without a document,
+            // so a laboratory meadow's ground is the surface it always was.
+            heights.push(field.sample(world).height * GROUND_RELIEF + field.earth_relief(world));
+            earth.push(field.earth_share(world));
         }
     }
-    ((low, high), heights, rows, columns)
+    ((low, high), heights, earth, rows, columns)
 }
 
 fn write_f32<'a>(path: &Path, values: impl Iterator<Item = &'a f32>) -> io::Result<()> {
