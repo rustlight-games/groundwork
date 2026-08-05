@@ -19,12 +19,17 @@
 // Six bands of distance from a dead straight axis, each a metre wide, dry and
 // wet alternating so that every wet stripe touches its own dry one:
 //
-//   0.0 → 1.0    river sand         dry
-//   1.0 → 2.0    river sand         soaked
-//   2.0 → 3.0    compacted loam     dry
-//   3.0 → 4.0    compacted loam     soaked
-//   4.0 → 5.0    meadow floor       dry
-//   5.0 → 6.0    meadow floor       soaked
+//   0.00 → 0.62   river sand         dry
+//   0.62 → 1.24   river sand         soaked
+//   1.24 → 1.86   compacted loam     dry
+//   1.86 → 2.48   compacted loam     soaked
+//   2.48 → 3.10   meadow floor       dry
+//   3.10 → 3.72   meadow floor       soaked
+//
+// The pitch is 62 cm rather than a round metre because the plate is nine
+// two-metre tiles and its half-diagonal is about 4.2 m. At a metre the outer
+// two stripes were slivers in the corners — too little area to read and too
+// little to measure, which for a comparison card is the same failure.
 //
 // The pairs are adjacent on purpose. A wet stripe next to a *different* soil's
 // dry stripe compares two things at once and settles neither; next to its own,
@@ -199,7 +204,7 @@
                 key: "stripe_loam",
                 mask: Profile((
                     source: "axis",
-                    shape: SmoothBand((inner_m: 4.00, outer_m: 4.02)),
+                    shape: SmoothBand((inner_m: 2.48, outer_m: 2.50)),
                 )),
                 operation: Material((
                     material: "loam",
@@ -211,7 +216,7 @@
                 key: "stripe_sand",
                 mask: Profile((
                     source: "axis",
-                    shape: SmoothBand((inner_m: 2.00, outer_m: 2.02)),
+                    shape: SmoothBand((inner_m: 1.24, outer_m: 1.26)),
                 )),
                 operation: Material((
                     material: "sand",
@@ -229,7 +234,7 @@
                 key: "wet_floor",
                 mask: Profile((
                     source: "axis",
-                    shape: SmoothBand((inner_m: 6.00, outer_m: 6.02)),
+                    shape: SmoothBand((inner_m: 3.72, outer_m: 3.74)),
                 )),
                 operation: Modifier((
                     channel: "soil_moisture",
@@ -241,7 +246,7 @@
                 key: "dry_floor",
                 mask: Profile((
                     source: "axis",
-                    shape: SmoothBand((inner_m: 5.00, outer_m: 5.02)),
+                    shape: SmoothBand((inner_m: 3.10, outer_m: 3.12)),
                 )),
                 operation: Modifier((
                     channel: "soil_moisture",
@@ -253,7 +258,7 @@
                 key: "wet_loam",
                 mask: Profile((
                     source: "axis",
-                    shape: SmoothBand((inner_m: 4.00, outer_m: 4.02)),
+                    shape: SmoothBand((inner_m: 2.48, outer_m: 2.50)),
                 )),
                 operation: Modifier((
                     channel: "soil_moisture",
@@ -265,7 +270,7 @@
                 key: "dry_loam",
                 mask: Profile((
                     source: "axis",
-                    shape: SmoothBand((inner_m: 3.00, outer_m: 3.02)),
+                    shape: SmoothBand((inner_m: 1.86, outer_m: 1.88)),
                 )),
                 operation: Modifier((
                     channel: "soil_moisture",
@@ -277,7 +282,7 @@
                 key: "wet_sand",
                 mask: Profile((
                     source: "axis",
-                    shape: SmoothBand((inner_m: 2.00, outer_m: 2.02)),
+                    shape: SmoothBand((inner_m: 1.24, outer_m: 1.26)),
                 )),
                 operation: Modifier((
                     channel: "soil_moisture",
@@ -289,7 +294,7 @@
                 key: "dry_sand",
                 mask: Profile((
                     source: "axis",
-                    shape: SmoothBand((inner_m: 1.00, outer_m: 1.02)),
+                    shape: SmoothBand((inner_m: 0.62, outer_m: 0.64)),
                 )),
                 operation: Modifier((
                     channel: "soil_moisture",
@@ -305,7 +310,7 @@
                 // *and* wet cannot answer which of the two did what.
                 mask: Profile((
                     source: "axis",
-                    shape: SmoothBand((inner_m: 4.02, outer_m: 4.04)),
+                    shape: SmoothBand((inner_m: 2.50, outer_m: 2.52)),
                 )),
                 operation: Modifier((
                     channel: "soil_compaction",
@@ -321,7 +326,7 @@
                 // world with.
                 mask: Profile((
                     source: "axis",
-                    shape: SmoothBand((inner_m: 7.2, outer_m: 7.3)),
+                    shape: SmoothBand((inner_m: 4.34, outer_m: 4.60)),
                 )),
                 operation: Modifier((
                     channel: "vegetation_density",

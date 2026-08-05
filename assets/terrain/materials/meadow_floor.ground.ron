@@ -38,9 +38,22 @@
                 // every channel by one number and cannot produce a ratio
                 // difference, so a ratio difference is composition and nothing
                 // else — see `soil_decision.rs`, which fails if the gap closes.
-                low:  (0.0092, 0.0086, 0.0072),
-                mid:  (0.0215, 0.0194, 0.0134),
-                high: (0.0930, 0.0846, 0.0600),
+                // ## Cooled, then cooled too far
+                //
+                // The first pass took this to a red-to-blue ratio of 1.60 to
+                // put it in the grass's lighting world, and at that ratio it
+                // stopped being soil: a crop of it at native size is grey-green
+                // speckle with no brown anywhere in it. Desaturated earth is
+                // still *earth*, and the thing that makes a viewer read it as
+                // ground rather than as noise is that it is brown.
+                //
+                // Two is the figure. It keeps the green-to-red separation from
+                // the track that `soil_decision.rs` requires — this soil is the
+                // greyer and greener of the two, because humus and fine root
+                // are — while putting the colour back.
+                low:  (0.0102, 0.0090, 0.0051),
+                mid:  (0.0268, 0.0238, 0.0134),
+                high: (0.1120, 0.0985, 0.0560),
             ),
             // A shaded floor is half damp already, so soaking it moves it less
             // than it moves an open track — and it never goes glossy, because a
@@ -66,7 +79,7 @@
                 // black-brown — and letting the warm sun and the cool sky
                 // supply the colour from there is what makes it read as a
                 // surface rather than as a darker paint.
-                wet_mid: (0.0074, 0.0070, 0.0062),
+                wet_mid: (0.0074, 0.0066, 0.0050),
                 // Glossy. Thirty was a hedge against the canopy — this soil
                 // lives under grass and was authored never to go shiny — which
                 // is lighting context baked into a physical response, and it
@@ -99,8 +112,16 @@
         // nothing. What the mesh does carry under a meadow is the mound field.
         structure: (
             bands: [
-                (wavelength_m: 0.0385, amplitude_m: 0.0110, compaction_response: 0.35, clustered: true),
-                (wavelength_m: 0.0111, amplitude_m: 0.0035, compaction_response: 0.25),
+                // Clods, and taller than they were. A meadow floor seen bare —
+                // which no document exposed until `wet_and_dry` did — needs
+                // structure the eye can find, and eleven millimetres under a
+                // canopy is not the same requirement as eleven millimetres in
+                // the open.
+                (wavelength_m: 0.0385, amplitude_m: 0.0150, shape: "Rounded", compaction_response: 0.35, clustered: true),
+                // The crumb between them, unclustered so it survives where the
+                // clods do not.
+                (wavelength_m: 0.0140, amplitude_m: 0.0022, shape: "Rounded", compaction_response: 0.22, clustered: false),
+                (wavelength_m: 0.0040, amplitude_m: 0.0007, compaction_response: 0.25),
             ],
             cluster_wavelength_m: 1.2,
             cluster_strength: 0.35,

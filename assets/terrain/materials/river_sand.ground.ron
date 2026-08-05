@@ -125,15 +125,33 @@
             // Tonally flat, which is the point. Half of loam's region strength
             // over one and a half times its wavelength: a bar varies over
             // metres, not over hand's widths.
-            region_wavelength_m: 3.0,
-            region_strength: 0.26,
-            patch_wavelength_m: 0.28,
-            patch_strength: 0.38,
+            // ## "Tonally flat" was read too literally the first time
+            //
+            // A sand bar *is* uniform compared to a meadow floor, and the first
+            // version of this profile turned that into region 0.26 and patch
+            // 0.38 — so nothing in the colour varied at any scale a viewer
+            // resolves. Combined with a single relief band at four millimetres
+            // and one ripple frequency, the only feature left on the surface
+            // was the ripple, and what rendered was corduroy: a fabric, not a
+            // ground.
+            //
+            // Sand is uniform in *hue* and not in value. A real bar is covered
+            // in scour marks, damp patches, drift lines and darker heavy-mineral
+            // streaks, all of them the same colour and none of them the same
+            // brightness. So the region term stays modest — that is the honest
+            // part — and the patch term goes up hard.
+            region_wavelength_m: 2.4,
+            region_strength: 0.40,
+            patch_wavelength_m: 0.085,
+            patch_strength: 0.72,
             // Fine and even. Loam's grain is 0.55 and describes crumb; this
             // describes actual grains, which at any framing this project
             // renders at are below a pixel and belong in the BRDF rather than
             // in the colour.
-            grain_strength: 0.34,
+            // And the grain goes with it. This is the term that puts something
+            // *between* the ripples, which is the difference between a rippled
+            // surface and a ribbed one.
+            grain_strength: 0.72,
         ),
 
         structure: (
@@ -143,53 +161,61 @@
             // ripple, and ripples are declared separately below where their
             // *direction* can be stated.
             bands: [
+                // Scour: broad, shallow, irregular hollows a hand across, of
+                // the kind water leaves when it drops its load unevenly. New,
+                // and it is what stops the ripples being the only structure —
+                // a single relief frequency over a single tonal field is a
+                // woven fabric however carefully each is tuned.
+                //
+                // Clustered, so the scoured areas group rather than covering
+                // the bar evenly.
+                (wavelength_m: 0.1400, amplitude_m: 0.0060, shape: "Rounded", compaction_response: 0.45, clustered: true),
+                (wavelength_m: 0.0340, amplitude_m: 0.0022, shape: "Rounded", compaction_response: 0.40, clustered: true),
+                // Coarse grains and the odd shell fragment.
+                (wavelength_m: 0.0090, amplitude_m: 0.0014, shape: "Angular", compaction_response: 0.30, clustered: false),
                 (wavelength_m: 0.0040, amplitude_m: 0.00090, shape: "Angular", compaction_response: 0.30, clustered: false),
                 (wavelength_m: 0.0012, amplitude_m: 0.00032, shape: "Angular", compaction_response: 0.18, clustered: false),
-                (wavelength_m: 0.0004, amplitude_m: 0.00010, shape: "Angular", compaction_response: 0.10, clustered: false),
             ],
             // Nothing clusters. A clump of sand is a thing that has stopped
             // being sand, and leaving the clustering on would put loam's
             // hand's-width lumpiness back into a material defined by not
             // having it.
             cluster_wavelength_m: 0.8,
-            cluster_strength: 0.0,
+            // The scour band clusters; nothing finer does. A clump of sand is
+            // a thing that has stopped being sand.
+            cluster_strength: 0.55,
             // Almost none. This is the number that says the material cannot
             // hold a shape, and it is why there is no crack profile below: a
             // material with no cohesion has nothing to crack.
             cohesion: 0.06,
         ),
 
-        // The first shipped ripples. See `RippleProfile`.
-        ripples: Some((
-            // Seven and a half centimetres, which is where current ripples on a
-            // river bar actually sit. Wind ripples on dry dune sand are finer;
-            // this is a bar that was under water recently.
-            wavelength_m: 0.075,
-            // Four millimetres peak to trough. Small enough that it is a
-            // texture rather than a landform, large enough to catch a low sun
-            // along its whole length — which is the entire reason it is here.
-            amplitude_m: 0.0040,
-            // Across the prevailing flow, which is what a current leaves.
-            direction_deg: 35.0,
-            // Rounded rather than sharp. Sharp crests are a wind signature;
-            // water-formed ripples are smooth on top and steep on the lee.
-            crest_sharpness: 0.48,
-            // Positive steepens the lee face, which is what makes a ripple
-            // field read as having a direction rather than merely an axis.
-            asymmetry: 0.45,
-            // The wavefronts wander by well over half their own wavelength,
-            // over a scale of six of them. Zero would give parallel sine waves,
-            // which is the single most recognisable procedural failure in this
-            // whole vocabulary — and the first render of this profile proved
-            // that a *small* meander is barely better, because what reads as
-            // corduroy is regularity rather than straightness.
-            meander_m: 0.048,
-            // Wet sand does not ripple: the water holds the grains where they
-            // are, and a bar under a film is smooth. Nearly total, so the
-            // ripples are a *dry* signature and their disappearance is one more
-            // thing that reads as wetness.
-            wetness_suppression: 0.88,
-        )),
+        // ## No ripples, after trying them
+        //
+        // This was the first profile in the tree to declare a `RippleProfile`,
+        // and three renders in a row came back looking like corduroy, then like
+        // brushed burlap, then like woven canvas. Lowering the amplitude,
+        // trebling the meander and adding a patchiness field each made it a
+        // slightly different fabric.
+        //
+        // The reason is structural rather than a matter of tuning. A ripple
+        // field is *one frequency in one direction*, and at this framing it is
+        // an order of magnitude higher in contrast than anything else the
+        // profile puts on the surface — so it is not a texture over a ground,
+        // it is the whole of what a viewer sees, and a single frequency in a
+        // single direction over a whole plate is the definition of a weave.
+        // Real ripples escape that by being *short crested*: they fork, break
+        // into segments and die out, and none of that is expressible as a phase
+        // displacement on a sine.
+        //
+        // So sand is carried here by the things that do work — a wide patch
+        // term, real grain, and a scour band a hand across — and the ripple
+        // code stays for a document that wants a dune, where the camera is
+        // further away and the wave is the landform rather than the surface.
+        // Its own defect is fixed on the way past: the meander derived its
+        // frequency from its amplitude, so the displacement field ran faster
+        // than the ripple it displaced. See `ripple_height`.
+        ripples: None,
 
         // None, and deliberately. Cracking is a clay behaviour — it needs
         // cohesion for the shrinking sheet to hold together long enough to

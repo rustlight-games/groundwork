@@ -1252,6 +1252,20 @@ def blade_material(settings):
 # applied after the palette rather than inside it. Three quarters means the
 # deepest crevices return a quarter of the light their crests do, which is the
 # contact darkening that carries depth from a fixed high camera.
+# How much harder wetting bites at the top of the palette than the bottom.
+#
+# Kept in step with `GroundMaterialProfile::WET_BITE` by hand, like every other
+# number that has to mean the same thing in both languages. See that constant
+# for why the response is a tilted ratio rather than the square law it replaced.
+WET_BITE = 0.35
+
+# The finest wavelength colour grain is drawn at, in metres.
+#
+# About three traced pixels at the default framing. Finer than this and the
+# sampler averages it to a flat tone, so it costs a noise lookup and buys
+# nothing — see the note in `soil_branch`. What lives below it is roughness.
+GRAIN_FLOOR_M = 0.011
+
 CAVITY_OCCLUSION = 0.75
 
 # Where the cavity signal starts and finishes counting.
@@ -1544,8 +1558,26 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     # The fallback wavelength is also gone. When no band reaches the shader
     # there is no grain to draw, and inventing a two-centimetre one put a
     # feature at a scale no profile had declared into every such material.
+    # ## And it has to be drawn at a scale the renderer can resolve
+    #
+    # The wavelength comes from the coarsest band the *mesh* could not carry,
+    # which is a sensible-sounding rule that quietly guarantees the opposite of
+    # what it wants. Those bands are below the mesh threshold precisely because
+    # they are small, and for a fine-grained soil the coarsest of them can be a
+    # millimetre — a third of a traced pixel. Drawn there, the grain is averaged
+    # away by the sampler before it reaches the image, and `grain_strength`
+    # does nothing spatial at any value. Raising it from 0.34 to 0.72 on the
+    # sand profile changed the picture not at all, which is what sent me looking.
+    #
+    # So it is floored at a few traced pixels. Below that the structure belongs
+    # in the roughness, which is exactly where `micro_roughness` already put it —
+    # this is the same tier boundary the relief plan draws, applied to the
+    # colour instead of to the shape.
     grain_band = entry["shader_bands"][0] if entry["shader_bands"] else None
     grain_wavelength = grain_band["wavelength_m"] if grain_band else None
+    if grain_wavelength is not None:
+        grain_wavelength = max(grain_wavelength, GRAIN_FLOOR_M)
+
     grain_fade = nodes.new("ShaderNodeMapRange")
     grain_fade.location = (-1600, y + 60)
     grain_fade.inputs["To Min"].default_value = optics["grain_strength"]
@@ -1572,6 +1604,14 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
         links.new(live(palette.outputs, "Color"), live(grained.inputs, "A"))
         links.new(grain_grey.outputs["Color"], live(grained.inputs, "B"))
 
+    # Whichever node now carries the dry colour: the palette ramp when this
+    # soil declares no shader band, the grain multiply when it does.
+    grain_out = (
+        live(palette.outputs, "Color")
+        if grained is palette
+        else live(grained.outputs, "Result")
+    )
+
     # ## Wet ground is not dry ground turned down
     #
     # Water fills the pores, so the air-soil boundary that scattered light
@@ -1580,61 +1620,64 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     # interface. Three things follow, and doing only the first is what makes wet
     # ground read as ground in shadow instead of as wet ground.
     #
-    #   albedo      darkens toward its own square
+    #   albedo      darkens, hardest where the surface was brightest
     #   hue         warms — the film absorbs blue and green harder than red
     #   roughness   collapses, and does so before the darkening is noticeable
     #
-    # The gain below is fitted in Rust so that the soil's *mid* stop lands
-    # exactly on the wet colour its profile declares. The author writes two
-    # colours they can measure; the square law is what runs between them.
+    # ## A ratio, not a square
+    #
+    # This ran `wet = dry² × gain` for the whole of its first life, fitted so
+    # the palette's mid stop landed on the authored wet colour. The consequence
+    # was measured rather than argued: the ratio `wet/dry` under that law is
+    # proportional to how bright a point already is, so the brightest parts of a
+    # surface darkened *least* — and a surface's mean sits above its own mid, so
+    # almost none of it darkened. A loam authored to darken by four and a half
+    # rendered at 1.48, next to its own dry stripe, and read as the same
+    # material twice.
+    #
+    # It is now a ratio anchored at the mid and tilted so the crests take more
+    # of it than the hollows. See `GroundMaterialProfile::WET_BITE`, which is
+    # the same constant on the Rust side — the two halves compute one response
+    # and a test asserts the Rust one.
     #
     # No subsurface scattering. Production mud shaders do not use it — mud is a
     # rough dark dielectric under a glossy coat.
     mid = entry["dry_palette"]["mid"]
     wet_mid = entry["wet"]["mid"]
-    gain = tuple(
-        (wet_mid[c] / (mid[c] * mid[c])) if mid[c] > 0.0 else 0.0 for c in range(3)
-    )
+    gain = tuple((wet_mid[c] / mid[c]) if mid[c] > 0.0 else 0.0 for c in range(3))
 
-    grain_out = (
-        live(palette.outputs, "Color")
-        if grained is palette
-        else live(grained.outputs, "Result")
-    )
+    # One at the mid, above one below it, below one above it.
+    tilt = nodes.new("ShaderNodeMapRange")
+    tilt.location = (-1250, y + 40)
+    tilt.inputs["To Min"].default_value = 1.0 + WET_BITE
+    tilt.inputs["To Max"].default_value = 1.0 - WET_BITE
+    tilt.clamp = True
+    links.new(tone_norm.outputs["Result"], tilt.inputs["Value"])
 
-    squared = nodes.new("ShaderNodeMix")
-    squared.data_type = "RGBA"
-    squared.blend_type = "MULTIPLY"
-    squared.location = (-1250, y + 200)
-    live(squared.inputs, "Factor").default_value = 1.0
-    links.new(grain_out, live(squared.inputs, "A"))
-    links.new(grain_out, live(squared.inputs, "B"))
+    tilt_grey = nodes.new("ShaderNodeCombineColor")
+    tilt_grey.location = (-1150, y + 40)
+    for channel in ("Red", "Green", "Blue"):
+        links.new(tilt.outputs["Result"], tilt_grey.inputs[channel])
+
+    ratio = nodes.new("ShaderNodeMix")
+    ratio.data_type = "RGBA"
+    ratio.blend_type = "MULTIPLY"
+    ratio.location = (-1050, y + 120)
+    live(ratio.inputs, "Factor").default_value = 1.0
+    live(ratio.inputs, "A").default_value = gain + (1.0,)
+    links.new(tilt_grey.outputs["Color"], live(ratio.inputs, "B"))
 
     lifted = nodes.new("ShaderNodeMix")
     lifted.data_type = "RGBA"
     lifted.blend_type = "MULTIPLY"
     lifted.location = (-1100, y + 200)
     live(lifted.inputs, "Factor").default_value = 1.0
-    links.new(live(squared.outputs, "Result"), live(lifted.inputs, "A"))
-    live(lifted.inputs, "B").default_value = gain + (1.0,)
+    links.new(grain_out, live(lifted.inputs, "A"))
+    links.new(live(ratio.outputs, "Result"), live(lifted.inputs, "B"))
 
-    # ## Wetting may not brighten anything
-    #
-    # The square law is fitted through the palette's *mid* stop, so it lands on
-    # the declared wet colour there and nowhere else. Above the mid it stops
-    # darkening: at the sand's high stop of 0.295 the squared-and-lifted value
-    # comes back at 0.173, a fall of only a factor of 1.7 where the mid falls by
-    # 2.7 — and most of a rendered surface sits *above* its own mid, so what a
-    # viewer saw was a wet stripe that looked very nearly like its dry
-    # neighbour. Higher still and the curve turns over and wets a colour
-    # brighter than it started.
-    #
-    # Rust already refuses that (`GroundMaterialProfile::wet_colour` clamps
-    # channel by channel) and the shader did not, so the two halves of the
-    # pipeline disagreed about what wet earth looks like. A minimum against the
-    # dry colour is the same rule, and it is the rule rather than a fudge: water
-    # in the pores removes light paths, so no channel can come back stronger for
-    # having been wetted.
+    # Wetting may not brighten a channel. Water in the pores removes light
+    # paths; it never adds one. Rust clamps the same way — see
+    # `GroundMaterialProfile::albedo`.
     darkened = nodes.new("ShaderNodeMix")
     darkened.data_type = "RGBA"
     darkened.blend_type = "DARKEN"

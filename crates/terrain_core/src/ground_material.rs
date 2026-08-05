@@ -657,14 +657,45 @@ impl GroundMaterialProfile {
         let target = self.optics.wet.wet_mid;
         let mut gain = [0.0; 3];
         for channel in 0..3 {
-            let square = mid[channel] * mid[channel];
-            gain[channel] = if square > 0.0 {
-                target[channel] / square
+            gain[channel] = if mid[channel] > 0.0 {
+                target[channel] / mid[channel]
             } else {
                 0.0
             };
         }
         gain
+    }
+
+    /// How much harder the darkening bites at the top of the palette than the
+    /// bottom, as a fraction of the ratio either side of the mid.
+    ///
+    /// ## The square law did this backwards
+    ///
+    /// The response used to be `wet = dry² × gain`, fitted so that the mid stop
+    /// landed on the authored wet colour. That makes the *ratio* `wet/dry`
+    /// equal to `dry × gain` — proportional to how bright the point already is
+    /// — so the brightest parts of a surface darkened **least**. The comment
+    /// above it claimed the opposite, and the opposite is what happens: a water
+    /// film removes the diffuse first-surface scatter, which is most of what a
+    /// bright crest is returning and very little of what a shadowed pore is.
+    ///
+    /// Measured on a comparison card, compacted loam authored to darken by a
+    /// factor of four and a half rendered at **1.48**, because nearly all of its
+    /// surface sits above its own mid stop. Sand, whose palette is narrow, got
+    /// close to its authored figure; the wider a soil's tonal range, the worse
+    /// the law behaved.
+    ///
+    /// So the response is now a *ratio* anchored at the mid, tilted so the
+    /// crests take more of it than the hollows. A third, which at a typical
+    /// palette makes the high stop darken about twice as hard as the low one.
+    pub const WET_BITE: f32 = 0.35;
+
+    /// The wet/dry ratio at a tonal position, per channel.
+    fn wet_ratio(&self, tone: f32) -> LinearRgb {
+        let gain = self.wet_gain();
+        // One at the mid, so an author's `wet_mid` means exactly what it says.
+        let tilt = 1.0 + Self::WET_BITE * (1.0 - 2.0 * tone.clamp(0.0, 1.0));
+        [gain[0] * tilt, gain[1] * tilt, gain[2] * tilt]
     }
 
     /// The albedo at a tonal position and a wetness.
@@ -674,10 +705,12 @@ impl GroundMaterialProfile {
     pub fn albedo(&self, tone: f32, wetness: f32) -> LinearRgb {
         let dry = self.dry_colour(tone);
         let wetness = wetness.clamp(0.0, 1.0);
-        let gain = self.wet_gain();
+        let ratio = self.wet_ratio(tone);
         let mut out = [0.0; 3];
         for channel in 0..3 {
-            let wet = (dry[channel] * dry[channel] * gain[channel]).min(dry[channel]);
+            // Wetting may not brighten a channel. Water in the pores removes
+            // light paths; it never adds one.
+            let wet = (dry[channel] * ratio[channel]).min(dry[channel]);
             out[channel] = dry[channel] + (wet - dry[channel]) * wetness;
         }
         out
@@ -872,24 +905,57 @@ mod tests {
     }
 
     #[test]
-    fn wetting_deepens_the_ground_rather_than_dimming_it() {
-        // The whole reason for a square law rather than a multiply. A multiply
-        // scales every tone by the same factor, which is exactly what shadow
-        // does — so wet ground shaded that way reads as dry ground in shadow.
+    fn wetting_darkens_the_crests_hardest_rather_than_dimming_uniformly() {
+        // ## What this used to assert, and why it changed
         //
-        // The square widens the tonal range instead: the crest gives up more
-        // absolute light than the hollow, and the ratio between them grows. That
-        // deepening is what the eye reads as wet.
+        // It asserted that wetting *widens* the tonal range — that the ratio
+        // between crest and hollow grows. The argument was sound as far as it
+        // went: a uniform multiply is exactly what shadow does, so wet ground
+        // shaded that way reads as dry ground in shadow.
+        //
+        // The law that satisfied it was `wet = dry² × gain`, and it bought the
+        // widening at a price nobody had measured. Squaring makes the *ratio*
+        // `wet/dry` proportional to how bright a point already is, so the
+        // brightest parts of a surface darken least — and a surface's mean sits
+        // above its own mid stop, so almost none of it darkened at all. A loam
+        // authored to darken by a factor of four and a half rendered at 1.48.
+        //
+        // The premise was the mistake. Wet ground *is* higher contrast than dry,
+        // but the contrast comes from the **specular sheen** — bright crests
+        // against dark everything — and not from the diffuse albedo. There was
+        // no sheen when that test was written, because the sun pointed away from
+        // the camera and no wet surface in this renderer could produce one, so
+        // the albedo was asked to carry a job it cannot do.
+        //
+        // What the albedo must do instead is darken *everywhere* and darken the
+        // crests at least as hard as the hollows. That last part is the piece a
+        // uniform dimming cannot imitate, and it is what this now asserts.
         let p = profile();
         let hollow = (p.albedo(0.0, 0.0)[0], p.albedo(0.0, 1.0)[0]);
+        let mid = (p.albedo(0.5, 0.0)[0], p.albedo(0.5, 1.0)[0]);
         let crest = (p.albedo(1.0, 0.0)[0], p.albedo(1.0, 1.0)[0]);
+
+        for (name, (dry, wet)) in [("hollow", hollow), ("mid", mid), ("crest", crest)] {
+            assert!(wet < dry, "{name} did not darken: {dry} to {wet}");
+        }
+
+        // The crest gives up a larger *fraction* than the hollow. Shadow cannot
+        // do that — it scales every tone by one number.
+        let crest_kept = crest.1 / crest.0;
+        let hollow_kept = hollow.1 / hollow.0;
         assert!(
-            crest.0 - crest.1 > hollow.0 - hollow.1,
-            "the crest should lose more light than the hollow"
+            crest_kept < hollow_kept * 0.9,
+            "the crest kept {crest_kept:.3} of its light and the hollow \
+             {hollow_kept:.3} — too close to a uniform dimming"
         );
+
+        // And the mid lands on what the author wrote, which is the whole reason
+        // `wet_mid` is a colour they can measure rather than a gain factor.
+        let want = p.optics.wet.wet_mid[0];
         assert!(
-            crest.1 / hollow.1 > crest.0 / hollow.0,
-            "the tonal range should widen, not merely shift down"
+            (mid.1 - want).abs() < 1.0e-6,
+            "the mid stop wet to {} rather than the declared {want}",
+            mid.1
         );
     }
 
