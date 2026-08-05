@@ -397,11 +397,18 @@ fn petal_tint(hue_attribute: f32, saturation: f32) -> [f32; 3] {
     let hue = (hue_attribute.clamp(-1.0, 1.0) + 1.0) * 0.5;
     let saturation = saturation.clamp(0.0, 1.0);
     // A fully saturated wheel, then blended toward white by the saturation.
-    let wheel = |offset: f32| {
-        let t = (hue + offset).rem_euclid(1.0) * 6.0;
-        (2.0 - (t - 3.0).abs()).clamp(0.0, 1.0)
-    };
-    let pure = [wheel(0.0), wheel(2.0 / 3.0), wheel(1.0 / 3.0)];
+    //
+    // The standard HSV-to-RGB piecewise form. Written out rather than expressed
+    // as one rotated function, because the rotated version is easy to get wrong
+    // in a way that is hard to see: the first attempt put red's peak at hue
+    // one-half instead of at zero, so a document asking for buttercup yellow got
+    // white and nothing in the pipeline disagreed.
+    let t = hue.rem_euclid(1.0) * 6.0;
+    let pure = [
+        ((t - 3.0).abs() - 1.0).clamp(0.0, 1.0),
+        (2.0 - (t - 2.0).abs()).clamp(0.0, 1.0),
+        (2.0 - (t - 4.0).abs()).clamp(0.0, 1.0),
+    ];
     [
         1.0 + (pure[0] - 1.0) * saturation,
         1.0 + (pure[1] - 1.0) * saturation,
@@ -743,6 +750,43 @@ mod tests {
             let q = yaw_quaternion(turn as f32 * 0.4);
             let length = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
             assert!((length - 1.0).abs() < 1.0e-6, "{q:?}");
+        }
+    }
+
+    #[test]
+    fn the_hue_wheel_puts_each_primary_where_it_belongs() {
+        // The first version of this put red's peak at hue one-half instead of
+        // at zero, so a document asking for buttercup yellow got white and
+        // nothing in the pipeline disagreed with it.
+        let at = |hue: f32| petal_tint(hue * 2.0 - 1.0, 1.0);
+        let red = at(0.0);
+        assert!(red[0] > 0.99 && red[1] < 0.01 && red[2] < 0.01, "{red:?}");
+        let green = at(1.0 / 3.0);
+        assert!(
+            green[1] > 0.99 && green[0] < 0.01 && green[2] < 0.01,
+            "{green:?}"
+        );
+        let blue = at(2.0 / 3.0);
+        assert!(
+            blue[2] > 0.99 && blue[0] < 0.01 && blue[1] < 0.01,
+            "{blue:?}"
+        );
+        // And the hue the shipped buttercups ask for is a warm yellow: red and
+        // green high, blue absent.
+        let buttercup = at(0.145);
+        assert!(
+            buttercup[0] > 0.8 && buttercup[1] > 0.8 && buttercup[2] < 0.1,
+            "{buttercup:?}"
+        );
+    }
+
+    #[test]
+    fn zero_saturation_is_white_whatever_the_hue() {
+        // What a document that says nothing about colour gets, and what a daisy
+        // is. Full saturation would be a poster rather than a meadow.
+        for hue in [0.0f32, 0.2, 0.5, 0.9] {
+            let tint = petal_tint(hue * 2.0 - 1.0, 0.0);
+            assert_eq!(tint, [1.0, 1.0, 1.0], "hue {hue}");
         }
     }
 
