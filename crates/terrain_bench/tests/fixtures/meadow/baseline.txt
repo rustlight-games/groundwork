@@ -3,58 +3,58 @@
 // A row that moves without a phase behind it is a regression.
 
 [meadow_path]
-scene = c98bafceb3172416728a549c7a7b74f3
-candidates = 18249 generated, 713 accepted, 0 unowned
-marks = 5309, placements = 713, prototypes = 0, interactions = 27
+scene = 0d417b5fd5cd9ab86b0127897871a19a
+candidates = 18249 generated, 659 accepted, 0 unowned
+marks = 4935, placements = 659, prototypes = 0, interactions = 27
   field_stones = secondary, 27 marks
   meadow_fine_grass = tuned(fine), 0 marks
-  meadow_flowers = secondary, 4529 marks
+  meadow_flowers = secondary, 4240 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
-  meadow_undergrowth = secondary, 753 marks
+  meadow_undergrowth = secondary, 668 marks
   path_clods = deferred, 0 marks
 
 [narrow_track]
-scene = ba54a606d7196c28b8e75a9dc7054d60
-candidates = 5760 generated, 283 accepted, 0 unowned
-marks = 2193, placements = 283, prototypes = 0, interactions = 3
+scene = 1044f8af35897ede42880e4099dbaa0d
+candidates = 5760 generated, 275 accepted, 0 unowned
+marks = 2137, placements = 275, prototypes = 0, interactions = 3
   field_stones = secondary, 3 marks
   meadow_fine_grass = tuned(fine), 0 marks
-  meadow_flowers = secondary, 1950 marks
+  meadow_flowers = secondary, 1897 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
-  meadow_undergrowth = secondary, 240 marks
+  meadow_undergrowth = secondary, 237 marks
   track_grit_scatter = deferred, 0 marks
 
 [flower_meadow]
-scene = 5e58d89b744e3fd7d7c780ea64f75b29
-candidates = 1710 generated, 50 accepted, 0 unowned
-marks = 392, placements = 50, prototypes = 0, interactions = 1
+scene = d0789aaf5d27d584642dbac7f5683b57
+candidates = 1710 generated, 59 accepted, 0 unowned
+marks = 459, placements = 59, prototypes = 0, interactions = 1
   field_stones = secondary, 1 marks
   meadow_fine_grass = tuned(fine), 0 marks
-  meadow_flowers = secondary, 329 marks
+  meadow_flowers = secondary, 388 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
-  meadow_undergrowth = secondary, 62 marks
+  meadow_undergrowth = secondary, 70 marks
 
 [stony_pasture]
-scene = 6f2b204775581b1221989bf72b51fafa
-candidates = 1451 generated, 45 accepted, 0 unowned
-marks = 176, placements = 45, prototypes = 0, interactions = 14
+scene = 1a68825987f0ae5475004b0135e4ddad
+candidates = 1451 generated, 35 accepted, 0 unowned
+marks = 127, placements = 35, prototypes = 0, interactions = 14
   field_stones = secondary, 14 marks
   meadow_fine_grass = tuned(fine), 0 marks
-  meadow_flowers = secondary, 45 marks
+  meadow_flowers = secondary, 29 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
-  meadow_undergrowth = secondary, 117 marks
+  meadow_undergrowth = secondary, 84 marks
 
 [wet_hollow]
-scene = a9c71d0edb8775b865af00d7c9e07f48
-candidates = 1804 generated, 41 accepted, 0 unowned
-marks = 260, placements = 41, prototypes = 0, interactions = 0
+scene = 72c280f9b4360400a8e1f1138ae88131
+candidates = 1804 generated, 44 accepted, 0 unowned
+marks = 289, placements = 44, prototypes = 0, interactions = 0
   field_stones = secondary, 0 marks
   meadow_fine_grass = tuned(fine), 0 marks
-  meadow_flowers = secondary, 146 marks
+  meadow_flowers = secondary, 175 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
   meadow_undergrowth = secondary, 114 marks

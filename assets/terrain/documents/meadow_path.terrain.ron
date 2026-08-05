@@ -297,14 +297,42 @@
                 // Wider than the grass band, and harder. Something walks here
                 // often enough to keep the ground bare; a flower needs a season
                 // undisturbed and grass needs a fortnight.
+                // Out to the full width of the vegetation suppression, not
+                // just past the dirt.
+                //
+                // Measured rather than guessed: with the band at 3.60 m a
+                // handful of daisies still stood on ground that reads as
+                // completely bare, and the reason was not a broken control — the
+                // vegetation channel there is a quarter, so a quarter of the
+                // flowers is exactly what was asked for. The ground looks bare
+                // because the *grass* is thinned to a quarter and grass is what
+                // covers ground; two flowers per square metre at a quarter is
+                // still two flowers you can see.
+                //
+                // So the band runs to where the grass has genuinely returned.
                 mask: Profile((
                     source: "main_path",
-                    shape: SmoothBand((inner_m: 1.05, outer_m: 3.60)),
+                    shape: SmoothBand((inner_m: 1.05, outer_m: 4.40)),
                 )),
                 operation: Modifier((
                     channel: "flower_abundance",
                     mode: "Multiply",
-                    value: 0.02,
+                    value: 0.01,
+                )),
+            ),
+            (
+                key: "path_undergrowth_suppression",
+                // The same for the rosettes, and for the same reason. A
+                // plantain in a track is a real thing, but it is a thing an
+                // author asks for rather than one that arrives by default.
+                mask: Profile((
+                    source: "main_path",
+                    shape: SmoothBand((inner_m: 1.05, outer_m: 3.90)),
+                )),
+                operation: Modifier((
+                    channel: "undergrowth_abundance",
+                    mode: "Multiply",
+                    value: 0.03,
                 )),
             ),
             (

@@ -560,11 +560,42 @@ pub fn compile_scene(
             // came out was daisies standing on bare compacted earth, which
             // every document then had to suppress by hand.
             //
-            // Multiplying by support squares the falloff through the band and
-            // takes it to exactly zero on pure track, without any document
-            // saying so. A population with no material preference — a stone
-            // does not care what grows around it — is left alone.
-            let support = ground.support_for(&substrate);
+            // ## A threshold, not a proportion
+            //
+            // Multiplying by support squares the falloff, which helped and was
+            // still not the right shape: at a fifth support it still offered a
+            // twenty-fifth of the plants, and a twenty-fifth of a lot is
+            // several daisies standing on a bare track.
+            //
+            // Rooting is not proportional to how much good soil is present. It
+            // is closer to a threshold: below some fraction the ground is a
+            // track and nothing establishes, above some fraction it is soil and
+            // the plant is unimpeded, and the band between is narrow. A
+            // smoothstep says that, has zero derivative at both ends so no ring
+            // appears where it turns on, and reaches exactly zero rather than
+            // asymptotically.
+            //
+            // The edges are the whole of the tuning: a fifth is where a track
+            // stops being a track, and a half is where it is properly soil.
+            let support = smoothstep(0.20, 0.55, ground.support_for(&substrate));
+
+            // ## What the author said about vegetation, applied to vegetation
+            //
+            // The support threshold above answers "can this ground grow
+            // anything", which is a property of the *material*. It is not the
+            // same question as "does anything grow here", and the track showed
+            // why: `path_vegetation_suppression` takes the grass down to four
+            // percent across a band wider than the dirt, so the ground reads as
+            // bare while its material is still mostly meadow soil. Support is
+            // high, the threshold passes, and flowers stood on what every
+            // viewer correctly saw as a track.
+            //
+            // The channel that already says so carries the `VegetationDensity`
+            // role. A flower is vegetation; a stone is not. So every population
+            // that expressed a material preference reads it, and one that did
+            // not is left alone — which is the same test, because a population
+            // with no preference is one that does not care what the ground is.
+            let vegetation = ground.abundance(vec2(candidate.position)).max(0.0);
             options_buffer.clear();
             let mut target = 0.0f64;
             for claimant in &members {
@@ -572,7 +603,7 @@ pub fn compile_scene(
                     * if claimant.affinity.is_empty() {
                         1.0
                     } else {
-                        support
+                        support * vegetation
                     };
                 let abundance = match claimant.abundance_channel {
                     Some(channel) => fields.modifier(channel, candidate.position, 1.0),
@@ -708,6 +739,15 @@ pub fn compile_scene(
         tuned: Arc::new(tuned),
         report,
     })
+}
+
+/// Smooth Hermite step between two edges.
+fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
+    if (high - low).abs() < 1.0e-9 {
+        return if x >= high { 1.0 } else { 0.0 };
+    }
+    let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// A world point as the flat vector the ground evaluator speaks.
