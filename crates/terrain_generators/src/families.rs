@@ -922,7 +922,21 @@ impl TerrainRecipe for MeadowUndergrowth {
     }
 
     fn target_density(&self, parameters: &ParameterObject) -> f64 {
-        read(parameters, "density", 1.4)
+        // Four a square metre, and the number moved up from one and a half once
+        // the rosettes stopped being flat lozenges.
+        //
+        // That is not a coincidence of taste. A flat leaf lying on the soil is
+        // *legible* at any density — it is a green shape on a brown ground, and
+        // one per square metre was already one too many. An arching leaf lives
+        // under the canopy: most of it is behind grass, so at the old density a
+        // viewer found a rosette every few seconds of looking and read the
+        // meadow as grass with an occasional oddity in it.
+        //
+        // Real turf is not like that. Broad-leaved ground plants are common —
+        // plantain, dock and sorrel are what a lawn is half made of — and the
+        // reason a generated sward reads as one species repeated is that they
+        // are missing. Four is where they stop being a garnish.
+        read(parameters, "density", 4.0)
     }
 
     fn maximum_reach_m(&self, parameters: &ParameterObject) -> f64 {
@@ -943,7 +957,7 @@ impl TerrainRecipe for MeadowUndergrowth {
         population: &PopulationKey,
         diagnostics: &mut DiagnosticReport,
     ) {
-        number(parameters, "density", 1.4, population, diagnostics);
+        number(parameters, "density", 4.0, population, diagnostics);
         number(parameters, "leaf_length_m", 0.12, population, diagnostics);
         number(parameters, "leaf_width_m", 0.035, population, diagnostics);
         number(parameters, "crown_radius_m", 0.02, population, diagnostics);

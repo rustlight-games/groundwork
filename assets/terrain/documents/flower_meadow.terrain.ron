@@ -317,7 +317,7 @@
                 material_affinity: [("meadow_soil", 1.0)],
                 abundance_channel: Some("undergrowth_abundance"),
                 parameters: [
-                    ("density", Number(1.1)),
+                    ("density", Number(4.0)),
                     ("leaf_length_m", Number(0.14)),
                     ("leaf_width_m", Number(0.042)),
                     ("crown_radius_m", Number(0.02)),
