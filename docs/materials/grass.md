@@ -30,6 +30,12 @@ dark backs and dark interiors are organised by the mound field.
 
 ## Two width vocabularies, and why they differ
 
+**This section has a shelf life.** Two vocabularies exist because two renderers
+do, and the rasteriser is being removed — see
+[issue #1](https://github.com/rustlight-games/groundwork/issues/1). When it goes,
+only the traced widths remain and `blade_width` stops being a conversion between
+two honest answers and becomes just the mip parameter described below.
+
 The rasteriser's widths are **stroke** widths — how much paint a mark lays down
 — tuned so a 2D mark vocabulary fills the frame. Its broadest marks are six
 centimetres of paint standing for a clump.
