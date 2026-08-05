@@ -363,7 +363,7 @@ pub fn compile_scene(
     // a population that emits nothing — an invisible density coupling between
     // the tuned canopy and the flowers. Version 1 refuses rather than defines a
     // meaning for it.
-    for (name, _) in &domains {
+    for name in domains.keys() {
         let mut secondary: Vec<&str> = Vec::new();
         let mut other: Vec<&str> = Vec::new();
         for claimant in &claimants {

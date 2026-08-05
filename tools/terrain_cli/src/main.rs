@@ -842,17 +842,6 @@ fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
 }
 
-/// Report a command that exists in the design and not yet in the binary.
-///
-/// Non-zero, and that is the whole point of the function. A stub that exits zero
-/// is indistinguishable from a command that worked, and the first script written
-/// against it will be written against a lie.
-fn not_yet(command: &str, subject: &str, reason: &str) -> ExitCode {
-    eprintln!("terrain {command}: not implemented yet ({subject})");
-    eprintln!("  {reason}");
-    ExitCode::from(2)
-}
-
 /// Say what a framing came to, in the terms a reader can check.
 fn report_framing(framing: &ResolvedFraming) {
     let (width, height) = framing.size();

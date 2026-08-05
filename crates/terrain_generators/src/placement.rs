@@ -293,6 +293,12 @@ pub const CANOPY_METRES: f32 = 1.20;
 /// exactly regular enough for the eye to find, and once seen it cannot be
 /// unseen. Spacing the grid to the requested density instead gives an even
 /// scatter with no rhythm of its own.
+#[allow(clippy::too_many_arguments)]
+// Eight, and every one is a distinct decision the pass makes: where it goes,
+// what it reads, which random stream it draws from, which pass it is, how many
+// per square metre, how the ground weights it, and what to build. Bundling them
+// into a struct would move the argument list rather than shorten it, and would
+// put a lifetime on the closure that plants the mark.
 fn scatter(
     marks: &mut Vec<Stroke>,
     bed: &Bed,

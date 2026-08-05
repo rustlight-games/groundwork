@@ -265,7 +265,9 @@ fn compare_windows(scenario: &GroundScenario, seed: u64, spacing: f64) -> Vec<Co
         ),
     ];
 
-    let planes: [(&str, fn(&GroundField) -> &Vec<f32>); 4] = [
+    /// One named plane of a sampled window.
+    type Plane = (&'static str, fn(&GroundField) -> &Vec<f32>);
+    let planes: [Plane; 4] = [
         ("height_m", |f| &f.height_m),
         ("displacement_m", |f| &f.displacement_m),
         ("cavity", |f| &f.cavity),
@@ -277,8 +279,8 @@ fn compare_windows(scenario: &GroundScenario, seed: u64, spacing: f64) -> Vec<Co
         // Where the small window's origin sits in the reference window's
         // lattice. Both are snapped to the same global lattice, so this is an
         // exact integer offset and no interpolation is involved.
-        let du = (grid.origin_index.x - whole.origin_index.x) as i64;
-        let dv = (grid.origin_index.y - whole.origin_index.y) as i64;
+        let du = grid.origin_index.x - whole.origin_index.x;
+        let dv = grid.origin_index.y - whole.origin_index.y;
 
         for (key, plane) in planes {
             let big = plane(&reference);

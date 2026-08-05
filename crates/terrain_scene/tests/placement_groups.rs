@@ -93,7 +93,7 @@ fn index_zero_is_always_a_real_entry() {
     // that only the renderer discovers.
     let scene = builder().build();
     assert_eq!(scene.anchors.len(), 1);
-    assert!(scene.anchors.first().is_some());
+    assert!(!scene.anchors.is_empty());
     // And it is not counted as a placement, because nothing was placed.
     assert_eq!(scene.placement_count(), 0);
 }
