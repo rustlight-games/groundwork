@@ -72,7 +72,7 @@
                 // photograph of a field, because there is no canopy over it to
                 // hide the sheen.
                 wet_mid: (0.0118, 0.0106, 0.0092),
-                roughness_wet: 0.24,
+                roughness_wet: 0.12,
                 saturation_flattening: 0.42,
             ),
             roughness_dry: (0.82, 0.96),

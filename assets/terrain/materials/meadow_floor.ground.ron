@@ -89,7 +89,7 @@
                 // is lighting context baked into a physical response, and it
                 // stops being true the moment a document exposes the soil. A
                 // bare saturated hollow is the glossiest ground there is.
-                roughness_wet: 0.26,
+                roughness_wet: 0.13,
                 // Twice what it was. Saturated cohesive soil slumps: the crumb
                 // loses its edges and the surface reads as poured rather than
                 // crumbled. A third was not visible against the mound field's

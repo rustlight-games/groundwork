@@ -29,7 +29,6 @@ arrives reflected.
 """
 
 import json
-import math
 import os
 import sys
 import time
@@ -1300,19 +1299,32 @@ WET_BITE = 0.35
 # nothing — see the note in `soil_branch`. What lives below it is roughness.
 GRAIN_FLOOR_M = 0.011
 
-# Where the bright patch of sky sits, in degrees, and how tight and bright.
+# Where the reflection light sits, and how bright.
 #
-# The bearing is the camera's azimuth plus half a turn — the direction a
-# horizontal mirror would have to reflect to reach the lens. See `build_world`
-# for why the key light is not moved there instead.
+# The camera's azimuth plus half a turn, at the camera's own elevation: where a
+# horizontal mirror has to reflect for the reflection to reach the lens. See
+# `build_reflection_light` for why this is a lamp rather than a bright patch of
+# sky, and why the key light is not simply moved here.
+# Where the reflection light sits, and how bright.
 #
-# The tightness is the exponent on a cosine, so 40 gives a patch about fifteen
-# degrees across: small enough that its diffuse contribution is negligible and
-# a dry surface cannot find it, wide enough that a wet one does not have to be
-# exactly level to catch it.
-SKY_PATCH_BEARING_DEG = 225.0
-SKY_PATCH_TIGHTNESS = 220.0
-SKY_PATCH_STRENGTH = 0.85
+# The camera's azimuth plus half a turn, at the camera's own elevation: the
+# direction a horizontal mirror has to reflect for the reflection to reach the
+# lens. See `build_reflection_light` for why this is a lamp rather than a bright
+# patch of sky, and why the key light is not simply moved here.
+REFLECTION_BEARING_DEG = 225.0
+REFLECTION_ELEVATION_DEG = 35.264
+# Calibrated against a paired control — the same build with this light removed
+# — rather than chosen. Dry soil still has a four-per-cent Fresnel specular, so
+# a reflection bright enough to be obvious on a wet film is bright enough to
+# lift a dry one: at an energy of 9 dry ground rose eighty per cent against a
+# two-per-cent budget.
+#
+# At this figure dry ground moves **+0.1%** and wet ground gains 90% in the mean
+# with its ninety-ninth percentile up 182% — the highlight rising twice as fast
+# as the surface it sits on, which is what makes it a highlight. A tenth of this
+# keeps the mean inside a tighter band but loses the concentration: the peak
+# stops outrunning the mean and it becomes a lift again.
+REFLECTION_STRENGTH = 0.006
 
 CAVITY_OCCLUSION = 0.80
 
@@ -2181,53 +2193,82 @@ def build_world(sky):
     # It is a fixed-camera art-direction decision and worth naming as one: a
     # real sky does have bright and dark quarters, but this one is placed where
     # it is because of where the camera is.
-    patch_vector = nodes.new("ShaderNodeTexCoord")
-    patch_vector.location = (-1200, -400)
-    separate = nodes.new("ShaderNodeSeparateXYZ")
-    separate.location = (-1000, -400)
-    links.new(patch_vector.outputs["Generated"], separate.inputs["Vector"])
-
-    # Direction on the ground plane, and height above it.
-    bearing = nodes.new("ShaderNodeMath")
-    bearing.operation = "ARCTAN2"
-    bearing.location = (-820, -400)
-    links.new(separate.outputs["Y"], bearing.inputs[0])
-    links.new(separate.outputs["X"], bearing.inputs[1])
-
-    # How near the reflection bearing this direction is, as a cosine so it wraps
-    # without a branch.
-    offset = nodes.new("ShaderNodeMath")
-    offset.operation = "SUBTRACT"
-    offset.location = (-660, -400)
-    links.new(bearing.outputs["Value"], offset.inputs[0])
-    offset.inputs[1].default_value = math.radians(SKY_PATCH_BEARING_DEG)
-
-    aligned = nodes.new("ShaderNodeMath")
-    aligned.operation = "COSINE"
-    aligned.location = (-520, -400)
-    links.new(offset.outputs["Value"], aligned.inputs[0])
-
-    tightness = nodes.new("ShaderNodeMath")
-    tightness.operation = "POWER"
-    tightness.location = (-380, -400)
-    links.new(aligned.outputs["Value"], tightness.inputs[0])
-    tightness.inputs[1].default_value = SKY_PATCH_TIGHTNESS
-    tightness.use_clamp = True
-
-    patch = nodes.new("ShaderNodeMix")
-    patch.data_type = "RGBA"
-    patch.location = (-220, 0)
-    links.new(ramp.outputs["Color"], live(patch.inputs, "A"))
-    live(patch.inputs, "B").default_value = (
-        SKY_PATCH_STRENGTH,
-        SKY_PATCH_STRENGTH,
-        SKY_PATCH_STRENGTH * 0.92,
-        1.0,
-    )
-    links.new(tightness.outputs["Value"], live(patch.inputs, "Factor"))
-
-    links.new(live(patch.outputs, "Result"), background.inputs["Color"])
+    links.new(ramp.outputs["Color"], background.inputs["Color"])
     links.new(background.outputs["Background"], output.inputs["Surface"])
+
+
+def build_reflection_light(sun):
+    """A second sun, for the wet film only, that lights nothing diffusely.
+
+    ## Why the sky patch did not work
+
+    The first attempt at a wet highlight put a bright cap of *sky* at the
+    reflection bearing, on the argument that its solid angle was too small to
+    matter diffusely. Measured against a paired control — the same build with
+    the patch off — it lifted the darkest decile of wet ground by 118% and the
+    brightest by 5%. A monotonic decrease with brightness is the signature of
+    **fill**, not of a highlight: it was filling shadows, which is the opposite
+    of what a sheen does and undoes the contact darkening the occlusion term
+    exists to create.
+
+    That is not a tuning failure. A world contributes to the diffuse integral by
+    construction and there is no way to exclude it. A *lamp* can be excluded,
+    and Blender's `diffuse_factor` does exactly that.
+
+    So this is a sun that only the specular and coat lobes can see, aimed where
+    a horizontal mirror reflects into the camera. It is a production reflection
+    light and physically a fudge; it is here because the key light cannot move
+    without re-tuning the whole plate, and because a wet surface that produces
+    no highlight reads as ground in shadow — which `WetResponse`'s own
+    documentation names as the failure to avoid.
+    """
+    data = bpy.data.lights.new("reflection", type="SUN")
+    data.energy = REFLECTION_STRENGTH
+    # Tight, so it is a highlight rather than a wash. A wet film at a roughness
+    # of a tenth spreads it enough on its own.
+    data.angle = np.radians(2.0)
+    data.color = (1.0, 0.98, 0.94)
+    # The whole point: nothing diffuse. Dry ground cannot see this at all, and
+    # a wet one sees it only through its film.
+    #
+    # Guarded, because these live on `Light` in some Blender versions and have
+    # moved in others — and a light that silently kept its diffuse contribution
+    # would be the fill this replaces, wearing a different name. A build that
+    # cannot exclude it is told rather than left to render something wrong.
+    missing = [
+        name
+        for name in ("diffuse_factor", "specular_factor")
+        if not hasattr(data, name)
+    ]
+    if missing:
+        print(
+            f"[terrain_cycles] this Blender has no {missing}; the reflection "
+            "light would light the ground diffusely, so it is not added"
+        )
+        bpy.data.lights.remove(data)
+        return None
+    data.diffuse_factor = 0.0
+    data.specular_factor = 1.0
+    if hasattr(data, "volume_factor"):
+        data.volume_factor = 0.0
+
+    obj = bpy.data.objects.new("reflection", data)
+    bpy.context.collection.objects.link(obj)
+
+    # The camera's azimuth plus half a turn, at the camera's own elevation.
+    elevation = np.radians(REFLECTION_ELEVATION_DEG)
+    azimuth = np.radians(REFLECTION_BEARING_DEG)
+    direction = Vector(
+        (
+            np.cos(elevation) * np.cos(azimuth),
+            np.cos(elevation) * np.sin(azimuth),
+            np.sin(elevation),
+        )
+    )
+    obj.rotation_mode = "QUATERNION"
+    obj.rotation_quaternion = direction.to_track_quat("Z", "Y")
+    obj.location = direction * 100.0
+    return obj
 
 
 def build_sun(sun):
@@ -2454,6 +2495,7 @@ def render_one(header_path, output):
     clear_scene()
     build_world(spec["sky"])
     build_sun(spec["sun"])
+    build_reflection_light(spec["sun"])
     build_camera(spec["camera"], spec["page"])
     ground = build_ground(scene_dir, spec["ground"])
     blades = build_blades(scene_dir, spec["blades"], spec)

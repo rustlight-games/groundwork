@@ -94,7 +94,7 @@
                 wet_mid: (0.0430, 0.0362, 0.0256),
                 // Glossier than any other ground here. Wet sand reflects the
                 // sky; wet loam does not.
-                roughness_wet: 0.22,
+                roughness_wet: 0.10,
                 // Water fills the space between grains almost completely. The
                 // single largest figure in the shipped set, against loam's
                 // 0.45, and it is why a wet bar looks poured rather than
