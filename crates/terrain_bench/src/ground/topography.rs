@@ -170,7 +170,12 @@ pub struct ScaleMetric {
     /// `sqrt(½ E[(z(x+l) − z(x))²])`, the height-difference function.
     pub height_difference_rms_m: f64,
     pub slope_rms: f64,
-    pub curvature_rms_per_m: f64,
+    /// `None` when the window held no centred triples at this lag.
+    ///
+    /// Distinguished from zero on purpose: a lag long enough that no point has
+    /// a neighbour on both sides has not been *measured*, and reporting zero
+    /// would say the surface is flat at that scale.
+    pub curvature_rms_per_m: Option<f64>,
 }
 
 /// Everything scalar about a height field.
@@ -340,17 +345,16 @@ fn scale_metric(
         return None;
     }
     let mean_first = first / pairs as f64;
-    let mean_second = if triples > 0 {
-        second / triples as f64
-    } else {
-        0.0
-    };
     Some(ScaleMetric {
         direction_rad,
         lag_m: realised,
         height_difference_rms_m: (0.5 * mean_first).sqrt(),
         slope_rms: mean_first.sqrt() / realised,
-        curvature_rms_per_m: mean_second.sqrt() / (realised * realised),
+        // Sixteen centred triples or nothing. A lag long enough that no point
+        // has a neighbour on both sides has not been *measured*, and reporting
+        // zero would say the surface is flat at that scale.
+        curvature_rms_per_m: (triples >= 16)
+            .then(|| (second / triples as f64).sqrt() / (realised * realised)),
     })
 }
 

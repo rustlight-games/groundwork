@@ -149,7 +149,14 @@ pub struct BandEnergy {
     pub declared_wavelength_m: f64,
     pub dominant_wavelength_m: f64,
     pub energy_m2: f64,
-    pub energy_ratio_to_reference: f64,
+    /// This band's share of the field's total energy.
+    ///
+    /// Named for what it is. It was called a ratio to a reference, which it
+    /// never was — and the difference matters: halving an isolated band's
+    /// amplitude leaves this number unchanged, because it halves the numerator
+    /// and the denominator together. `energy_m2` is the absolute quantity, and
+    /// it is what an amplitude regression moves.
+    pub energy_share: f64,
     pub out_of_band_fraction: f64,
 }
 
@@ -176,14 +183,32 @@ pub struct SpectralMetrics {
     /// laboratory is expected, and is the reason the identity above is the
     /// self-test rather than this.
     pub windowed_variance_ratio: f64,
-    /// Energy sitting exactly on the two frequency axes.
+    /// Energy near the two frequency axes, *relative to an isotropic field*.
     ///
-    /// The signature of an axis-aligned lattice leaking through. A rotated,
-    /// isotropic field puts almost nothing here; a value-noise grid sampled
-    /// without a turn puts a cross through the middle of its own spectrum.
+    /// The signature of an axis-aligned lattice leaking through. A raw fraction
+    /// cannot say that on its own, and the first version of this metric was
+    /// wrong for a subtle reason: at small spectral radii there are very few
+    /// integer bins, and most of them lie in the axis strips whatever the field
+    /// is doing. A perfectly isotropic ring at radius three reports most of its
+    /// energy "on the axes" simply because there is nowhere else for it to be.
+    ///
+    /// So this is a *ratio* against what an isotropic field of the same radial
+    /// spectrum would put there. One means "as axis-aligned as isotropy",
+    /// meaningfully above one means a grid is showing through.
     pub axis_grid_energy_fraction: f64,
-    /// Energy above the representable cutoff, which is aliasing by definition.
-    pub alias_energy_fraction: f64,
+    /// Energy above the four-samples-per-wavelength policy cutoff.
+    ///
+    /// Deliberately **not** called aliasing, because it is not. Once a field is
+    /// sampled, aliased energy has already folded into the baseband and cannot
+    /// be told apart from energy that belongs there — a tone at `0.8/Δ` appears
+    /// at `0.2/Δ` and this metric never sees it. Detecting real aliasing needs
+    /// an oversampled reference and a controlled downsample, which is a
+    /// different experiment.
+    ///
+    /// What this does measure is useful anyway: the generator's own policy is
+    /// that nothing lives above `1/(4Δ)`, so energy up there means a band is
+    /// carrying content finer than it declared.
+    pub above_policy_cutoff_fraction: f64,
     /// `(λ1 − λ2)/(λ1 + λ2)` of the spectral orientation tensor.
     pub anisotropy: f64,
     pub principal_wavevector_rad: f64,
@@ -228,13 +253,22 @@ pub fn measure(
     spacing_m: f64,
     bands: &[BandQuery],
 ) -> SpectralMetrics {
-    if !columns.is_power_of_two() || !rows.is_power_of_two() || residual.len() < columns * rows {
+    // Four is the smallest window with a non-degenerate symmetric Hann: at two
+    // the window is all zeros, its mean power is zero, and every normalised
+    // quantity below becomes a NaN that the `> 0.0` guards then report as a
+    // clean pass.
+    if columns < 4
+        || rows < 4
+        || !columns.is_power_of_two()
+        || !rows.is_power_of_two()
+        || residual.len() < columns * rows
+    {
         return SpectralMetrics {
             variance_from_psd_m2: 0.0,
             parseval_relative_error: 0.0,
             windowed_variance_ratio: 0.0,
             axis_grid_energy_fraction: 0.0,
-            alias_energy_fraction: 0.0,
+            above_policy_cutoff_fraction: 0.0,
             anisotropy: 0.0,
             principal_wavevector_rad: 0.0,
             radial: Vec::new(),
@@ -298,7 +332,8 @@ pub fn measure(
 
     let mut total = 0.0;
     let mut axis_energy = 0.0;
-    let mut alias_energy = 0.0;
+    let mut axis_expected = 0.0;
+    let mut above_cutoff = 0.0;
     let mut tensor = [[0.0f64; 2]; 2];
     // The finest wavelength a lattice can carry without aliasing is four
     // samples, matching `SAMPLES_PER_WAVELENGTH` on the generator side.
@@ -336,12 +371,27 @@ pub fn measure(
             // purely axis-aligned field as two-thirds diagonal.
             let near_u = column <= 1 || column >= columns - 1;
             let near_v = row <= 1 || row >= rows - 1;
-            if near_u || near_v {
+            let on_axis = near_u || near_v;
+            if on_axis {
                 axis_energy += energy;
+            }
+            // The isotropic expectation, accumulated alongside: for each bin,
+            // the share of its own radial ring that lies in the axis strips.
+            // Summing that weighted by the bin's energy gives what an isotropic
+            // field with this radial spectrum would have put on the axes.
+            let radius_bins =
+                ((column.min(columns - column)).pow(2) + (row.min(rows - row)).pow(2)) as f64;
+            let radius_bins = radius_bins.sqrt();
+            if radius_bins > 0.0 {
+                // A ring of radius r holds about 2πr integer bins; the strips
+                // are four arms two bins wide, so about 16 of them, capped at
+                // the whole ring.
+                let ring = (std::f64::consts::TAU * radius_bins).max(1.0);
+                axis_expected += energy * (16.0 / ring).min(1.0);
             }
             let radius = (fu * fu + fv * fv).sqrt();
             if radius > representable {
-                alias_energy += energy;
+                above_cutoff += energy;
             }
 
             // Orientation tensor, normalised by |k|² so that the direction of a
@@ -421,13 +471,13 @@ pub fn measure(
         } else {
             0.0
         },
-        axis_grid_energy_fraction: if total > 0.0 {
-            axis_energy / total
+        axis_grid_energy_fraction: if axis_expected > 0.0 {
+            axis_energy / axis_expected
         } else {
             0.0
         },
-        alias_energy_fraction: if total > 0.0 {
-            alias_energy / total
+        above_policy_cutoff_fraction: if total > 0.0 {
+            above_cutoff / total
         } else {
             0.0
         },
@@ -442,7 +492,7 @@ pub fn measure(
                 declared_wavelength_m: band.wavelength_m,
                 dominant_wavelength_m: band_peak[slot].0,
                 energy_m2: band_energy[slot],
-                energy_ratio_to_reference: if total > 0.0 {
+                energy_share: if total > 0.0 {
                     band_energy[slot] / total
                 } else {
                     0.0
@@ -583,9 +633,9 @@ mod tests {
         );
         // Nearly all the energy is in band, because there is only one tone.
         assert!(
-            band.energy_ratio_to_reference > 0.9,
+            band.energy_share > 0.9,
             "in-band fraction {}",
-            band.energy_ratio_to_reference
+            band.energy_share
         );
     }
 

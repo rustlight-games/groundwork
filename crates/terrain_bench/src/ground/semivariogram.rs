@@ -61,10 +61,22 @@ pub fn measure(
     let mut samples = Vec::new();
     let (unit_u, unit_v) = (direction_rad.cos(), direction_rad.sin());
 
+    // Displacements already measured, so a direction that rounds two different
+    // steps onto the same lattice offset reports that lag once.
+    //
+    // At 45° steps one and two both round to `(1, 1)`. Two identical points at
+    // the head of the curve give the nugget extrapolation a zero slope, and it
+    // then reports the first nonzero semivariance *as* the nugget — a
+    // deterministic field inventing microscale variation out of a rounding
+    // collision.
+    let mut seen: std::collections::BTreeSet<(i64, i64)> = std::collections::BTreeSet::new();
     for step in 1..=max_lag_steps {
         let du = (unit_u * step as f64).round() as i64;
         let dv = (unit_v * step as f64).round() as i64;
         if du == 0 && dv == 0 {
+            continue;
+        }
+        if !seen.insert((du, dv)) {
             continue;
         }
         let lag = ((du * du + dv * dv) as f64).sqrt() * spacing_m;
@@ -119,19 +131,28 @@ pub fn measure(
         }
     };
 
-    let practical_range = samples
-        .iter()
-        .find(|s| s.gamma_m2 >= sill * 0.95)
-        .map(|s| s.lag_m)
-        .unwrap_or_else(|| samples.last().map(|s| s.lag_m).unwrap_or(0.0));
-
-    // γ(h) = σ²(1 − ρ(h)), so ρ = 1 − γ/sill and `1/e` is γ = sill(1 − 1/e).
-    let target = sill * (1.0 - std::f64::consts::E.recip());
-    let autocorrelation = samples
-        .iter()
-        .find(|s| s.gamma_m2 >= target)
-        .map(|s| s.lag_m)
-        .unwrap_or(0.0);
+    // Undefined for a field with no variance, and reported as zero rather than
+    // as one lattice spacing. A flat card's `γ ≥ 0.95 × 0` is true at the first
+    // sample, so the naive version reports "this ground decorrelates over
+    // 6 mm" — a decorrelation length for a surface that never correlates or
+    // decorrelates because it is a plane.
+    let (practical_range, autocorrelation) = if sill <= 0.0 {
+        (0.0, 0.0)
+    } else {
+        let range = samples
+            .iter()
+            .find(|s| s.gamma_m2 >= sill * 0.95)
+            .map(|s| s.lag_m)
+            .unwrap_or_else(|| samples.last().map(|s| s.lag_m).unwrap_or(0.0));
+        // γ(h) = σ²(1 − ρ(h)), so ρ = 1 − γ/sill and `1/e` is γ = sill(1 − 1/e).
+        let target = sill * (1.0 - std::f64::consts::E.recip());
+        let correlation = samples
+            .iter()
+            .find(|s| s.gamma_m2 >= target)
+            .map(|s| s.lag_m)
+            .unwrap_or(0.0);
+        (range, correlation)
+    };
 
     Semivariogram {
         direction_rad,

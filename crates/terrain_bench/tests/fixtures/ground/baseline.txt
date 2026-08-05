@@ -12,65 +12,59 @@ spectrum = axis 0.000, alias 0.000, anisotropy 0.000
   [not_applicable] band_dominant_wavelength
 
 [ground_band_coarse_only]
-verdict = needs_review
+verdict = pass
 grid = 161x161 at 0.00625 m
 height = Sq 0.003135 m, Sa 0.002502 m, skew -0.163, kurtosis 2.864
 cavity = pearson -0.995, spearman -0.994
-spectrum = axis 0.360, alias 0.000, anisotropy 0.121
+spectrum = axis 0.718, alias 0.000, anisotropy 0.121
   band0 = declared 0.0500 m, dominant 0.0936 m, 0.256 of energy
-  [needs_review] axis_grid_energy
 
 [ground_band_crumb_only]
-verdict = needs_review
+verdict = pass
 grid = 287x287 at 0.00175 m
 height = Sq 0.001033 m, Sa 0.000838 m, skew +0.003, kurtosis 2.512
 cavity = pearson -0.997, spearman -0.997
-spectrum = axis 0.242, alias 0.000, anisotropy 0.033
+spectrum = axis 0.799, alias 0.000, anisotropy 0.033
   band0 = declared 0.0140 m, dominant 0.0238 m, 0.251 of energy
-  [needs_review] axis_grid_energy
 
 [ground_band_grain_only]
-verdict = needs_review
+verdict = pass
 grid = 501x501 at 0.00050 m
 height = Sq 0.000279 m, Sa 0.000214 m, skew +1.569, kurtosis 5.229
 cavity = pearson -0.992, spearman -1.000
-spectrum = axis 0.226, alias 0.000, anisotropy 0.009
+spectrum = axis 0.780, alias 0.000, anisotropy 0.009
   band0 = declared 0.0040 m, dominant 0.0079 m, 0.287 of energy
-  [needs_review] axis_grid_energy
 
 [ground_band_full_ladder]
-verdict = needs_review
+verdict = pass
 grid = 641x641 at 0.00050 m
 height = Sq 0.003749 m, Sa 0.003053 m, skew -0.034, kurtosis 2.420
 cavity = pearson -0.986, spearman -0.987
-spectrum = axis 0.908, alias 0.000, anisotropy 0.095
+spectrum = axis 0.962, alias 0.000, anisotropy 0.095
   band0 = declared 0.0500 m, dominant 0.0905 m, 0.722 of energy
   band1 = declared 0.0140 m, dominant 0.0251 m, 0.051 of energy
   band2 = declared 0.0040 m, dominant 0.0078 m, 0.005 of energy
-  [needs_review] axis_grid_energy
   [not_applicable] band_dominant_wavelength
 
 [ground_compaction_sweep]
-verdict = needs_review
+verdict = pass
 grid = 641x641 at 0.00050 m
 height = Sq 0.001075 m, Sa 0.000869 m, skew +0.082, kurtosis 2.621
 cavity = pearson -0.989, spearman -0.990
-spectrum = axis 0.791, alias 0.000, anisotropy 0.111
+spectrum = axis 0.922, alias 0.000, anisotropy 0.111
   band0 = declared 0.0500 m, dominant 0.0905 m, 0.707 of energy
   band1 = declared 0.0140 m, dominant 0.0251 m, 0.138 of energy
   band2 = declared 0.0040 m, dominant 0.0078 m, 0.026 of energy
-  [needs_review] axis_grid_energy
   [not_applicable] band_dominant_wavelength
 
 [ground_moisture_sweep]
-verdict = needs_review
+verdict = pass
 grid = 641x641 at 0.00050 m
 height = Sq 0.002062 m, Sa 0.001679 m, skew -0.034, kurtosis 2.420
 cavity = pearson -0.986, spearman -0.987
-spectrum = axis 0.908, alias 0.000, anisotropy 0.095
+spectrum = axis 0.962, alias 0.000, anisotropy 0.095
   band0 = declared 0.0500 m, dominant 0.0905 m, 0.722 of energy
   band1 = declared 0.0140 m, dominant 0.0251 m, 0.051 of energy
   band2 = declared 0.0040 m, dominant 0.0078 m, 0.005 of energy
-  [needs_review] axis_grid_energy
   [not_applicable] band_dominant_wavelength
 

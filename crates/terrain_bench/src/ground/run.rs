@@ -58,7 +58,27 @@ pub fn effective_side_m(scenario: &GroundScenario) -> f64 {
 /// would dominate every roughness measurement, and one material because a
 /// boundary would put two different band sets into the same window.
 fn evaluator(scenario: &GroundScenario, seed: u64, side_m: f64, spacing_m: f64) -> GroundEvaluator {
-    let bounds = terrain_core::coords::WorldRect::centred(WorldPoint::ORIGIN, side_m * 1.5);
+    evaluator_over(
+        scenario,
+        seed,
+        terrain_core::coords::WorldRect::centred(WorldPoint::ORIGIN, side_m),
+        spacing_m,
+    )
+}
+
+/// The same evaluator, built over an explicit rectangle.
+///
+/// Separate so the composability check can build one per window. The halo is a
+/// fixed fraction rather than the whole plate, because a window that generated
+/// the same enormous rectangle whatever it was asked for would agree with its
+/// neighbour for the wrong reason.
+fn evaluator_over(
+    scenario: &GroundScenario,
+    seed: u64,
+    bounds: terrain_core::coords::WorldRect,
+    spacing_m: f64,
+) -> GroundEvaluator {
+    let bounds = bounds.expanded(bounds.width_m().max(bounds.height_m()) * 0.25);
     let fields = Arc::new(TerrainFieldStack::flat(FieldGridSpec::covering(
         bounds, spacing_m,
     )));
@@ -187,52 +207,98 @@ pub fn run(scenario: &GroundScenario, seed: u64) -> GroundBenchmarkReport {
     }
 }
 
-/// Compare a whole window against two half windows that tile it.
+/// Compare two *independently constructed* windows where they overlap.
 ///
-/// The seam gate, and the reason it compares raw samples rather than summaries:
-/// two windows can be equally rough and still disagree at every point, which is
-/// exactly what a window-dependent generator produces.
+/// ## The mistake this is written against
+///
+/// The obvious version of this test builds one evaluator and samples it over
+/// two grids. That proves nothing. An evaluator is a pure function of world
+/// position, so calling it twice at the same coordinate returns the same value
+/// by construction — the test passes even for a generator whose *construction*
+/// depends on the window it was asked for, which is precisely the failure mode
+/// a seam comes from.
+///
+/// So each window gets its own evaluator, built from its own bounds, with its
+/// own field stack sampled over its own rectangle. If anything about the
+/// generator reads the window — a lattice anchored to the corner rather than to
+/// the world, a normaliser taken over the visible area, a noise offset derived
+/// from the origin — the two disagree here and nowhere else.
+///
+/// Raw samples rather than summaries, for the same reason: two windows can be
+/// equally rough and still differ at every point.
 fn compare_windows(scenario: &GroundScenario, seed: u64, spacing: f64) -> Vec<ComparisonMetric> {
     let side = effective_side_m(scenario);
-    let ground = evaluator(scenario, seed, side, spacing);
     let whole = AnalysisGrid::square(WorldPoint::ORIGIN, side, spacing);
-    let half = AnalysisGrid::covering(
+
+    // Three windows, deliberately awkward: the whole square, its left half, and
+    // an off-centre patch that shares a lattice with both but starts at neither
+    // of their corners. The last is what catches an origin-relative offset that
+    // two windows sharing a corner would agree about.
+    let left = AnalysisGrid::covering(
         terrain_core::coords::WorldRect::new(
             whole.position(0, 0),
             whole.position(whole.columns / 2, whole.rows - 1),
         ),
         spacing,
     );
-
-    let whole_field = GroundField::sample(&ground, whole, 1);
-    let half_field = GroundField::sample(&ground, half, 1);
-
-    let planes: [(&str, &Vec<f32>, &Vec<f32>); 4] = [
-        ("height_m", &whole_field.height_m, &half_field.height_m),
-        (
-            "displacement_m",
-            &whole_field.displacement_m,
-            &half_field.displacement_m,
+    let offset = AnalysisGrid::covering(
+        terrain_core::coords::WorldRect::new(
+            whole.position(whole.columns / 4, whole.rows / 4),
+            whole.position(whole.columns * 3 / 4, whole.rows * 3 / 4),
         ),
-        ("cavity", &whole_field.cavity, &half_field.cavity),
-        ("moisture", &whole_field.moisture, &half_field.moisture),
+        spacing,
+    );
+
+    // Each window builds its own evaluator over its own bounds. This is the
+    // whole point — see the docstring.
+    let reference = sample_window(scenario, seed, spacing, whole);
+    let comparisons = [
+        (
+            "left_half",
+            left,
+            sample_window(scenario, seed, spacing, left),
+        ),
+        (
+            "offset_patch",
+            offset,
+            sample_window(scenario, seed, spacing, offset),
+        ),
     ];
 
-    planes
-        .into_iter()
-        .map(|(key, big, small)| {
+    let planes: [(&str, fn(&GroundField) -> &Vec<f32>); 4] = [
+        ("height_m", |f| &f.height_m),
+        ("displacement_m", |f| &f.displacement_m),
+        ("cavity", |f| &f.cavity),
+        ("moisture", |f| &f.moisture),
+    ];
+
+    let mut out = Vec::new();
+    for (name, grid, field) in &comparisons {
+        // Where the small window's origin sits in the reference window's
+        // lattice. Both are snapped to the same global lattice, so this is an
+        // exact integer offset and no interpolation is involved.
+        let du = (grid.origin_index.x - whole.origin_index.x) as i64;
+        let dv = (grid.origin_index.y - whole.origin_index.y) as i64;
+
+        for (key, plane) in planes {
+            let big = plane(&reference);
+            let small = plane(field);
             let mut max_abs = 0.0f64;
             let mut sum_squared = 0.0f64;
             let mut compared = 0usize;
             let mut exact = true;
-            for row in 0..half.rows.min(whole.rows) {
-                for column in 0..half.columns.min(whole.columns) {
-                    // Both grids are snapped to the same global lattice, so the
-                    // same `(column, row)` offset from each origin is the same
-                    // world point — no interpolation, and therefore no
-                    // interpolation error to explain away.
-                    let a = big[row * whole.columns + column];
-                    let b = small[row * half.columns + column];
+            for row in 0..grid.rows {
+                for column in 0..grid.columns {
+                    let (rc, rr) = (column as i64 + du, row as i64 + dv);
+                    if rc < 0 || rr < 0 {
+                        continue;
+                    }
+                    let (rc, rr) = (rc as usize, rr as usize);
+                    if rc >= whole.columns || rr >= whole.rows {
+                        continue;
+                    }
+                    let a = big[rr * whole.columns + rc];
+                    let b = small[row * grid.columns + column];
                     if a.to_bits() != b.to_bits() {
                         exact = false;
                     }
@@ -242,14 +308,28 @@ fn compare_windows(scenario: &GroundScenario, seed: u64, spacing: f64) -> Vec<Co
                     compared += 1;
                 }
             }
-            ComparisonMetric {
-                key: key.to_string(),
+            out.push(ComparisonMetric {
+                key: format!("{name}.{key}"),
                 max_abs,
                 rms: (sum_squared / compared.max(1) as f64).sqrt(),
-                bit_exact: exact,
-            }
-        })
-        .collect()
+                // A window with nothing to compare has not been shown to agree.
+                bit_exact: exact && compared > 0,
+            });
+        }
+    }
+    out
+}
+
+/// One window, with its own evaluator built over its own bounds.
+fn sample_window(
+    scenario: &GroundScenario,
+    seed: u64,
+    spacing: f64,
+    grid: AnalysisGrid,
+) -> GroundField {
+    let bounds = grid.bounds();
+    let ground = evaluator_over(scenario, seed, bounds, spacing);
+    GroundField::sample(&ground, grid, 1)
 }
 
 /// The gates, and the reasoning behind each limit.
@@ -305,12 +385,17 @@ fn gates(
         );
     }
 
-    // Energy above what the lattice can carry is aliasing by definition.
+    // Energy above the generator's own four-samples-per-wavelength policy.
+    //
+    // Not an aliasing check, and deliberately not named one: once a field is
+    // sampled, aliased energy has folded into the baseband and this spectrum
+    // cannot see it. What it does catch is a band carrying content finer than
+    // it declared, which is the hidden-octave failure.
     gates.push(GateResult::at_most(
-        "alias_energy",
-        spectrum.alias_energy_fraction,
+        "energy_above_policy_cutoff",
+        spectrum.above_policy_cutoff_fraction,
         0.02,
-        "energy above the representable cutoff",
+        "energy finer than four samples per wavelength",
     ));
 
     match scenario.bands {
@@ -330,14 +415,28 @@ fn gates(
         }
         _ => {
             // An axis-aligned lattice leaking through is the quilted-square
-            // failure, and no scalar statistic sees it. A field built from
-            // golden-angle-turned noise puts very little energy on the axes.
+            // failure, and no scalar statistic sees it.
+            //
+            // The limit is on a *ratio to isotropy*, not on a raw fraction. The
+            // first version of this gate compared the raw fraction against
+            // 0.15 and read 22–91% across the suite, which looked like a
+            // serious finding and was an artefact: at small spectral radii
+            // there are very few integer bins and most of them are near the
+            // axes, so an isotropic ring reports most of its energy "on the
+            // axes" because there is nowhere else for it to be. Against the
+            // isotropic expectation the same fields read 0.72–0.96 — less
+            // axis-concentrated than isotropy, which is what golden-angle turns
+            // are supposed to achieve.
+            //
+            // Half again over isotropy is the threshold. Still advisory,
+            // because it has not yet been calibrated against a deliberately
+            // quilted control.
             gates.push(
                 GateResult::at_most(
                     "axis_grid_energy",
                     spectrum.axis_grid_energy_fraction,
-                    0.15,
-                    "energy sitting exactly on the frequency axes",
+                    1.5,
+                    "axis-strip energy against what an isotropic field would put there",
                 )
                 .advisory(),
             );
@@ -345,6 +444,27 @@ fn gates(
             if let Some(band) = subject_band(scenario)
                 && let Some(measured) = spectrum.bands.first()
             {
+                // The *absolute* energy against what the band declares.
+                //
+                // The share of total energy cannot do this job: halving an
+                // isolated band's amplitude halves the numerator and the
+                // denominator together and the share does not move. A band's
+                // variance goes as its amplitude squared, and the shape
+                // transform and the noise's own distribution put the realised
+                // figure well below the sinusoidal `A²/2` — so the gate is a
+                // wide bracket around the declared amplitude rather than a
+                // tight one. It exists to catch a band that came out at a
+                // tenth or ten times its amplitude, which is what a lost
+                // state response or a doubled contribution produces.
+                let declared = (band.amplitude_m as f64).powi(2);
+                gates.push(GateResult::within(
+                    "band_energy_against_amplitude",
+                    measured.energy_m2 / declared.max(f64::MIN_POSITIVE),
+                    0.01,
+                    1.0,
+                    "measured band energy over the declared amplitude squared",
+                ));
+
                 // Within a factor of two of the declared wavelength. Loose,
                 // deliberately: a band is a noise field with a characteristic
                 // scale, not a sine, so its spectral centroid sits below its
@@ -380,6 +500,14 @@ fn gates(
     }
 
     // The wet response, from the profile rather than from pixels.
+    // Checked, and now gated. The monotonicity comparison alone lets an
+    // intermediate NaN through: a NaN compares false against everything, so a
+    // sweep that went sane, NaN, sane reports monotone.
+    gates.push(GateResult::holds(
+        "wet_albedo_finite",
+        optics.finite_and_non_negative,
+        "every channel of the moisture sweep is finite and non-negative",
+    ));
     gates.push(GateResult::holds(
         "wet_albedo_monotone",
         optics.moisture_albedo_monotone,

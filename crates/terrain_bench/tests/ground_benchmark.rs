@@ -63,17 +63,14 @@ fn render() -> String {
             out,
             "spectrum = axis {:.3}, alias {:.3}, anisotropy {:.3}",
             report.spectrum.axis_grid_energy_fraction,
-            report.spectrum.alias_energy_fraction,
+            report.spectrum.above_policy_cutoff_fraction,
             report.spectrum.anisotropy
         );
         for band in &report.spectrum.bands {
             let _ = writeln!(
                 out,
                 "  {} = declared {:.4} m, dominant {:.4} m, {:.3} of energy",
-                band.key,
-                band.declared_wavelength_m,
-                band.dominant_wavelength_m,
-                band.energy_ratio_to_reference
+                band.key, band.declared_wavelength_m, band.dominant_wavelength_m, band.energy_share
             );
         }
         for gate in &report.verdict.gates {

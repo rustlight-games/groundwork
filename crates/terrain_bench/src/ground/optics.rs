@@ -174,10 +174,13 @@ pub struct OpticsMetrics {
     /// number moves lightness and leaves the chroma ratios untouched, which
     /// shows here as a large distance and a flat `g_over_r`.
     pub delta_e_dry_to_wet: f64,
-    /// The span of `g_over_r` across the sweep.
+    /// The largest span of *either* channel ratio across the sweep.
     ///
     /// Near zero means a single grey multiplier, which is the failure this
-    /// module exists to reject.
+    /// module exists to reject. Both ratios, not just `g/r`: a soil whose blue
+    /// survives differently from its red while green tracks red exactly is a
+    /// perfectly legitimate non-grey response, and a `g/r`-only detector would
+    /// call it a dimmer.
     pub hue_ratio_span: f64,
 }
 
@@ -222,9 +225,12 @@ pub fn measure(profile: &GroundMaterialProfile, steps: usize) -> OpticsMetrics {
             .zip(b.iter())
             .all(|(x, y)| (x - y).abs() <= 1.0e-4 + y.abs() * 1.0e-3)
     };
-    let ratios: Vec<f64> = sweep.iter().map(|s| s.colour.g_over_r).collect();
-    let span = ratios.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
-        - ratios.iter().cloned().fold(f64::INFINITY, f64::min);
+    let span_of = |pick: fn(&MoistureSample) -> f64| {
+        let values: Vec<f64> = sweep.iter().map(pick).collect();
+        values.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+            - values.iter().cloned().fold(f64::INFINITY, f64::min)
+    };
+    let span = span_of(|s| s.colour.g_over_r).max(span_of(|s| s.colour.b_over_r));
 
     OpticsMetrics {
         profile: profile.key.as_str().to_string(),

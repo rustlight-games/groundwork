@@ -269,7 +269,7 @@ impl GroundBenchmarkReport {
                     "lag_m": finite(m.lag_m),
                     "height_difference_rms_m": finite(m.height_difference_rms_m),
                     "slope_rms": finite(m.slope_rms),
-                    "curvature_rms_per_m": finite(m.curvature_rms_per_m),
+                    "curvature_rms_per_m": m.curvature_rms_per_m.map(finite),
                 })).collect::<Vec<_>>(),
                 "semivariograms": self.semivariograms.iter().map(|v| json!({
                     "direction_rad": finite(v.direction_rad),
@@ -288,7 +288,7 @@ impl GroundBenchmarkReport {
                 "variance_from_psd_m2": finite(self.spectrum.variance_from_psd_m2),
                 "parseval_relative_error": finite(self.spectrum.parseval_relative_error),
                 "axis_grid_energy_fraction": finite(self.spectrum.axis_grid_energy_fraction),
-                "alias_energy_fraction": finite(self.spectrum.alias_energy_fraction),
+                "above_policy_cutoff_fraction": finite(self.spectrum.above_policy_cutoff_fraction),
                 "anisotropy": finite(self.spectrum.anisotropy),
                 "principal_wavevector_rad": finite(self.spectrum.principal_wavevector_rad),
                 "bands": self.spectrum.bands.iter().map(|b| json!({
@@ -296,7 +296,7 @@ impl GroundBenchmarkReport {
                     "declared_wavelength_m": finite(b.declared_wavelength_m),
                     "dominant_wavelength_m": finite(b.dominant_wavelength_m),
                     "energy_m2": finite(b.energy_m2),
-                    "energy_ratio_to_reference": finite(b.energy_ratio_to_reference),
+                    "energy_share": finite(b.energy_share),
                     "out_of_band_fraction": finite(b.out_of_band_fraction),
                 })).collect::<Vec<_>>(),
             },
@@ -370,7 +370,7 @@ impl GroundBenchmarkReport {
             "  spectrum parseval {:.2e}, axis energy {:.1}%, alias {:.1}%, anisotropy {:.3}",
             self.spectrum.parseval_relative_error,
             self.spectrum.axis_grid_energy_fraction * 100.0,
-            self.spectrum.alias_energy_fraction * 100.0,
+            self.spectrum.above_policy_cutoff_fraction * 100.0,
             self.spectrum.anisotropy
         );
         for band in &self.spectrum.bands {
@@ -380,7 +380,7 @@ impl GroundBenchmarkReport {
                 band.key,
                 band.declared_wavelength_m,
                 band.dominant_wavelength_m,
-                band.energy_ratio_to_reference * 100.0
+                band.energy_share * 100.0
             );
         }
         for gate in &self.verdict.gates {
