@@ -1,0 +1,23 @@
+# A dead straight line, for the one document that wants a ruler.
+#
+# Every other spline in this tree wanders on purpose: a track laid out straight
+# reads as a ruled edge however ragged the material boundary on top of it is,
+# because the eye finds the straightness at a scale above anything the
+# transition solver works at.
+#
+# This one is straight for exactly that reason inverted. `wet_and_dry` is a
+# comparison card, not a landscape — it lays six ground states out in parallel
+# stripes so that two of them can be read against each other without either
+# one's shape being part of the difference. A wandering axis would put the
+# stripes at different widths in different parts of the plate, and every
+# comparison across it would be confounded by how much of each state the eye
+# happened to be looking at.
+#
+# It runs south-west to north-east so the stripes cross the isometric diamond
+# corner to corner and every one of them reaches the camera at the same angle.
+
+-40  -40
+-20  -20
+  0    0
+ 20   20
+ 40   40

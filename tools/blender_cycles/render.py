@@ -1224,23 +1224,45 @@ def blade_material(settings):
     return material
 
 
-# How far a full hollow pulls a soil's tone down its own palette.
+# How dark the deepest crevices go, as a fraction of their unoccluded colour.
 #
-# Half, near enough. A photograph of bare earth beside grass spans twenty times
-# between its darkest fifth and its brightest, and no palette that also has to
-# hold a plausible median covers that on pigment alone — the rest is occlusion,
-# which is what this is.
+# ## Why this is a multiplier and not a slide along the palette
 #
-# It was pushed to 0.85 chasing the rest of that range, and the range did not
-# move: the render's dark end is lifted four times by ambient fill and a filmic
-# toe, and no material control reaches that. What the extra did reach was the
-# shape skew's narrow crests, which came back as bright dots on dark. Half puts
-# the shadow in the hollows without turning the crumbs into speckle.
-CAVITY_TONE = 0.55
+# It used to be the latter: the cavity was subtracted from the tone *before* the
+# palette ramp, inside the same Map Range that normalises the two pigment
+# noises. That made it a pigment term, and it was diluted twice over.
+#
+# Diluted once by the normalisation. The window the ramp maps runs from
+# `floor - CAVITY_TONE` to `floor + region + patch`, which for compacted loam is
+# 1.95 wide — so a cavity of one moved the palette position by 0.55/1.95, or
+# **0.28**, not by the half the comment claimed.
+#
+# Diluted again by the cavity's own range. `relief_of` normalises the height
+# against the *declared* band amplitudes while compaction and moisture have
+# already shrunk the height, so on a packed track the cavity spans about
+# 0.26–0.61 rather than 0–1. The two together left a full clod field moving the
+# tone by a tenth of the palette, and the measured result was a track with a
+# dynamic range of 2.3x standing next to grass at 52x — a flat orange midtone
+# behind dark, high-contrast geometry.
+#
+# Raising the old constant could not fix it: at 0.85 the normalised coefficient
+# only reaches 0.38, because the constant appears in the window it is divided by.
+#
+# So occlusion is now what it physically is — a multiplier on outgoing light,
+# applied after the palette rather than inside it. Three quarters means the
+# deepest crevices return a quarter of the light their crests do, which is the
+# contact darkening that carries depth from a fixed high camera.
+CAVITY_OCCLUSION = 0.75
 
-# The same again for the bands too fine to reach the mesh, as a multiplier on
-# the colour rather than a slide along the palette. Grain-scale shadow darkens
-# without changing which soil you are looking at.
+# Where the cavity signal starts and finishes counting.
+#
+# Not 0 and 1. The cavity a real profile produces occupies the middle of its
+# nominal range for the reason above, so a transfer that starts at zero spends
+# most of its slope on values that never occur. These bounds put the full swing
+# across the band that is actually populated.
+CAVITY_LOW = 0.42
+CAVITY_HIGH = 0.62
+
 CAVITY_TONE_FINE = 0.70
 
 
@@ -1375,7 +1397,16 @@ def ground_material(materials=None):
     try:
         links.new(wet_film.outputs["Fac"], live(principled.inputs, "Coat Weight"))
         film_ior = materials[0]["wet"]["film_ior"]
-        live(principled.inputs, "Coat Roughness").default_value = 0.06
+        # Broader than a mirror. 0.06 is a varnish and puts a small round
+        # hotspot on the ground; a water film over earth follows a surface that
+        # is itself slightly irregular, so the response is a smear that traces
+        # the form. That smear is the primary depth cue on wet ground, and the
+        # reason the sun was moved to where one can exist at all — see
+        # `RenderSettings::sun_azimuth`.
+        #
+        # A tighter figure, near 0.03, is reserved for standing water, which
+        # needs its own flat surface rather than a coat on a displaced one.
+        live(principled.inputs, "Coat Roughness").default_value = 0.10
         live(principled.inputs, "Coat IOR").default_value = film_ior
     except KeyError as missing:
         # Reported rather than swallowed. A Blender without a coat layer renders
@@ -1441,14 +1472,6 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     # Without this the shading and the form disagree about where the low ground
     # is, and the surface reads as painted paper however much relief the mesh
     # carries. That was the whole failure of the first soil card.
-    hollow = nodes.new("ShaderNodeMath")
-    hollow.operation = "MULTIPLY_ADD"
-    hollow.location = (-1900, y + 220)
-    links.new(cavity.outputs["Fac"], hollow.inputs[0])
-    hollow.inputs[1].default_value = -CAVITY_TONE
-    links.new(tone2.outputs["Value"], hollow.inputs[2])
-    tone2 = hollow
-
     # Back to 0..1, and the *exact* bounds matter. Both noises run 0..1, so the
     # sum above runs from `floor` to `floor + region + patch`; getting the low
     # bound wrong biases every soil toward one end of its own palette, which
@@ -1463,7 +1486,7 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     floor = 0.5 * (1.0 - optics["region_strength"])
     tone_norm = nodes.new("ShaderNodeMapRange")
     tone_norm.location = (-1850, y + 300)
-    tone_norm.inputs["From Min"].default_value = floor - CAVITY_TONE
+    tone_norm.inputs["From Min"].default_value = floor
     tone_norm.inputs["From Max"].default_value = (
         floor + optics["region_strength"] + optics["patch_strength"]
     )
@@ -1502,9 +1525,27 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     # They are the same physical fact measured two ways, and giving them two
     # authored constants would let a profile claim water fills its pores while
     # its shading says otherwise.
+    # ## One frequency, and a scalar
+    #
+    # Two defects lived in these three lines.
+    #
+    # **Detail was four.** A Blender Noise at detail four is four octaves, so a
+    # grain declared at a millimetre also contained content at eight — squarely
+    # in the intermediate scale this whole vocabulary is arranged to keep empty,
+    # and the exact hidden-octave failure `band_height` was fixed for. A band is
+    # a scale; detail zero is one frequency, which is what a band is.
+    #
+    # **It multiplied by `Color`.** Blender's Noise Texture emits an RGB output
+    # whose three channels are three *different* noise fields, so multiplying a
+    # palette colour by it moves the hue — the opposite of what the comment
+    # above claims and of what grain physically is. `Fac` is the scalar field;
+    # replicated across three channels it darkens without recolouring.
+    #
+    # The fallback wavelength is also gone. When no band reaches the shader
+    # there is no grain to draw, and inventing a two-centimetre one put a
+    # feature at a scale no profile had declared into every such material.
     grain_band = entry["shader_bands"][0] if entry["shader_bands"] else None
-    grain_wavelength = grain_band["wavelength_m"] if grain_band else 0.02
-    grain = noise(grain_wavelength, 4.0, -50)
+    grain_wavelength = grain_band["wavelength_m"] if grain_band else None
     grain_fade = nodes.new("ShaderNodeMapRange")
     grain_fade.location = (-1600, y + 60)
     grain_fade.inputs["To Min"].default_value = optics["grain_strength"]
@@ -1514,13 +1555,22 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     grain_fade.clamp = True
     links.new(moisture.outputs["Fac"], grain_fade.inputs["Value"])
 
-    grained = nodes.new("ShaderNodeMix")
-    grained.data_type = "RGBA"
-    grained.blend_type = "MULTIPLY"
-    grained.location = (-1450, y + 300)
-    links.new(grain_fade.outputs["Result"], live(grained.inputs, "Factor"))
-    links.new(live(palette.outputs, "Color"), live(grained.inputs, "A"))
-    links.new(grain.outputs["Color"], live(grained.inputs, "B"))
+    if grain_wavelength is None:
+        grained = palette
+    else:
+        grain = noise(grain_wavelength, 0.0, -50)
+        grain_grey = nodes.new("ShaderNodeCombineColor")
+        grain_grey.location = (-1560, y + 300)
+        for channel in ("Red", "Green", "Blue"):
+            links.new(grain.outputs["Fac"], grain_grey.inputs[channel])
+
+        grained = nodes.new("ShaderNodeMix")
+        grained.data_type = "RGBA"
+        grained.blend_type = "MULTIPLY"
+        grained.location = (-1450, y + 300)
+        links.new(grain_fade.outputs["Result"], live(grained.inputs, "Factor"))
+        links.new(live(palette.outputs, "Color"), live(grained.inputs, "A"))
+        links.new(grain_grey.outputs["Color"], live(grained.inputs, "B"))
 
     # ## Wet ground is not dry ground turned down
     #
@@ -1546,13 +1596,19 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
         (wet_mid[c] / (mid[c] * mid[c])) if mid[c] > 0.0 else 0.0 for c in range(3)
     )
 
+    grain_out = (
+        live(palette.outputs, "Color")
+        if grained is palette
+        else live(grained.outputs, "Result")
+    )
+
     squared = nodes.new("ShaderNodeMix")
     squared.data_type = "RGBA"
     squared.blend_type = "MULTIPLY"
     squared.location = (-1250, y + 200)
     live(squared.inputs, "Factor").default_value = 1.0
-    links.new(live(grained.outputs, "Result"), live(squared.inputs, "A"))
-    links.new(live(grained.outputs, "Result"), live(squared.inputs, "B"))
+    links.new(grain_out, live(squared.inputs, "A"))
+    links.new(grain_out, live(squared.inputs, "B"))
 
     lifted = nodes.new("ShaderNodeMix")
     lifted.data_type = "RGBA"
@@ -1562,11 +1618,36 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     links.new(live(squared.outputs, "Result"), live(lifted.inputs, "A"))
     live(lifted.inputs, "B").default_value = gain + (1.0,)
 
+    # ## Wetting may not brighten anything
+    #
+    # The square law is fitted through the palette's *mid* stop, so it lands on
+    # the declared wet colour there and nowhere else. Above the mid it stops
+    # darkening: at the sand's high stop of 0.295 the squared-and-lifted value
+    # comes back at 0.173, a fall of only a factor of 1.7 where the mid falls by
+    # 2.7 — and most of a rendered surface sits *above* its own mid, so what a
+    # viewer saw was a wet stripe that looked very nearly like its dry
+    # neighbour. Higher still and the curve turns over and wets a colour
+    # brighter than it started.
+    #
+    # Rust already refuses that (`GroundMaterialProfile::wet_colour` clamps
+    # channel by channel) and the shader did not, so the two halves of the
+    # pipeline disagreed about what wet earth looks like. A minimum against the
+    # dry colour is the same rule, and it is the rule rather than a fudge: water
+    # in the pores removes light paths, so no channel can come back stronger for
+    # having been wetted.
+    darkened = nodes.new("ShaderNodeMix")
+    darkened.data_type = "RGBA"
+    darkened.blend_type = "DARKEN"
+    darkened.location = (-1000, y + 200)
+    live(darkened.inputs, "Factor").default_value = 1.0
+    links.new(live(lifted.outputs, "Result"), live(darkened.inputs, "A"))
+    links.new(grain_out, live(darkened.inputs, "B"))
+
     wetted = nodes.new("ShaderNodeMix")
     wetted.data_type = "RGBA"
     wetted.location = (-950, y + 300)
-    links.new(live(grained.outputs, "Result"), live(wetted.inputs, "A"))
-    links.new(live(lifted.outputs, "Result"), live(wetted.inputs, "B"))
+    links.new(grain_out, live(wetted.inputs, "A"))
+    links.new(live(darkened.outputs, "Result"), live(wetted.inputs, "B"))
     links.new(moisture.outputs["Fac"], live(wetted.inputs, "Factor"))
 
     # Roughness across the dry range, collapsing toward the wet value.
@@ -1587,14 +1668,69 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     micro.inputs[1].default_value = entry.get("micro_roughness", 0.0)
     micro.use_clamp = True
 
+    # ## Roughness collapses before the darkening is noticeable
+    #
+    # `WetResponse`'s own documentation says so and the shader did not do it:
+    # albedo and roughness were both mixed linearly by the same moisture value,
+    # so a surface at half moisture was half dark and half smooth. Real ground
+    # is not — a first shower makes ground *shine* well before it makes it dark,
+    # because a film only a grain thick already replaces the air-soil interface
+    # while the pores underneath are barely wetted.
+    #
+    # A square root front-loads it: at a quarter moisture the roughness is
+    # already halfway to its wet value while the colour has moved a quarter.
+    # That gap is the whole of "damp", and without it there is no damp — only
+    # dry and soaked.
+    rough_response = nodes.new("ShaderNodeMath")
+    rough_response.operation = "POWER"
+    rough_response.location = (-1100, y - 260)
+    links.new(moisture.outputs["Fac"], rough_response.inputs[0])
+    rough_response.inputs[1].default_value = 0.5
+
     wet_rough = nodes.new("ShaderNodeMix")
     wet_rough.data_type = "FLOAT"
     wet_rough.location = (-950, y - 150)
     links.new(micro.outputs["Value"], live(wet_rough.inputs, "A"))
     live(wet_rough.inputs, "B").default_value = entry["wet"]["roughness"]
-    links.new(moisture.outputs["Fac"], live(wet_rough.inputs, "Factor"))
+    links.new(rough_response.outputs["Value"], live(wet_rough.inputs, "Factor"))
 
     height = band_height(nodes, links, coordinate, moisture, compaction, entry, y)
+
+    # ## Mesh-scale occlusion
+    #
+    # A crevice in bare earth reads many times darker than the crest beside it,
+    # and that is **occlusion**, not pigment — which is why the deepest fifth of
+    # a photograph of soil is nearly neutral in hue while its median is a warm
+    # brown. Sky lights a hole; sun lights a crest.
+    #
+    # So it multiplies the colour rather than sliding it along the palette. What
+    # this replaced did the latter, inside the pigment ramp, and arrived at a
+    # tenth of the intended depth — see `CAVITY_OCCLUSION`.
+    #
+    # Applied *after* the wet mix, because a wet hollow is a dark hollow too:
+    # water changes what the surface returns, occlusion changes how much of it
+    # gets out, and multiplying them is the correct composition of the two.
+    occlusion = nodes.new("ShaderNodeMapRange")
+    occlusion.location = (-900, y + 80)
+    occlusion.inputs["From Min"].default_value = CAVITY_LOW
+    occlusion.inputs["From Max"].default_value = CAVITY_HIGH
+    occlusion.inputs["To Min"].default_value = 1.0
+    occlusion.inputs["To Max"].default_value = 1.0 - CAVITY_OCCLUSION
+    occlusion.clamp = True
+    links.new(cavity.outputs["Fac"], occlusion.inputs["Value"])
+
+    occlusion_grey = nodes.new("ShaderNodeCombineColor")
+    occlusion_grey.location = (-760, y + 80)
+    for channel in ("Red", "Green", "Blue"):
+        links.new(occlusion.outputs["Result"], occlusion_grey.inputs[channel])
+
+    occluded = nodes.new("ShaderNodeMix")
+    occluded.data_type = "RGBA"
+    occluded.blend_type = "MULTIPLY"
+    occluded.location = (-620, y + 300)
+    live(occluded.inputs, "Factor").default_value = 1.0
+    links.new(live(wetted.outputs, "Result"), live(occluded.inputs, "A"))
+    links.new(occlusion_grey.outputs["Color"], live(occluded.inputs, "B"))
 
     # The bands the mesh could not carry make hollows too, at grain scale, and
     # they are already summed for the Bump node. Reusing that sum rather than
@@ -1614,7 +1750,7 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
         shaded.blend_type = "MULTIPLY"
         shaded.location = (-820, y + 300)
         live(shaded.inputs, "Factor").default_value = 1.0
-        links.new(live(wetted.outputs, "Result"), live(shaded.inputs, "A"))
+        links.new(live(occluded.outputs, "Result"), live(shaded.inputs, "A"))
 
         lift = nodes.new("ShaderNodeMath")
         lift.operation = "ADD"
@@ -1630,7 +1766,7 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
         links.new(grey.outputs["Color"], live(shaded.inputs, "B"))
         colour_out = live(shaded.outputs, "Result")
     else:
-        colour_out = live(wetted.outputs, "Result")
+        colour_out = live(occluded.outputs, "Result")
 
     return (
         colour_out,

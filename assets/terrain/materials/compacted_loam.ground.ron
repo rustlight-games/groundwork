@@ -28,18 +28,29 @@
 
         optics: (
             dry_palette: (
-                low:  (0.0090, 0.0079, 0.0074),
-                mid:  (0.0545, 0.0343, 0.0222),
-                high: (0.2420, 0.1550, 0.0905),
+                // Cooled and desaturated, and the reason is measured rather
+                // than tasteful. Rendered beside the grass, the old stops came
+                // back at a red-to-blue ratio of 2.93 against the grass's 1.84
+                // — a broad orange midtone behind dark green geometry, which
+                // reads as two different worlds however well the boundary is
+                // blended. These land near 1.95 at the same luminance.
+                low:  (0.0072, 0.0057, 0.0038),
+                mid:  (0.0530, 0.0403, 0.0265),
+                high: (0.2100, 0.1610, 0.1065),
             ),
             // A third of the dry value, and distinctly warmer: wet ground keeps
             // its red far better than its blue. Roughness is the important one
             // though — the sheen arrives before the darkening is noticeable, and
             // darkening alone is what makes wet ground read as ground in shadow.
             wet: (
-                wet_mid: (0.0210, 0.0116, 0.0058),
-                roughness_wet: 0.20,
-                saturation_flattening: 0.45,
+                // Neutral, glossy and slumped — the same three moves the meadow
+                // floor makes, for the reasons written out there. A track that
+                // has been rained on is the wettest-looking ground in any
+                // photograph of a field, because there is no canopy over it to
+                // hide the sheen.
+                wet_mid: (0.0118, 0.0106, 0.0092),
+                roughness_wet: 0.24,
+                saturation_flattening: 0.62,
             ),
             roughness_dry: (0.82, 0.96),
             ior: 1.48,
@@ -77,10 +88,23 @@
         // A packed path does craze when it dries right out, and the ceiling is
         // low enough that a track with any moisture in it does not.
         cracks: Some((
-            polygon_m: 0.13,
-            width_m: 0.004,
+            // ## Seen for the first time on a bone-dry card, and too strong
+            //
+            // No shipped document had ever driven this soil below a moisture of
+            // about 0.35, so the network had never opened past a fraction of
+            // itself. `wet_and_dry` runs its dry stripes at zero, and what came
+            // out was crazy paving: even polygons, even widths, the whole
+            // surface tiled.
+            //
+            // Real desiccation is a *hierarchy* — a few wide primaries with
+            // finer branches dying against them — and it covers a fraction of
+            // the ground rather than all of it. Wider polygons and a much
+            // weaker secondary give that; the depth stays, because the depth is
+            // what catches the light.
+            polygon_m: 0.22,
+            width_m: 0.0032,
             depth_m: 0.012,
-            secondary: 0.35,
+            secondary: 0.14,
             curl_m: 0.0008,
             moisture_ceiling: 0.25,
         )),

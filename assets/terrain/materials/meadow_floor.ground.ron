@@ -30,18 +30,54 @@
 
         optics: (
             dry_palette: (
-                low:  (0.0035, 0.0033, 0.0030),
-                mid:  (0.0240, 0.0205, 0.0110),
-                high: (0.0900, 0.0640, 0.0330),
+                // Grey-green, and that is the composition signal that keeps
+                // this a different soil from the track rather than the same one
+                // in shade. Root-bound organic ground is bound by *plants*: it
+                // is full of humus and fine root, which is grey, and the track
+                // beside it is scoured mineral, which is red. Occlusion scales
+                // every channel by one number and cannot produce a ratio
+                // difference, so a ratio difference is composition and nothing
+                // else — see `soil_decision.rs`, which fails if the gap closes.
+                low:  (0.0092, 0.0086, 0.0072),
+                mid:  (0.0215, 0.0194, 0.0134),
+                high: (0.0930, 0.0846, 0.0600),
             ),
             // A shaded floor is half damp already, so soaking it moves it less
             // than it moves an open track — and it never goes glossy, because a
             // sheen down there would be a specular highlight arriving from a
             // direction the canopy has already blocked.
             wet: (
-                wet_mid: (0.0095, 0.0069, 0.0031),
-                roughness_wet: 0.30,
-                saturation_flattening: 0.35,
+                // ## Wet is a *state*, and it has to be obviously one
+                //
+                // Three numbers carry the whole difference between this soil
+                // dry and the same soil soaked, and each was too timid to be
+                // seen. Measured on the plate, saturated ground came back with
+                // a dynamic range of 2.26x against dry ground's 2.31x — which
+                // is to say the wet response was doing nothing a viewer could
+                // point at.
+                //
+                //   `wet_mid`               where the colour lands
+                //   `roughness_wet`         whether it goes glossy
+                //   `saturation_flattening` whether it slumps
+                //
+                // The colour goes *neutral* rather than richer. A water film
+                // absorbs across the spectrum and kills the internal scattering
+                // that makes dry earth chromatic, so wet soil moves toward
+                // black-brown — and letting the warm sun and the cool sky
+                // supply the colour from there is what makes it read as a
+                // surface rather than as a darker paint.
+                wet_mid: (0.0074, 0.0070, 0.0062),
+                // Glossy. Thirty was a hedge against the canopy — this soil
+                // lives under grass and was authored never to go shiny — which
+                // is lighting context baked into a physical response, and it
+                // stops being true the moment a document exposes the soil. A
+                // bare saturated hollow is the glossiest ground there is.
+                roughness_wet: 0.26,
+                // Twice what it was. Saturated cohesive soil slumps: the crumb
+                // loses its edges and the surface reads as poured rather than
+                // crumbled. A third was not visible against the mound field's
+                // own relief.
+                saturation_flattening: 0.70,
             ),
             roughness_dry: (0.78, 0.98),
             ior: 1.50,

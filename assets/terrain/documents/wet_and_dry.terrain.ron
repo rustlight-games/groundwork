@@ -1,0 +1,399 @@
+// Six ground states in parallel stripes: every shipped soil, dry and wet.
+//
+// ## What this document is for
+//
+// It is a comparison card, not a landscape. Every other document in this tree
+// describes somewhere; this one describes a *question* — does each soil look
+// obviously wet when a document says it is wet, and does the wet one look like
+// the same material rather than like a different one?
+//
+// That question could not be asked before. Wetness was authored in exactly one
+// document, at one strength, under a canopy, on ground nobody could see; and
+// when the wet response was finally measured on a plate it came back with a
+// dynamic range of 2.26 against dry ground's 2.31. The two states of the same
+// soil were, to a viewer, the same picture. Nothing in the pipeline said so,
+// because nothing in the pipeline had ever put them side by side.
+//
+// ## The layout
+//
+// Six bands of distance from a dead straight axis, each a metre wide, dry and
+// wet alternating so that every wet stripe touches its own dry one:
+//
+//   0.0 → 1.0    river sand         dry
+//   1.0 → 2.0    river sand         soaked
+//   2.0 → 3.0    compacted loam     dry
+//   3.0 → 4.0    compacted loam     soaked
+//   4.0 → 5.0    meadow floor       dry
+//   5.0 → 6.0    meadow floor       soaked
+//
+// The pairs are adjacent on purpose. A wet stripe next to a *different* soil's
+// dry stripe compares two things at once and settles neither; next to its own,
+// every difference on the boundary is the water and only the water.
+//
+// ## Why the bands are hard rather than ragged
+//
+// `SmoothBand` with a centimetre of feathering rather than the metre-wide
+// transitions the landscape documents use. A ragged boundary is right where the
+// terrain is the subject and wrong where the *material* is: the transition
+// solver would put a hand's width of mixture between every pair, and the eye
+// would read the mixture instead of the two states either side of it.
+//
+// The one thing this deliberately does not test is the transition itself.
+// `meadow_path` is where that lives.
+//
+// ## And why almost nothing grows
+//
+// A little grass, at the far edge, so the soils can be read against the thing
+// they have to share a world with — a ground that looks superb alone and wrong
+// beside a blade is a ground that has been tuned in isolation. Everywhere else
+// is bare, because a canopy over a comparison card compares canopies.
+(
+    format: "terrain-document",
+    format_version: 2,
+    document: (
+        coordinate_system: "PlanarMetres",
+        root_seed: "7c41e0b9a2d63f58",
+
+        metadata: (
+            name: "Wet and dry",
+            description: "Every shipped soil in both states, in parallel stripes, for reading one against the other.",
+        ),
+
+        materials: [
+            (
+                key: "sand",
+                display_name: "River sand",
+                appearance: "surface.ground",
+                profile: Some("materials/river_sand.ground.ron"),
+                vegetation_affinity: Some(0.04),
+            ),
+            (
+                key: "loam",
+                display_name: "Compacted loam",
+                appearance: "surface.ground",
+                profile: Some("materials/compacted_loam.ground.ron"),
+                vegetation_affinity: Some(0.0),
+            ),
+            (
+                key: "floor",
+                display_name: "Meadow floor",
+                appearance: "surface.ground",
+                profile: Some("materials/meadow_floor.ground.ron"),
+                vegetation_affinity: Some(1.0),
+            ),
+        ],
+
+        modifier_channels: [
+            (
+                key: "vegetation_density",
+                display_name: "Vegetation density",
+                range: (0.0, 1.5),
+                // Bare by default. This is the one document in the tree that
+                // starts with nothing growing, because the subject is the
+                // ground rather than what stands on it.
+                default_value: 0.02,
+                composition: "Max",
+                unit: "Unitless",
+                role: Some("VegetationDensity"),
+            ),
+            (
+                key: "soil_moisture",
+                display_name: "Soil moisture",
+                range: (0.0, 1.0),
+                // Bone dry, and set to one in the wet stripes. Both ends are
+                // authored rather than inherited, which is the whole point of
+                // the card: neither state is a default nobody chose.
+                default_value: 0.0,
+                // `Replace`, not `Max`, and for the same reason the material
+                // stripes use it — see the layer block. A stripe here is an
+                // annulus, and `SmoothBand` describes a *disc*: one at
+                // `inner_m` and below. The only way to cut a ring out of a disc
+                // is to lay a wider disc first and let a narrower one clear its
+                // middle, which `Max` cannot do because nothing lowers a
+                // maximum.
+                composition: "Replace",
+                unit: "Unitless",
+                role: Some("SoilMoisture"),
+            ),
+            (
+                key: "soil_compaction",
+                display_name: "Soil compaction",
+                range: (0.0, 1.0),
+                default_value: 0.10,
+                composition: "Max",
+                unit: "Unitless",
+                role: Some("SoilCompaction"),
+            ),
+            (
+                key: "thatch_density",
+                display_name: "Thatch density",
+                range: (0.0, 2.0),
+                default_value: 0.30,
+                composition: "Max",
+                unit: "Unitless",
+                role: None,
+            ),
+            (
+                key: "flower_abundance",
+                display_name: "Flower abundance",
+                range: (0.0, 4.0),
+                default_value: 0.4,
+                composition: "Multiply",
+                unit: "Unitless",
+                role: None,
+            ),
+            (
+                key: "undergrowth_abundance",
+                display_name: "Undergrowth abundance",
+                range: (0.0, 3.0),
+                default_value: 0.5,
+                composition: "Multiply",
+                unit: "Unitless",
+                role: None,
+            ),
+        ],
+
+        sources: [
+            (
+                key: "everywhere",
+                source: Constant((value: 1.0)),
+            ),
+            (
+                // The ruler. Straight, unlike every other spline here — see the
+                // asset's own note for why this is the one place that is right.
+                key: "axis",
+                source: SplineDistance((
+                    asset: "features/lab_axis.spline.ron",
+                    max_distance_m: 9.0,
+                )),
+            ),
+        ],
+
+        layers: [
+            (
+                key: "base_floor",
+                mask: Source("everywhere"),
+                operation: Material((
+                    material: "floor",
+                    mode: "Replace",
+                    amount: 1.0,
+                )),
+            ),
+
+            // ## The six stripes
+            //
+            // ### Why every band is a disc and the order is outermost first
+            //
+            // `SmoothBand` is one at `inner_m` *and below* — a disc with a
+            // feathered rim, not an annulus. There is no annulus shape in the
+            // vocabulary, and writing one band per stripe as `(2.0, 4.02)`
+            // produces overlapping discs rather than adjacent rings: the first
+            // version of this document did exactly that, and every stripe was
+            // painted over by the one inside it.
+            //
+            // Laying the widest disc first and letting each narrower `Replace`
+            // clear its middle gives true stripes with a two-centimetre feather
+            // at each join. Read from the bottom of this block upward to see
+            // them in the order they appear on the ground.
+            (
+                key: "stripe_loam",
+                mask: Profile((
+                    source: "axis",
+                    shape: SmoothBand((inner_m: 4.00, outer_m: 4.02)),
+                )),
+                operation: Material((
+                    material: "loam",
+                    mode: "Replace",
+                    amount: 1.0,
+                )),
+            ),
+            (
+                key: "stripe_sand",
+                mask: Profile((
+                    source: "axis",
+                    shape: SmoothBand((inner_m: 2.00, outer_m: 2.02)),
+                )),
+                operation: Material((
+                    material: "sand",
+                    mode: "Replace",
+                    amount: 1.0,
+                )),
+            ),
+
+            // ## The wet halves
+            //
+            // Same trick, same order. Each disc sets saturation and the next one
+            // in clears it, so the states alternate outward: wet floor, dry
+            // floor, wet loam, dry loam, wet sand, dry sand.
+            (
+                key: "wet_floor",
+                mask: Profile((
+                    source: "axis",
+                    shape: SmoothBand((inner_m: 6.00, outer_m: 6.02)),
+                )),
+                operation: Modifier((
+                    channel: "soil_moisture",
+                    mode: "Replace",
+                    value: 1.0,
+                )),
+            ),
+            (
+                key: "dry_floor",
+                mask: Profile((
+                    source: "axis",
+                    shape: SmoothBand((inner_m: 5.00, outer_m: 5.02)),
+                )),
+                operation: Modifier((
+                    channel: "soil_moisture",
+                    mode: "Replace",
+                    value: 0.0,
+                )),
+            ),
+            (
+                key: "wet_loam",
+                mask: Profile((
+                    source: "axis",
+                    shape: SmoothBand((inner_m: 4.00, outer_m: 4.02)),
+                )),
+                operation: Modifier((
+                    channel: "soil_moisture",
+                    mode: "Replace",
+                    value: 1.0,
+                )),
+            ),
+            (
+                key: "dry_loam",
+                mask: Profile((
+                    source: "axis",
+                    shape: SmoothBand((inner_m: 3.00, outer_m: 3.02)),
+                )),
+                operation: Modifier((
+                    channel: "soil_moisture",
+                    mode: "Replace",
+                    value: 0.0,
+                )),
+            ),
+            (
+                key: "wet_sand",
+                mask: Profile((
+                    source: "axis",
+                    shape: SmoothBand((inner_m: 2.00, outer_m: 2.02)),
+                )),
+                operation: Modifier((
+                    channel: "soil_moisture",
+                    mode: "Replace",
+                    value: 1.0,
+                )),
+            ),
+            (
+                key: "dry_sand",
+                mask: Profile((
+                    source: "axis",
+                    shape: SmoothBand((inner_m: 1.00, outer_m: 1.02)),
+                )),
+                operation: Modifier((
+                    channel: "soil_moisture",
+                    mode: "Replace",
+                    value: 0.0,
+                )),
+            ),
+
+            (
+                key: "track_is_packed",
+                // The loam pair only. Compaction is not moisture and must not
+                // ride along with it — a soil that only ever appears packed
+                // *and* wet cannot answer which of the two did what.
+                mask: Profile((
+                    source: "axis",
+                    shape: SmoothBand((inner_m: 4.02, outer_m: 4.04)),
+                )),
+                operation: Modifier((
+                    channel: "soil_compaction",
+                    mode: "Max",
+                    value: 0.85,
+                )),
+            ),
+
+            (
+                key: "grass_at_the_edge",
+                // A strip of real meadow past the last stripe, so every soil on
+                // the card can be read against the thing it has to share a
+                // world with.
+                mask: Profile((
+                    source: "axis",
+                    shape: SmoothBand((inner_m: 7.2, outer_m: 7.3)),
+                )),
+                operation: Modifier((
+                    channel: "vegetation_density",
+                    mode: "Max",
+                    value: 1.0,
+                )),
+            ),
+        ],
+
+        populations: [
+            (
+                key: "meadow_tufts",
+                recipe: "population.grass_tuft",
+                seed_stream: "tuft",
+                material_affinity: [("floor", 1.0)],
+                abundance_channel: Some("vegetation_density"),
+                parameters: [
+                    ("density", Number(50.0)),
+                    ("height_m", Number(0.30)),
+                    ("blades", Number(7.0)),
+                ],
+            ),
+            (
+                key: "meadow_fine_grass",
+                recipe: "population.grass_fine",
+                seed_stream: "fine",
+                material_affinity: [("floor", 1.0)],
+                abundance_channel: Some("vegetation_density"),
+                parameters: [
+                    ("density", Number(3800.0)),
+                    ("length_m", Number(0.085)),
+                ],
+            ),
+            (
+                key: "meadow_thatch",
+                recipe: "population.ground_thatch",
+                seed_stream: "thatch",
+                material_affinity: [("floor", 1.0)],
+                abundance_channel: Some("thatch_density"),
+                parameters: [
+                    ("density", Number(395.0)),
+                    ("length_m", Number(0.05)),
+                ],
+            ),
+            (
+                key: "meadow_flowers",
+                recipe: "population.meadow_flowers",
+                seed_stream: "flowers",
+                material_affinity: [("floor", 1.0)],
+                abundance_channel: Some("flower_abundance"),
+                parameters: [
+                    ("density", Number(4.0)),
+                    ("stem_height_m", Number(0.16)),
+                    ("head_radius_m", Number(0.013)),
+                    ("petal_hue", Number(0.16)),
+                    ("petal_hue_spread", Number(0.05)),
+                    ("petal_saturation", Number(0.30)),
+                ],
+            ),
+            (
+                key: "meadow_undergrowth",
+                recipe: "population.meadow_undergrowth",
+                seed_stream: "rosette",
+                material_affinity: [("floor", 1.0)],
+                abundance_channel: Some("undergrowth_abundance"),
+                parameters: [
+                    ("density", Number(4.0)),
+                    ("leaf_length_m", Number(0.13)),
+                    ("leaf_width_m", Number(0.040)),
+                    ("crown_radius_m", Number(0.02)),
+                ],
+            ),
+        ],
+    ),
+)

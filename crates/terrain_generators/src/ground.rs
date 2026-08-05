@@ -619,10 +619,32 @@ impl GroundEvaluator {
     /// keeps rather less than the supply. Neither end escapes what the document
     /// said.
     fn moisture(&self, at: WorldPoint, declared: f32, flow: f32) -> f32 {
-        let supply = match self.roles.water_supply {
-            None => declared,
-            Some(channel) => declared.max(self.fields.modifier(channel, at, 0.0).clamp(0.0, 1.0)),
-        };
+        // ## An authored saturation is not a supply
+        //
+        // These are two different roles and the code used to run both through
+        // the same redistribution. `WaterSupply` is defined as how much water
+        // *arrives* before any is moved, so concentrating and shedding it is
+        // exactly right. `SoilMoisture` is defined as how wet the ground *is*,
+        // which is the answer rather than the input — and shedding a fifth of
+        // it meant a document that declared saturated ground got 0.8 on flat
+        // terrain, with no way to reach 1.0 anywhere, because the shed is only
+        // returned through flow concentration and this world is flat.
+        //
+        // Measured before this: `wet_hollow` authored 1.0 across its hollow and
+        // not one sample in fourteen thousand exceeded 0.8. Every wet response
+        // downstream — the palette lerp, the roughness collapse, the relief
+        // slump, the film — ran at four fifths of the strength the document
+        // asked for, and the ceiling was invisible from any of them.
+        //
+        // So redistribution now applies to a supply and not to a state.
+        if self.roles.water_supply.is_none() {
+            return declared.clamp(0.0, 1.0);
+        }
+        let supply = declared.max(
+            self.fields
+                .modifier(self.roles.water_supply.expect("checked"), at, 0.0)
+                .clamp(0.0, 1.0),
+        );
         // Saturating, so doubling the catchment does not double the wetness.
         let concentration = (flow / (flow + 0.6)).clamp(0.0, 1.0);
         // Centred on the supply: hollows gain a third of the headroom above it,
@@ -999,9 +1021,24 @@ impl GroundEvaluator {
         // A film forms where the ground cannot take any more water, so a
         // saturated surface reads as wet before a puddle is anywhere near deep
         // enough to be geometry. Concave ground holds it; a crown sheds it.
-        let held = (state.moisture - 0.55).max(0.0) / 0.45;
+        //
+        // ## Both ends were short of one
+        //
+        // `held` divided by 0.45 so that full saturation gave one — but the
+        // supply never reached one, because `moisture` shed a fifth of every
+        // authored value. And the curvature term topped out at 0.35 + 0.65 on a
+        // perfect hollow, so *flat* saturated ground reached 0.62 of a film at
+        // best. Multiplied together, the wettest flat ground the pipeline could
+        // produce carried a coat weight of about 0.48, which at a water film's
+        // 2% normal reflectance is a one-percent highlight: present in the
+        // buffer, invisible in the picture.
+        //
+        // The shed is gone (see `moisture`), the threshold is lower, and flat
+        // ground now reaches nine tenths of a film at saturation. A hollow
+        // still gets more, because it genuinely holds more.
+        let held = (state.moisture - 0.42).max(0.0) / 0.58;
         let hollow = smoothstep(-0.35, 0.15, -state.curvature);
-        (held * (0.35 + 0.65 * hollow)).clamp(0.0, 1.0)
+        (held * (0.72 + 0.28 * hollow)).clamp(0.0, 1.0)
     }
 }
 

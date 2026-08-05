@@ -134,6 +134,7 @@ pub const SHIPPED: &[&str] = &[
     "flower_meadow",
     "stony_pasture",
     "wet_hollow",
+    "wet_and_dry",
 ];
 
 /// The documents the shared-candidate compiler can actually build.
@@ -158,6 +159,7 @@ pub const COMPILABLE: &[&str] = &[
     "flower_meadow",
     "stony_pasture",
     "wet_hollow",
+    "wet_and_dry",
 ];
 
 /// The documents that prepare but cannot compile, and why.

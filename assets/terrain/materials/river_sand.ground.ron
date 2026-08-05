@@ -69,9 +69,9 @@
             // narrowness *is* the material: sorted grains are all the same
             // grain, so there is nothing for a broad tonal field to describe.
             dry_palette: (
-                low:  (0.1500, 0.1080, 0.0580),
-                mid:  (0.3300, 0.2480, 0.1320),
-                high: (0.5200, 0.4020, 0.2220),
+                low:  (0.0640, 0.0466, 0.0262),
+                mid:  (0.1420, 0.1075, 0.0600),
+                high: (0.2280, 0.1760, 0.1000),
             ),
             wet: (
                 // A third of the dry mid, which is what a waterline actually
@@ -83,10 +83,15 @@
                 // darker sand — it moves along the hue axis as well, and doing
                 // only the darkening is what makes wet ground read as ground in
                 // shadow.
-                wet_mid: (0.1080, 0.0760, 0.0360),
+                //
+                // Neutral as well as dark, like the other two. Sand keeps a
+                // little more of its warmth than a cohesive soil does — the
+                // grains are large and the film is thin over them — but not
+                // the factor of three the dry palette carries.
+                wet_mid: (0.0430, 0.0362, 0.0256),
                 // Glossier than any other ground here. Wet sand reflects the
                 // sky; wet loam does not.
-                roughness_wet: 0.14,
+                roughness_wet: 0.22,
                 // Water fills the space between grains almost completely. The
                 // single largest figure in the shipped set, against loam's
                 // 0.45, and it is why a wet bar looks poured rather than
@@ -104,7 +109,16 @@
             //
             // The bright end still stays under loam's, because a *crest* of
             // sand is loose grains rather than a packed crust.
-            roughness_dry: (0.42, 0.94),
+            //
+            // ## And the low end was far too low once the sun was aimed
+            //
+            // 0.42 was chosen while the sun pointed away from the camera, where
+            // nothing specular could be seen at any roughness. With the lobe
+            // aimed (see `RenderSettings::sun_azimuth`) the same number turned a
+            // dry bar into a sheet of wet-looking plastic — which is exactly the
+            // reading the wet state has to own. Dry sand catches the odd grain;
+            // it does not shine.
+            roughness_dry: (0.72, 0.97),
             // Quartz.
             ior: 1.544,
 

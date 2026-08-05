@@ -24,13 +24,33 @@ use terrain_generators::ground::GroundEvaluator;
 ///
 /// A grid rather than one point: displacement varies with the relief field, and
 /// a single sample could land where it happens to be near zero.
+/// Where the mesh and the analytic surface are compared.
+///
+/// ## Deliberately never on a lattice vertex
+///
+/// The gap between the two surfaces is a chord-versus-curve gap: it is exactly
+/// zero at every mesh vertex and largest between them. The first version of
+/// this stepped by half a metre, and the mesh lattice is a millimetre — so
+/// every probe landed precisely on a vertex, where the two surfaces agree by
+/// construction, and the guard below measured zero for the right reason and
+/// called it a failure.
+///
+/// It passed for a while anyway, on floating-point luck. That is worse than
+/// failing: a guard that holds by accident stops being a guard the moment the
+/// accident does.
+///
+/// The step is therefore an awkward number with no small common factor with a
+/// millimetre, and it is offset by a fraction of one so no probe can sit on a
+/// vertex however the lattice is later re-spaced.
 fn probes() -> Vec<WorldPoint> {
+    const STEP_M: f64 = 0.417_3;
+    const OFFSET_M: f64 = 0.000_37;
     let mut out = Vec::new();
-    for i in 0..7 {
-        for j in 0..7 {
+    for i in 0..9 {
+        for j in 0..9 {
             out.push(WorldPoint::new(
-                -1.5 + i as f64 * 0.5,
-                -1.5 + j as f64 * 0.5,
+                -1.5 + OFFSET_M + i as f64 * STEP_M,
+                -1.5 + OFFSET_M + j as f64 * STEP_M,
             ));
         }
     }

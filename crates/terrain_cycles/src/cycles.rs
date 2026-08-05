@@ -361,14 +361,51 @@ impl Default for RenderSettings {
             denoise: true,
             device: "GPU".to_string(),
             view_transform: "Standard".to_string(),
-            // The elevation the whole renderer is built around, and the lowest
-            // it supports: below this a blade shades ground more than one and a
-            // half times its own height away and the guard band grows faster
-            // than the page.
-            sun_elevation: 35.0f32.to_radians(),
-            sun_azimuth: 125.0f32.to_radians(),
+            // ## The sun is placed where a wet surface can be seen to be wet
+            //
+            // For a mirror highlight to reach the camera off horizontal ground,
+            // the sun has to sit at the camera's azimuth plus half a turn, at
+            // roughly the camera's own elevation. This camera looks along
+            // `(1, 1, 1)` — azimuth 45°, elevation 35° — so the alignment is
+            // near **225°**.
+            //
+            // The sun used to be at 125°, which is a hundred degrees away from
+            // that. The consequence was not subtle and was invisible in every
+            // dry render: the specular half-vector sat about 47° off vertical
+            // while a wet crest offers slopes of twelve or thirteen, so no wet
+            // surface anywhere in this renderer could produce a highlight. Wet
+            // ground measured a dynamic range of 2.26x against dry ground's
+            // 2.31x — the entire wet response was albedo and roughness with no
+            // specular event at all, which is exactly the reading of "ground in
+            // shadow" that `WetResponse`'s own documentation warns against.
+            //
+            // 240° rather than 225°: exact alignment lights the whole plane
+            // evenly, which is a sheet of glass rather than wet earth. Fifteen
+            // degrees off puts the response on the crests, where it traces the
+            // form.
+            // 200° rather than the 240° the first attempt used. Exact mirror
+            // alignment for this camera is 225°, and anywhere near it turns the
+            // whole plate into one enormous specular blob — a spotlight rather
+            // than a surface, which is worse than the no-sheen-at-all it
+            // replaced. Twenty-five degrees off the mirror puts the response on
+            // the crests, where it traces form instead of flooding the plane.
+            sun_azimuth: 200.0f32.to_radians(),
+            // Lower, which sharpens the same effect: a shallower sun rakes the
+            // relief, lengthens every contact shadow, and brings the half-vector
+            // nearer the vertical that a slumped wet surface presents.
+            //
+            // Twenty-five degrees is the floor this renderer supports. Below it
+            // a blade shades ground more than one and a half times its own
+            // height away and the guard band grows faster than the page.
+            sun_elevation: 30.0f32.to_radians(),
             sun_angle: 3.0f32.to_radians(),
-            sun_strength: 18.0,
+            // Lowered with the azimuth. Eighteen was tuned when the sun pointed
+            // away from the camera and *all* the light reaching it was diffuse;
+            // aiming the lobe adds a specular term on top of the same diffuse
+            // one, and the first plate rendered under the new bearing was
+            // uniformly blown out. This is the same total energy arriving at the
+            // camera, redistributed between the two paths.
+            sun_strength: 14.0,
             sun_colour: [1.0, 0.92, 0.72],
             sky_strength: 1.15,
             sky_colour: [0.30, 0.44, 0.72],
