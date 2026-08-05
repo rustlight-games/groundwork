@@ -60,14 +60,14 @@ marks = 224, placements = 34, prototypes = 0, interactions = 0
   meadow_undergrowth = secondary, 200 marks
 
 [wet_and_dry]
-scene = 122ce7b7dd7a847b244857739c67f8ab
-candidates = 30140 generated, 259 accepted, 0 unowned
-marks = 1944, placements = 259, prototypes = 0, interactions = 0
+scene = c76842ad73dc31b4d3898207035a17be
+candidates = 30140 generated, 203 accepted, 0 unowned
+marks = 1547, placements = 203, prototypes = 0, interactions = 0
   meadow_fine_grass = tuned(fine), 0 marks
-  meadow_flowers = secondary, 1152 marks
+  meadow_flowers = secondary, 939 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
-  meadow_undergrowth = secondary, 792 marks
+  meadow_undergrowth = secondary, 608 marks
 
 [tuned_strokes]
   thatch = 1454

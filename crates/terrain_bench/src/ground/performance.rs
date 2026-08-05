@@ -29,6 +29,9 @@
 //! asked a month later.
 
 use std::collections::BTreeMap;
+// Progress and measurement, which is the sanctioned use — see `clippy.toml`.
+// Nothing in this module reaches a generator or a digest.
+#[allow(clippy::disallowed_types)]
 use std::time::Instant;
 
 /// What one stage of a run cost.
