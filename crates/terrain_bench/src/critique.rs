@@ -315,7 +315,7 @@ impl Band {
 /// grey, black-crushed or incoherent leaves them, and it leaves them long before
 /// anyone notices by eye.
 ///
-/// The centre of each is a real measurement of `docs/art/grass-target.png` over
+/// The centre of each is a real measurement of `docs/references/grass-target.png` over
 /// a 1024² crop, not a number chosen to be achievable:
 ///
 /// | | Measured | Band |

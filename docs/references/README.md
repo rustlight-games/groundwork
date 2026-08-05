@@ -3,9 +3,15 @@
 What the renderer is aiming at, and what each reference is evidence *for*. These
 are targets, not screenshots of this repository.
 
-Stored through Git LFS — see `.gitattributes`. Converted to JPEG at 2048 px on
-the long edge, because a 10 MB PNG of a texture reference costs more than the
-detail it carries at the size anybody looks at it.
+Stored through Git LFS — see `.gitattributes`.
+
+**Look references are JPEG; measurement references are PNG**, and the difference
+is not tidiness. A plate that only has to show what something should look like
+survives compression fine, and a 10 MB PNG of one costs more than the detail it
+carries at the size anybody views it. A plate whose *pixel values are quoted in
+code* cannot be compressed at all — re-measuring a JPEG gives different numbers
+from the ones in the source, and the discrepancy would look like a regression in
+the renderer rather than a change in the reference.
 
 ## `grass_to_mud_transition.jpg`
 
@@ -55,7 +61,29 @@ What it establishes, mostly by *contrast* with the plate above:
   cooler grey-brown, so colour variation is a channel rather than a constant per
   material.
 
-## What the pair implies for the architecture
+## `grass-target.png`
+
+The painted meadow the grass generator is measured against. Lossless, and it has
+to stay that way: `terrain_bench::critique` quotes real measurements of a 1024²
+crop of this file and builds its acceptance bands around them.
+
+```text
+median luminance   0.057
+deep shadow        23.9%
+highlight           6.7%
+```
+
+Those numbers are the reason the bands are where they are. Anyone re-deriving
+them must measure *this* file, uncompressed — see `critique.rs` for what each
+band means and, more usefully, for why passing one is not the same as matching
+the painting.
+
+It was under `docs/art/` and is here now because it is the same kind of thing as
+the plates above: a statement of what the output should look like. Two folders
+for one idea meant new references landed in whichever one the last person
+happened to remember.
+
+## What the mud plates imply for the architecture
 
 Three separable things, and conflating any two of them produces one of the
 failures above:
