@@ -31,9 +31,9 @@ input is that matrix; its target is the Cycles render.
 
 The unit is always nine world tiles — three by three, subject in the middle,
 generated as *one continuous scene*. That never changes. See
-[docs/LOW_TO_HIGH_FIDELITY_SPEC.md](docs/LOW_TO_HIGH_FIDELITY_SPEC.md) for the
-full specification and [docs/references/](docs/references/) for what the output
-is aiming at.
+[docs/LOW_TO_HIGH_FIDELITY_SPEC.md](docs/LOW_TO_HIGH_FIDELITY_SPEC.md) for how
+the whole path works, [docs/todo/](docs/todo/) for what it does not do yet, and
+[docs/references/](docs/references/) for what the output is aiming at.
 
 High fidelity means *the same* terrain rendered more accurately — never a
 second, more detailed terrain.
@@ -158,8 +158,8 @@ Everything under `assets/terrain/` is authored.
 
 ```text
 assets/terrain/
-  documents/    constant_grass, blend_lab, meadow_path
-  features/     main_path.spline.ron
+  documents/    constant_grass, blend_lab, meadow_path, narrow_track
+  features/     main_path.spline.ron, narrow_track.spline.ron
 ```
 
 - **`constant_grass`** — the base case: one material, everywhere.
@@ -170,6 +170,8 @@ assets/terrain/
 - **`meadow_path`** — the one that does. Its path uses `Replace`, so one band
   sweeps pure meadow to bare earth, and six layers read the spline at six
   different widths.
+- **`narrow_track`** — the same idea at a smaller scale, which is what a
+  raggedness setting held constant across two band widths has to demonstrate.
 
 ## Measurement
 
@@ -184,7 +186,8 @@ assets/terrain/
 
 ## Known gaps
 
-Real, currently true, and worth knowing before tripping over them.
+Real, currently true, and worth knowing before tripping over them. Each has a
+page in [docs/todo/](docs/todo/) saying what would make it done.
 
 - **The scene compiler's own content families are not the tuned grass.**
   `terrain_generators::families` emits tufts, undergrowth, thatch, flowers,

@@ -99,6 +99,17 @@ terrain dataset --shards 8 --reference         # 512 spp targets
 Shards are working state. A corpus is regenerated from a seed and a set of
 versions, not archived.
 
+## The shard is still page-shaped
+
+A render is nine world tiles framed as a diamond with a subject in the middle.
+A shard is a square crop at a chosen scale, which was right when a render was a
+rectangle. So the corpus carries no subject mask, and its manifest records
+bounds and a pixel scale rather than a layout, a tile side and a centre tile.
+
+Nothing about the pairing is wrong — one scene, rendered twice, with everything
+pinned. It is the framing that has not caught up. See
+[todo/dataset-tile-shape.md](todo/dataset-tile-shape.md).
+
 ## What is not here
 
 The model. Neural rendering is the eventual consumer of this corpus and belongs

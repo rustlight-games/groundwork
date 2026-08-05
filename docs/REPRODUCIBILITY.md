@@ -23,9 +23,22 @@ tolerance question.
 - Candidate acceptance and material ownership.
 - Stable mark IDs and mark root ownership.
 - Canonical painter order.
-- Scene fingerprints.
+- Field-stack fingerprints, and scene fingerprints.
+
+The field stack earns a place on that list because of how its grid is built: the
+origin is snapped down to a multiple of the spacing, so every grid at a given
+spacing is a window onto one world lattice. Two regions compiled in different
+processes therefore agree *exactly* wherever they overlap, rather than
+interleaving their samples and interpolating a surface that is nobody's.
 
 `terrain_bench::seams::tolerance::MATERIAL_WEIGHT` is zero for this reason.
+
+**Exact means same-platform.** `atan2`, `powf` and the noise are not guaranteed
+bit-identical across architectures, so the contract is that any two runs on one
+machine agree, not that a Mac and a Linux box do. That is enough for what these
+guarantees are for — two pages agreeing along an edge, and a training crop being
+the same ground as the render it came from — and claiming more would be a
+promise the standard library does not make.
 
 ## Quantised
 
@@ -94,13 +107,24 @@ a key or every cache misses for nothing.
 Changing one of these is a decision, and the commit message is where its reason
 lives.
 
-| Constant | Moving it means |
-| --- | --- |
-| `SEED_ALGORITHM_VERSION` | every plant in every world relocates |
-| `DIGEST_ALGORITHM_VERSION` | cached comparisons are invalidated, nothing moves |
-| `GENERATOR_VERSION` | the meadow is meant to be different |
-| `PACKAGE_VERSION` | the Blender side must be updated with it |
-| `CURRENT_FORMAT_VERSION` | a migration step must exist for the previous one |
+| Constant | Where | Moving it means |
+| --- | --- | --- |
+| `SEED_ALGORITHM_VERSION` | `terrain_core::seed` | every plant in every world relocates |
+| `DIGEST_ALGORITHM_VERSION` | `terrain_core::digest` | cached comparisons are invalidated, nothing moves |
+| `CURRENT_FORMAT_VERSION` | `terrain_format::envelope` | a migration step must exist for the previous one |
+| `BUILTIN_SOURCE_VERSION` | `terrain_core::registry` | a built-in source answers differently |
+| `FIELD_STACK_VERSION` | `terrain_scene::field` | the matrix's own layout changed |
+| `DOMAIN_ALGORITHM_VERSION` | `terrain_generators::domain` | every candidate in every domain moves |
+| `TRANSITION_VERSION` | `terrain_generators::transition` | every realised boundary moves |
+| `COMPILER_VERSION` | `terrain_generators::compiler` | how a candidate becomes a mark changed |
+| `GENERATOR_VERSION` | `terrain_bench::fingerprint` | the meadow is meant to be different |
+| `GENERIC_RASTER_VERSION` | `terrain_bake::generic` | the cheap picture changed |
+| `PACKAGE_VERSION` | `terrain_cycles::package` | the Blender side must be updated with it |
 
 The separation between the first two is the point of having both. Improving the
 content digest is maintenance; improving the seed hash is a world rebuild.
+
+The same argument splits the middle of the table. `DOMAIN_ALGORITHM_VERSION`
+moves every candidate in every domain; a recipe's own version moves only what
+that recipe drew. Conflating them would make a grass tweak invalidate the
+stones.

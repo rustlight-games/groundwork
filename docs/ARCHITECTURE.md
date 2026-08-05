@@ -10,17 +10,21 @@ TerrainDocument            semantic, validated, digestible
     │  prepare                                     terrain_core
     ▼
 PreparedTerrain            immutable · Send + Sync · sampling cannot fail
-    │  sample                                      terrain_core
+    │  sample onto an edge-anchored lattice        terrain_scene::derive
+    ▼
+TerrainFieldStack          the low-fidelity matrix: typed planes, declared units
+    │  derive slope, curvature, flow, exposure, boundary frames
+    │  realise the boundary · share candidates · draw one owner
+    │                                              terrain_generators::compiler
     ▼
 TerrainScene               built once, reused by every renderer
     │                                              terrain_scene
     ├────────► Cycles                              terrain_cycles
-    ├────────► cheap rasteriser                    terrain_bake
-    ├────────► debug plates                        terrain_bake
+    ├────────► the cheap tier                      terrain_bake
     └────────► paired corpus                       terrain_dataset
 ```
 
-Four decisions are non-negotiable, and the rest of the design is consequences.
+Five decisions are non-negotiable, and the rest of the design is consequences.
 
 ## 1. Terrain is a continuous function of world position
 
@@ -58,6 +62,17 @@ Material blending, path depression, vegetation suppression and rock abundance
 all affect *procedural decisions* before any RGB exists. See
 [MATERIAL_BLENDING.md](MATERIAL_BLENDING.md).
 
+## 5. What travels between stages is typed planes, not a picture
+
+The low-fidelity representation is the `TerrainFieldStack`: structural,
+substrate, cover, modifier and derived planes, each declaring its unit, range,
+filter and border rule. RGB is a derivative of it.
+
+An image cannot tell the next stage whether a dark patch means lower ground, wet
+dirt, shadow, dense grass or a different substrate, and geometry, ownership and
+lighting each need a different one of those answers. See
+[LOW_TO_HIGH_FIDELITY_SPEC.md](LOW_TO_HIGH_FIDELITY_SPEC.md).
+
 ## Why the document is compiled rather than sampled
 
 A `TerrainDocument` is a good thing to author, edit, diff and validate, and a bad
@@ -92,6 +107,29 @@ category, each duplicating most of the last.
 A mark carries how *old* it is and how *wet* its ground is — intrinsic
 properties — and nothing about the current light. That is what lets a scene
 survive a lighting change without being regenerated.
+
+## Why the matrix is sampled once
+
+`terrain_scene::derive::sample_fields` is the only place in the framework that
+walks `PreparedTerrain` on a lattice. Everything downstream — the candidate
+samplers, both renderers, the corpus — interpolates *that* rather than asking
+the terrain again at its own rate.
+
+Two consumers sampling the same path edge at their own rates disagree about
+where it is by a fraction of a texel. That is invisible in every test and it is
+a seam in the picture.
+
+The same argument applies to the derived fields. Slope, curvature, flow and
+exposure are computed once and carried, because the characteristic failure is
+not that one of them is wrong — it is that two of them are *slightly different*,
+so a population that thinned on a slope and a renderer that shaded it disagree
+about where the slope was.
+
+The one thing deliberately **not** on the grid is the realised material
+boundary. Its lobes are finer than a sensible spacing, and baking them would cap
+the raggedness at the matrix resolution; `terrain_generators::transition` is
+evaluated analytically instead, by both ownership and ground shading, so that
+the two ask the same question.
 
 ## Painter order is semantic and total
 
@@ -135,9 +173,17 @@ cells offer — each with an identity that exists whether or not anything grows
 there — and accepts or rejects each. So an abundance change moves the acceptance
 rate and none of the survivors.
 
-That is also the mechanism that will let two materials share one candidate field
+A domain's capacity is *fixed*, and density is an acceptance threshold against
+it, so raising a density can only add candidates and lowering it can only remove
+them. Sizing the lattice from the density instead would change every candidate's
+cell and rank, and an author nudging a density from 400 to 420 would see every
+blade move.
+
+That is also the mechanism that lets two materials share one candidate field
 instead of each generating a full set and doubling the marks through a
-transition.
+transition. Acceptance settles the count while the material is still undecided;
+a separate categorical draw then decides which recipe gets each accepted
+candidate. See [MATERIAL_BLENDING.md](MATERIAL_BLENDING.md).
 
 ## Crate boundaries
 
@@ -146,19 +192,26 @@ terrain_core        ← nothing but serde
 terrain_format      ← terrain_core
 terrain_scene       ← terrain_core
 terrain_generators  ← terrain_core, terrain_scene
-terrain_bake        ← terrain_core, terrain_generators
-terrain_cycles      ← terrain_core, terrain_generators, terrain_scene
-terrain_dataset     ← terrain_bake, terrain_cycles
-terrain_bench       ← terrain_core, terrain_generators, terrain_scene, terrain_bake
+terrain_bake        ← terrain_core, terrain_scene, terrain_generators
+terrain_cycles      ← terrain_core, terrain_scene, terrain_generators
+terrain_dataset     ← terrain_core, terrain_scene, terrain_generators,
+                      terrain_bake, terrain_cycles
+terrain_bench       ← terrain_core, terrain_scene, terrain_generators, terrain_bake
 terrain_bevy        ← terrain_core, terrain_generators, terrain_bake, bevy
 ```
 
-**Only `terrain_bevy` takes Bevy**, and the compiler enforces it rather than a
-convention. Everything upstream has to be usable from a command line, a test, a
-benchmark and a dataset job.
+`terrain_format` sits beside the rest rather than under them: nothing in the
+pipeline depends on it, because a document that has been prepared no longer
+remembers how it was spelled. Only the CLI links both.
+
+**Only `terrain_bevy` takes Bevy as an engine**, and the compiler enforces it
+rather than a convention. Everything upstream has to be usable from a command
+line, a test, a benchmark and a dataset job. `terrain_cli` names the dependency
+too and uses nothing from it but `bevy::math`, which is `glam` under another
+name.
 
 The boundary that made this possible was splitting the parameter block: the
 generator takes a `GrassParams` — which world, how hard to work, where the sun
-is, what the grass is made of — and the rasteriser's twenty-three shading terms
-stayed with the rasteriser. While placement took the whole block, every module
-that decided where a blade goes depended on the module that drew one.
+is, what the grass is made of — and the rasteriser's shading terms stay in
+`BakeParams` with the rasteriser. While placement took the whole block, every
+module that decided where a blade goes depended on the module that drew one.

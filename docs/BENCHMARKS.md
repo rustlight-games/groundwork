@@ -4,19 +4,24 @@ Substantial work ends with a before/after table, not a description of the
 improvement. A generated world degrades silently: the geometry stays valid and
 the output just looks worse, which no correctness test notices.
 
-## Three instruments, three questions
+## Four instruments, four questions
 
 | Instrument | Question | Cost |
 | --- | --- | --- |
 | `refactor_fingerprints` | Is it the same meadow? | 0.1 s |
 | `cargo bench -p terrain_bake` | What did it cost? | minutes |
 | `grass_snapshot` | Did the picture move? | minutes |
+| `terrain_bench::iso` | Is the subject good, and are the joins invisible? | minutes |
 
 They are not substitutes. The fingerprint has no renderer in the loop, so it
 survives a refactor of the renderer and answers the only question worth asking
 during one. The snapshot compares finished pixels, so a deliberate look change
 moves it entirely and its answer stops meaning anything — what gates a look
-change instead is the structural invariants plus somebody looking.
+change instead is the structural invariants plus somebody looking. `iso` takes
+every number twice, once over the whole layout and once weighted by the subject
+mask, because a nine-tile plate is eight ninths context and a change that
+improved only the middle tile moves a whole-frame metric by a ninth of its real
+size. See [ISOMETRIC_TILES.md](ISOMETRIC_TILES.md).
 
 ## Fixed inputs
 
@@ -40,32 +45,28 @@ because they are typical:
   ground reports a mean and misses the cliff.
 - `view.reference_close` and `view.reference_rts` — far enough apart that an
   optimisation can be nearly free at one and obvious at the other.
+- `blend.grass_dirt` — the only one that puts two substrates against each other,
+  and so the only one where a change to acceptance, ownership or the transition
+  solver has anywhere to show up.
 
 ## Measurement names
 
-Dotted, matching crate structure, and stable — a history keys on them.
+Dotted, and stable — a history keys on them. What exists today:
 
 ```text
-terrain.document.prepare_ms
-terrain.sample.batch_samples_per_second
-terrain.scene.build_ms
-terrain.scene.mark_count
-terrain.scene.memory_bytes
-terrain.preview.render_ms
-terrain.cycles.export_ms
-terrain.cycles.render_ms
-terrain.dataset.shard_ms
-terrain.page.split_equivalence_error
-terrain.seam.material_weight_error
-terrain.seam.elevation_error
-terrain.seam.colour_delta_e
-terrain.blend.material_coverage_error
-terrain.marks.density_relative_error
-terrain.marks.orientation_distribution_error
-terrain.visual.ms_ssim
-terrain.visual.palette_delta_e
-terrain.visual.repetition_autocorrelation_peak
+grass.page_bake                     grass.similarity
+grass.page_bake.per_pixel           grass.similarity.ssim
+grass.view_fill                     grass.similarity.detail_ratio
+grass.view_pages                    grass.similarity.worst_view
+grass.view_pixels
 ```
+
+Every one of them begins with `grass.`, and that is an accurate description of
+what has counters: the suite was built around the tuned generator and the
+painterly rasteriser. The compiler, the field stack and the candidate domains
+have none — `SceneCompileReport` counts candidates generated, accepted and
+unowned per compile and nothing collects them into a baseline. See
+[todo/measurement.md](todo/measurement.md).
 
 Each `Measurement` records its own `higher_is_better`, because the suite mixes
 directions and a comparison that guesses reports the wrong half as regressions.
@@ -84,6 +85,7 @@ A speed improvement obtained by silently generating fewer flowers or shorter
 grass is a **quality-tier change**, not an optimisation. So a table reports:
 
 - mark count
+- candidates generated, accepted and unowned
 - material coverage
 - detail energy
 - palette drift
@@ -91,14 +93,20 @@ grass is a **quality-tier change**, not an optimisation. So a table reports:
 - memory
 - **the weakest seed and the weakest scenario**
 
+The candidate counts are the ones a compiled scene turns on. An optimisation
+that got faster by accepting fewer candidates is a quality-tier change, and
+`SceneCompileReport` is the only thing that would say so.
+
 That last row is the one most often left out and the one most often load-bearing.
 A mean over ten seeds hides the one where the change was catastrophic.
 
 ## The granularity of the bake bench
 
-`benches/bake.rs` times five stages separately — `fields`, `lattice`, `floor`,
-`strokes`, `shade` — plus one mark drawn alone. A single number for "a page
-costs 100 ms" tells an optimiser nothing about which fifth to attack.
+`benches/bake.rs` times six stages separately — `fields`, `lattice`, `allocate`,
+`floor`, `strokes`, `shade` — plus one mark drawn alone, and separate groups for
+page size, detail tier, view, seed spread, field sampling, blur and resample. A
+single number for "a page costs 100 ms" tells an optimiser nothing about which
+sixth to attack.
 
 ## Running it
 

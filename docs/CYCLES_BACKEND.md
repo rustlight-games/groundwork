@@ -51,6 +51,12 @@ That check is not defensive. A buffer one element short is not a crash: it is a
 renderer reading the tail of one mark as the head of the next, for every mark
 after the short one, producing geometry that is subtly and inexplicably wrong.
 
+`terrain_cycles::write_package` produces this from any `TerrainScene`, and it is
+**not** what the active render path uses — `plate::trace` builds its Blender
+scene from the tuned generator's `GrassScene` instead. Moving Cycles onto the
+package is [todo/render-paths.md](todo/render-paths.md), and it must bump
+`PACKAGE_VERSION` in the same commit, because the Blender side reads it.
+
 ## Materials dispatch on appearance keys
 
 A scene names its materials by key — `plant.grass_blade`,
@@ -147,12 +153,20 @@ Blender does not have.
 ## Running it
 
 ```sh
+terrain compile <document> --seed <hex> --centre-tile=0,0 --samples 128 --out plate.png
+
 ./render                                         # nine tiles, 1920x1080, opened
 terrain render --samples 512                     # sliced automatically
 terrain render --seed 5a17e33b0c9d2f14           # that world again, exactly
 terrain render --dry-run                         # the plan, no tracing
 terrain render --manual --size 768 --px-per-metre 192   # a laboratory plate
 ```
+
+`compile` is the production path: it reads an authored document, builds the
+field stack and the shared candidates, and path-traces the result. `render`
+traces the laboratory meadow without a document. They are separate commands
+rather than a flag on one, because a flag that silently chooses between two
+pipelines is how a render comes out of a path nobody meant.
 
 `--trace-tiles-across` overrides the memory split above. It is **not** the world
 tile layout — see [ISOMETRIC_TILES.md](ISOMETRIC_TILES.md) for the four things

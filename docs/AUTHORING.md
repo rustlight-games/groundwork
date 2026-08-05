@@ -39,7 +39,7 @@ which population ran first.
 )
 ```
 
-## One spline, four layers
+## One spline, many layers
 
 The thing the model exists for. `blend_lab.terrain.ron` writes a path once and
 reads it four times — for material, for a depression, for vegetation
@@ -67,6 +67,34 @@ all reading one source.
 The suppression band is *wider* than the material band on purpose. Grass thins
 slightly beyond where the ground stops being grass, and a path whose vegetation
 stops exactly where its dirt starts reads as a decal.
+
+`meadow_path.terrain.ron` takes the same idea further — six layers on one
+spline, at six deliberately non-concentric widths:
+
+```text
+material      1.05 → 2.45   what the ground is
+depression    0.95 → 2.15   the rut, six centimetres down
+compaction    0.80 → 2.30   how packed it is, which drives roughness
+vegetation    1.05 → 3.10   grass thins beyond where the dirt stops
+thatch        2.20 → 3.40   dead matter collects at the fringe
+grit          0.90 → 2.60   loose material on the worn surface
+```
+
+The offsets are the content. `narrow_track.terrain.ron` is the same document at
+a smaller scale, which is what a raggedness setting held constant across two
+band widths is meant to demonstrate.
+
+### `Replace` is what reaches the ends of the range
+
+`blend_lab` adds a dirt score of one on top of a grass score of one, so its path
+centre normalises to an even split and the document **cannot express bare
+ground**. That is a property of the document, not of the sampler, and it is fine
+for a blending laboratory.
+
+`meadow_path` uses `Replace`, which clears the other scores in proportion to its
+own mask, so one band sweeps the whole range: pure dirt inside `inner_m`, pure
+meadow outside `outer_m`, and a genuine mixture between. The middle of a worn
+path is worn, not half-worn.
 
 ## Modifier channels are declared
 
@@ -130,6 +158,18 @@ empty affinity means "anywhere" — a rock does not care what grows around it.
 Two populations sharing a `seed_stream` land in the same places. Legal, and
 warned about, because it is much more often a copy-paste than an intention.
 
+**A population does not declare its candidate domain — the recipe does.**
+`population.grass_tuft` lives in `vegetation.tuft_anchor`,
+`population.dirt_clods` in `surface.grit`, and the first recipe naming a domain
+supplies its capacity. Capacity is a property of the lattice rather than of any
+one occupant, so two populations sharing a domain have to agree about it, and
+letting a document say it twice would let a document disagree with itself.
+
+That sharing is what stops a transition doubling its density: several
+populations reading one lattice, one acceptance decision, and then a draw
+deciding which of them gets each accepted candidate. See
+[MATERIAL_BLENDING.md](MATERIAL_BLENDING.md).
+
 ## What is refused
 
 Unknown fields are errors. A misspelled `transition_width_m` that silently does
@@ -150,6 +190,14 @@ should not — an unread source, two populations sharing a stream. Warnings that
 cannot be silenced become noise, and noise trains people to ignore the errors
 printed beside them, so a warning here names something somebody would actually
 want to fix.
+
+**Raster sources parse and do not compile.** `ScalarRaster`,
+`CategoricalRaster` and `WeightRaster` are read, carried and validated, and then
+refused by `prepare` with a message, because compiling one needs an image
+decoder and `terrain_core` depends on nothing but `serde`. Constants, noise and
+spline distance compile. See [todo/authoring-model.md](todo/authoring-model.md)
+for the other three things a document cannot yet say: read back a field it
+produced, declare a cover, or reference a vegetation profile.
 
 ## Assets
 

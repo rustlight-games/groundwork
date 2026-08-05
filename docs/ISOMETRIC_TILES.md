@@ -233,7 +233,8 @@ to different ground. Append only, like `terrain_bench::SCENARIOS`.
   no raised platforms, no camera pitch. The grass mound field stays, because it
   is surface-scale variation rather than gameplay elevation. Elevation arrives
   once the layout is settled, so that a bad result has one possible cause rather
-  than three.
+  than three. The layout is settled now; see [todo/elevation.md](todo/elevation.md)
+  for what is idle while it stays flat.
 - **Only two things are randomised**: the world seed and the centre tile. Sun,
   camera, output size, fill, tile size and grass style are all fixed, so each
   render is visually new and directly comparable to the last. Independent streams
@@ -250,4 +251,5 @@ to different ground. Append only, like `terrain_bench::SCENARIOS`.
   scale, which was right when a render was a rectangle. Once the neural
   renderer's unit is a tile, the corpus should be tile-shaped and should carry
   the subject mask beside each pair. That is a change to the input/target
-  contract, so it waits on the contract rather than being done in passing.
+  contract, so it waits on the contract rather than being done in passing. See
+  [todo/dataset-tile-shape.md](todo/dataset-tile-shape.md).
