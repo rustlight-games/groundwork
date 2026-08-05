@@ -1145,6 +1145,21 @@ def ground_material(materials=None):
     cavity.location = (-2600, -750)
     cavity.attribute_name = "cavity"
 
+    # How packed the ground is. Reaches the relief bands, so a track loses its
+    # grain before its clods rather than the other way round.
+    compaction = nodes.new("ShaderNodeAttribute")
+    compaction.location = (-2600, -900)
+    compaction.attribute_name = "compaction"
+
+    # A continuous film of water on the surface, as opposed to water *in* the
+    # soil. Two different things: moisture darkens the substrate and collapses
+    # its pore-scale roughness; a film is a dielectric layer sitting on top of
+    # it with its own IOR and its own highlight. Driving one from the other is
+    # how a merely damp crown ends up looking varnished.
+    wet_film = nodes.new("ShaderNodeAttribute")
+    wet_film.location = (-2600, -1050)
+    wet_film.attribute_name = "wet_film"
+
     colour_sum = None
     rough_sum = None
     height_sum = None
@@ -1156,7 +1171,7 @@ def ground_material(materials=None):
         weight.attribute_name = f"w{index}"
 
         colour, roughness, height = soil_branch(
-            nodes, links, coordinate, moisture, cavity, entry, y
+            nodes, links, coordinate, moisture, compaction, cavity, entry, y
         )
 
         colour_sum = accumulate_colour(nodes, links, colour_sum, colour, weight, y)
@@ -1177,11 +1192,37 @@ def ground_material(materials=None):
     links.new(height_sum, bump.inputs["Height"])
     links.new(bump.outputs["Normal"], principled.inputs["Normal"])
 
+    # ## A film is not a puddle, and it is not wet soil either
+    #
+    # `wet_film` is derived — it rises where the ground cannot absorb any more
+    # and the surface is concave — and it drives the Principled *coat*: a thin
+    # dielectric layer over the substrate, with water's IOR and a low roughness
+    # of its own. The substrate underneath keeps its own albedo and its own
+    # roughness, both already darkened and smoothed by `moisture`.
+    #
+    # Splitting them is what makes a hollow read as holding water while the
+    # crown beside it reads as merely damp. Driving the coat from `moisture`
+    # instead would varnish the whole surface the moment any of it was wet.
+    #
+    # Standing water is still a separate future mesh. A film is a millimetre of
+    # specular; a puddle has a bottom you can see.
+    try:
+        links.new(wet_film.outputs["Fac"], live(principled.inputs, "Coat Weight"))
+        film_ior = materials[0]["wet"]["film_ior"]
+        live(principled.inputs, "Coat Roughness").default_value = 0.06
+        live(principled.inputs, "Coat IOR").default_value = film_ior
+    except KeyError as missing:
+        # Reported rather than swallowed. A Blender without a coat layer renders
+        # a scene with no wet highlights anywhere, which looks like a document
+        # that declared no moisture — and that is a much harder thing to work
+        # out from the picture than a line of output.
+        print(f"[terrain_cycles] no Principled coat ({missing}); wet film is not shaded")
+
     links.new(principled.outputs["BSDF"], output.inputs["Surface"])
     return material
 
 
-def soil_branch(nodes, links, coordinate, moisture, cavity, entry, y):
+def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y):
     """One soil's colour, roughness and micro-height.
 
     Returns three sockets. Nothing is connected to the output here — the caller
@@ -1363,7 +1404,7 @@ def soil_branch(nodes, links, coordinate, moisture, cavity, entry, y):
     live(wet_rough.inputs, "B").default_value = entry["wet"]["roughness"]
     links.new(moisture.outputs["Fac"], live(wet_rough.inputs, "Factor"))
 
-    height = band_height(nodes, links, coordinate, moisture, entry, y)
+    height = band_height(nodes, links, coordinate, moisture, compaction, entry, y)
 
     # The bands the mesh could not carry make hollows too, at grain scale, and
     # they are already summed for the Bump node. Reusing that sum rather than
@@ -1408,7 +1449,7 @@ def soil_branch(nodes, links, coordinate, moisture, cavity, entry, y):
     )
 
 
-def band_height(nodes, links, coordinate, moisture, entry, y):
+def band_height(nodes, links, coordinate, moisture, compaction, entry, y):
     """The relief bands the mesh could not carry, summed, in metres.
 
     Which bands these are was decided in Rust by the lattice spacing, not here
@@ -1416,45 +1457,81 @@ def band_height(nodes, links, coordinate, moisture, entry, y):
     band below that is this. Each band is drawn exactly once by whichever half
     can actually draw it — the alternative, a fixed rule about which scales are
     "bump", double-counts a band whenever the sampling rate changes.
+
+    ## Matching what Rust does, term for term
+
+    This graph used to be a *different surface* from the mesh beside it. Three
+    concrete divergences, all now closed:
+
+    - **Detail was two.** A Blender Noise at detail two is two octaves, so a
+      five-centimetre band contained content at two and a half — the exact
+      hidden-octave failure the Rust basis was fixed for. Detail zero is one
+      frequency, which is what a band is.
+    - **The shape was a fold.** `1 − 2|c|` is not monotone, so its crests trace
+      the *mid-level contours* of the underlying noise rather than its peaks.
+      A field of that reads as worms. Rust replaced it with a power skew and so
+      does this.
+    - **Compaction reached the mesh and not the shader.** A packed track lost
+      its clods and kept its grain, which is backwards: pressure flattens the
+      fine structure first because there is less of it to resist.
+
+    What still differs is the *phase*: Blender Noise and Rust value noise are
+    different functions, so a band moving between tiers still moves its
+    features even though it no longer changes its morphology or its response.
+    Closing that needs the Rust-authored bump plane; the plan records which
+    bands are affected.
     """
     total = None
     for slot, band in enumerate(entry["shader_bands"]):
         if band["amplitude_m"] <= 0.0:
             continue
+        row = y - 600 - slot * 200
         noise = nodes.new("ShaderNodeTexNoise")
-        noise.location = (-2400, y - 600 - slot * 200)
+        noise.location = (-2400, row)
         noise.inputs["Scale"].default_value = 1.0 / max(band["wavelength_m"], 1e-5)
-        noise.inputs["Detail"].default_value = 2.0
+        # One frequency. See the docstring.
+        noise.inputs["Detail"].default_value = 0.0
         noise.inputs["Roughness"].default_value = 0.5
         links.new(coordinate.outputs["Object"], noise.inputs["Vector"])
 
-        centred = nodes.new("ShaderNodeMath")
-        centred.operation = "SUBTRACT"
-        centred.location = (-2200, y - 600 - slot * 200)
-        links.new(noise.outputs["Fac"], centred.inputs[0])
-        centred.inputs[1].default_value = 0.5
+        shaped = aggregate_shape(nodes, links, noise.outputs["Fac"], band["ridge"], row)
 
-        shaped = ridge(nodes, links, centred, band["ridge"], y - 600 - slot * 200)
+        # State. Both responses multiply, and both are the profile's own
+        # numbers rather than anything chosen here.
+        packed = nodes.new("ShaderNodeMath")
+        packed.operation = "MULTIPLY_ADD"
+        packed.location = (-1950, row - 60)
+        links.new(compaction.outputs["Fac"], packed.inputs[0])
+        packed.inputs[1].default_value = -band["compaction_response"]
+        packed.inputs[2].default_value = 1.0
+        packed.use_clamp = True
 
         # Water fills the smallest cavities first, so a wet surface loses its
         # grain long before it loses its clods.
-        damped = nodes.new("ShaderNodeMix")
-        damped.data_type = "FLOAT"
-        damped.location = (-1800, y - 600 - slot * 200)
-        links.new(shaped, live(damped.inputs, "A"))
-        live(damped.inputs, "B").default_value = 0.0
-        flatten = entry["wet"]["flattening"]
-        soak = nodes.new("ShaderNodeMath")
-        soak.operation = "MULTIPLY"
-        soak.location = (-1950, y - 700 - slot * 200)
-        links.new(moisture.outputs["Fac"], soak.inputs[0])
-        soak.inputs[1].default_value = flatten
-        links.new(soak.outputs["Value"], live(damped.inputs, "Factor"))
+        soaked = nodes.new("ShaderNodeMath")
+        soaked.operation = "MULTIPLY_ADD"
+        soaked.location = (-1950, row - 130)
+        links.new(moisture.outputs["Fac"], soaked.inputs[0])
+        soaked.inputs[1].default_value = -entry["wet"]["flattening"]
+        soaked.inputs[2].default_value = 1.0
+        soaked.use_clamp = True
+
+        state = nodes.new("ShaderNodeMath")
+        state.operation = "MULTIPLY"
+        state.location = (-1800, row - 95)
+        links.new(packed.outputs["Value"], state.inputs[0])
+        links.new(soaked.outputs["Value"], state.inputs[1])
+
+        damped = nodes.new("ShaderNodeMath")
+        damped.operation = "MULTIPLY"
+        damped.location = (-1700, row)
+        links.new(shaped, damped.inputs[0])
+        links.new(state.outputs["Value"], damped.inputs[1])
 
         scaled = nodes.new("ShaderNodeMath")
         scaled.operation = "MULTIPLY"
-        scaled.location = (-1650, y - 600 - slot * 200)
-        links.new(live(damped.outputs, "Result"), scaled.inputs[0])
+        scaled.location = (-1650, row)
+        links.new(damped.outputs["Value"], scaled.inputs[0])
         scaled.inputs[1].default_value = band["amplitude_m"]
 
         if total is None:
@@ -1462,7 +1539,7 @@ def band_height(nodes, links, coordinate, moisture, entry, y):
         else:
             add = nodes.new("ShaderNodeMath")
             add.operation = "ADD"
-            add.location = (-1500, y - 600 - slot * 200)
+            add.location = (-1500, row)
             links.new(total, add.inputs[0])
             links.new(scaled.outputs["Value"], add.inputs[1])
             total = add.outputs["Value"]
@@ -1473,6 +1550,48 @@ def band_height(nodes, links, coordinate, moisture, entry, y):
         zero.outputs[0].default_value = 0.0
         total = zero.outputs[0]
     return total
+
+
+def aggregate_shape(nodes, links, raw, ridge_amount, y):
+    """Skew a `0..1` band toward its crests, monotonically.
+
+    The same transform as `terrain_generators::ground::shape`:
+
+    ```text
+    gamma = 1 + 2·ridge
+    u^gamma - 1/(gamma + 1)
+    ```
+
+    Monotone, which is the entire point. The fold this replaced —
+    `1 − 2|c|` — maps two different inputs to one output, so its crests follow
+    the *mid-level contours* of the noise underneath rather than its peaks. Mid
+    contours of a smooth random field are long, thin and closed, which is why a
+    plate of it read unmistakably as worms.
+
+    The constant subtraction is the mean of `u^gamma` over a uniform `u`, so the
+    band stays zero-mean and the profile's amplitude means what it says.
+    """
+    if ridge_amount <= 0.0:
+        centred = nodes.new("ShaderNodeMath")
+        centred.operation = "SUBTRACT"
+        centred.location = (-2200, y)
+        links.new(raw, centred.inputs[0])
+        centred.inputs[1].default_value = 0.5
+        return centred.outputs["Value"]
+
+    gamma = 1.0 + 2.0 * ridge_amount
+    power = nodes.new("ShaderNodeMath")
+    power.operation = "POWER"
+    power.location = (-2200, y)
+    links.new(raw, power.inputs[0])
+    power.inputs[1].default_value = gamma
+
+    centred = nodes.new("ShaderNodeMath")
+    centred.operation = "SUBTRACT"
+    centred.location = (-2050, y)
+    links.new(power.outputs["Value"], centred.inputs[0])
+    centred.inputs[1].default_value = 1.0 / (gamma + 1.0)
+    return centred.outputs["Value"]
 
 
 def ridge(nodes, links, centred, amount, y):

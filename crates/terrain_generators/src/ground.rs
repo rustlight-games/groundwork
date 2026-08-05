@@ -127,6 +127,13 @@ pub struct BandSplit {
     pub geometry: Vec<(String, Vec<ReliefBand>)>,
     /// Bands left to the shader, per profile key.
     pub shader: Vec<(String, Vec<ReliefBand>)>,
+    /// Every band, per profile key, in declaration order.
+    ///
+    /// Kept so a caller can ask "does the mesh carry band three" and get an
+    /// answer in terms of the *declaration* index — which is what the band basis
+    /// is addressed by, and therefore the only index that means anything
+    /// outside this struct.
+    pub all: Vec<(String, Vec<ReliefBand>)>,
 }
 
 impl BandSplit {
@@ -138,6 +145,7 @@ impl BandSplit {
         let cut = spacing_m * SAMPLES_PER_WAVELENGTH;
         let mut geometry = Vec::new();
         let mut shader = Vec::new();
+        let mut all = Vec::new();
         for profile in profiles {
             let key = profile.key.as_str().to_string();
             let (mesh, bump): (Vec<_>, Vec<_>) = profile
@@ -146,6 +154,7 @@ impl BandSplit {
                 .iter()
                 .copied()
                 .partition(|band| band.wavelength_m >= cut);
+            all.push((key.clone(), profile.structure.bands.clone()));
             geometry.push((key.clone(), mesh));
             shader.push((key, bump));
         }
@@ -153,6 +162,7 @@ impl BandSplit {
             spacing_m,
             geometry,
             shader,
+            all,
         }
     }
 
@@ -172,6 +182,31 @@ impl BandSplit {
             .map(|band| band.wavelength_m / SAMPLES_PER_WAVELENGTH)
             .fold(None, |best: Option<f32>, step| {
                 Some(best.map_or(step, |b| b.min(step)))
+            })
+    }
+
+    /// Whether the mesh carries one profile's band, by *declaration* index.
+    ///
+    /// Declaration index rather than position in the filtered list, because the
+    /// band basis is addressed by it — see `GroundEvaluator::relief_of`. Matched
+    /// on wavelength, which is unique within a profile because validation
+    /// requires bands to be strictly descending.
+    pub fn carries(&self, key: &str, declaration_index: usize) -> bool {
+        let Some(band) = self
+            .all
+            .iter()
+            .find(|(k, _)| k == key)
+            .and_then(|(_, bands)| bands.get(declaration_index))
+        else {
+            return false;
+        };
+        self.geometry
+            .iter()
+            .find(|(k, _)| k == key)
+            .is_some_and(|(_, carried)| {
+                carried
+                    .iter()
+                    .any(|mesh| mesh.wavelength_m == band.wavelength_m)
             })
     }
 
@@ -600,6 +635,109 @@ impl GroundEvaluator {
         &self.fields
     }
 
+    /// The sub-mesh relief at a point, in metres.
+    ///
+    /// The bands a [`GroundReliefPlan`] assigned to the bump tier, evaluated
+    /// through the *same* basis, phase, aggregate transform, clustering and
+    /// state response the mesh uses. That sameness is the point: before this
+    /// existed, the Blender material rebuilt these bands from its own noise with
+    /// a non-monotone ridge function, so the mesh and the shader were two
+    /// different surfaces that happened to be adjacent.
+    ///
+    /// Exported as a float plane rather than evaluated per shading point,
+    /// because a path tracer asking Rust a question per sample is not a
+    /// pipeline.
+    pub fn bump_height_m(&self, world: Vec2, plan: &crate::relief::GroundReliefPlan) -> f32 {
+        self.tiered_height(world, plan, crate::relief::ReliefTier::Bump)
+    }
+
+    /// The RMS slope the microfacet tier leaves unresolved.
+    ///
+    /// A band below a pixel cannot be seen as shape, but it is still there: it
+    /// scatters light, and a surface that lost it reads as polished. What
+    /// survives is the *slope variance*, which is what a microfacet roughness
+    /// is a model of.
+    ///
+    /// Amplitude shrinks linearly with state and slope variance shrinks
+    /// quadratically, so the per-band contribution is `(q·A/λ)²` summed and
+    /// rooted. The constant relating a band's amplitude and wavelength to its
+    /// RMS slope is `2π/√2` for a sinusoid; a noise band of the same scale is
+    /// shallower, and the factor here is the conservative sinusoidal one until
+    /// the calibration laboratory measures the real number.
+    pub fn micro_slope_rms(&self, world: Vec2, plan: &crate::relief::GroundReliefPlan) -> f32 {
+        use crate::relief::ReliefTier;
+        let substrates = self.substrates(world);
+        if substrates.is_empty() {
+            return 0.0;
+        }
+        let state = self.state(world);
+        let mut variance = 0.0f32;
+        for (material, weight) in substrates.iter() {
+            if weight <= 0.0 {
+                continue;
+            }
+            let Some(entry) = self.materials.get(material.index()) else {
+                continue;
+            };
+            let Some(profile) = &entry.profile else {
+                continue;
+            };
+            let cluster = self.cluster(profile, world);
+            for planned in plan.bands_in(&entry.key, ReliefTier::Microfacet) {
+                let Some(band) = profile.structure.bands.get(planned.band_index as usize) else {
+                    continue;
+                };
+                let scale = profile.band_scale(band, state.compaction, state.moisture);
+                let clustered = if band.clustered { cluster } else { 1.0 };
+                let slope = std::f32::consts::TAU * band.amplitude_m
+                    / (band.wavelength_m * std::f32::consts::SQRT_2);
+                // Linear in amplitude, so quadratic in variance.
+                let q = scale * clustered;
+                variance += weight * (q * slope) * (q * slope);
+            }
+        }
+        variance.max(0.0).sqrt()
+    }
+
+    /// Relief from one tier of a plan, blended by realised weight.
+    fn tiered_height(
+        &self,
+        world: Vec2,
+        plan: &crate::relief::GroundReliefPlan,
+        tier: crate::relief::ReliefTier,
+    ) -> f32 {
+        let substrates = self.substrates(world);
+        if substrates.is_empty() {
+            return 0.0;
+        }
+        let state = self.state(world);
+        let mut total = 0.0;
+        for (material, weight) in substrates.iter() {
+            if weight <= 0.0 {
+                continue;
+            }
+            let Some(entry) = self.materials.get(material.index()) else {
+                continue;
+            };
+            let Some(profile) = &entry.profile else {
+                continue;
+            };
+            let cluster = self.cluster(profile, world);
+            let mut height = 0.0;
+            for planned in plan.bands_in(&entry.key, tier) {
+                let index = planned.band_index as usize;
+                let Some(band) = profile.structure.bands.get(index) else {
+                    continue;
+                };
+                let scale = profile.band_scale(band, state.compaction, state.moisture);
+                let clustered = if band.clustered { cluster } else { 1.0 };
+                height += self.band_height(band, index, world) * scale * clustered;
+            }
+            total += height * weight;
+        }
+        total
+    }
+
     /// The mesh relief at a point, in metres.
     ///
     /// Blended by realised weight, so a boundary between cloddy loam and smooth
@@ -637,7 +775,20 @@ impl GroundEvaluator {
             };
             let mut height = 0.0;
             let cluster = self.cluster(profile, world);
-            for (index, band) in self.split.bands_for(&entry.key).iter().enumerate() {
+            // Addressed by the band's *declaration* index, not by its position
+            // in the filtered geometry list.
+            //
+            // This is the whole of the tier-coherence fix. The seed and the two
+            // frame turns are both derived from the index, so using the filtered
+            // position meant a band changed its phase and its direction the
+            // moment a coarser band left the mesh — a five-centimetre clod field
+            // that turned into a different five-centimetre clod field because
+            // the camera moved closer. Moving a band between representations
+            // must change how it is carried, never what it is.
+            for (index, band) in profile.structure.bands.iter().enumerate() {
+                if !self.split.carries(&entry.key, index) {
+                    continue;
+                }
                 let scale = profile.band_scale(band, state.compaction, state.moisture);
                 let clustered = if band.clustered { cluster } else { 1.0 };
                 height += self.band_height(band, index, world) * scale * clustered;
@@ -1218,5 +1369,65 @@ mod tests {
             across_wind < along_wind * 0.01,
             "{across_wind} vs {along_wind}"
         );
+    }
+}
+
+/// A profile for tests in this crate that need one.
+///
+/// Not `#[cfg(test)]`: `relief`'s tests are in a sibling module, and a
+/// `cfg(test)` item in `ground` is invisible to them. Kept `doc(hidden)` so it
+/// does not appear in the crate's surface.
+#[doc(hidden)]
+pub mod tests_support {
+    use terrain_core::ground_material::*;
+    use terrain_core::ids::{AppearanceKey, GroundProfileKey};
+
+    /// The shipped loam's measurements, for a fixture.
+    pub fn loam() -> GroundMaterialProfile {
+        GroundMaterialProfile {
+            key: GroundProfileKey::new("fixture_loam").expect("valid"),
+            shader: AppearanceKey::new("surface.ground").expect("valid"),
+            display_name: "Fixture loam".into(),
+            optics: GroundOptics {
+                dry_palette: Palette {
+                    low: [0.0090, 0.0079, 0.0074],
+                    mid: [0.0545, 0.0343, 0.0222],
+                    high: [0.2420, 0.1550, 0.0905],
+                },
+                wet: WetResponse {
+                    wet_mid: [0.0210, 0.0116, 0.0058],
+                    roughness_wet: 0.22,
+                    saturation_flattening: 0.45,
+                    film_ior: 1.33,
+                },
+                roughness_dry: Span {
+                    low: 0.62,
+                    high: 0.88,
+                },
+                ior: 1.5,
+                region_wavelength_m: 1.6,
+                region_strength: 0.35,
+                patch_wavelength_m: 0.28,
+                patch_strength: 0.22,
+                grain_strength: 0.12,
+            },
+            structure: GroundStructure {
+                bands: Vec::new(),
+                cohesion: 0.55,
+                cluster_wavelength_m: 0.42,
+                cluster_strength: 0.35,
+            },
+            scatter: GroundScatter {
+                grit_per_m2: 0.0,
+                pebble_per_m2: 0.0,
+                fragment_radius_m: Span {
+                    low: 0.002,
+                    high: 0.008,
+                },
+            },
+            ripples: None,
+            cracks: None,
+            vegetation_affinity: 0.0,
+        }
     }
 }

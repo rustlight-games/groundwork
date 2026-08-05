@@ -1216,19 +1216,22 @@ fn compile(args: &CompileArgs) -> ExitCode {
     // choosing now happens once, in the compiler, before any content is placed
     // against it.
     let evaluator = std::sync::Arc::clone(&compiled.ground);
-    for (key, bands) in &evaluator.band_split().geometry {
-        let shader = evaluator
-            .band_split()
-            .shader
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, bands)| bands.len())
-            .unwrap_or(0);
-        println!(
-            "  {key:<18} {} band(s) in the mesh, {shader} in the shader",
-            bands.len()
-        );
-    }
+
+    // The relief ladder, resolved and printed. Every band gets exactly one
+    // owner and the plan says which and why — so "the soil got smoother" can be
+    // answered with "that band moved to the microfacet tier" rather than with a
+    // guess.
+    let traced_pixel_m = 1.0 / (frame.pixels_per_metre * args.supersample as f32).max(1.0);
+    let plan = terrain_generators::relief::GroundReliefPlan::resolve(
+        evaluator.profiles().iter().map(|p| p.as_ref()),
+        evaluator.band_split().spacing_m,
+        traced_pixel_m,
+        frame.layout.visible_bounds().width_m() as f32,
+    );
+    print!(
+        "  {}",
+        plan.to_table().replace('\n', "\n  ").trim_end_matches("  ")
+    );
 
     // The tuned generator, driven by the document.
     //
