@@ -1,0 +1,31 @@
+// The meadow tier, pinned. Regenerate with:
+//   TERRAIN_ACCEPT_MEADOW=1 cargo test -p terrain_bench --test meadow_baseline
+// A row that moves without a phase behind it is a regression.
+
+[meadow_path]
+scene = c8512ab54d52bfd9c6fafeb4fab449c9
+candidates = 12966 generated, 495 accepted, 0 unowned
+marks = 977, placements = 495, prototypes = 0, interactions = 0
+  field_stones = secondary, 13 marks
+  meadow_fine_grass = tuned(fine), 0 marks
+  meadow_flowers = secondary, 964 marks
+  meadow_thatch = tuned(thatch), 0 marks
+  meadow_tufts = tuned(tuft), 0 marks
+  path_clods = deferred, 0 marks
+
+[narrow_track]
+scene = 51416a856404d0314fa1a0b5f40dd591
+candidates = 4115 generated, 207 accepted, 0 unowned
+marks = 411, placements = 207, prototypes = 0, interactions = 0
+  field_stones = secondary, 3 marks
+  meadow_fine_grass = tuned(fine), 0 marks
+  meadow_flowers = secondary, 408 marks
+  meadow_thatch = tuned(thatch), 0 marks
+  meadow_tufts = tuned(tuft), 0 marks
+  track_grit_scatter = deferred, 0 marks
+
+[tuned_strokes]
+  thatch = 1454
+  fine = 10181
+  tuft = 9416
+  broadleaf = 22

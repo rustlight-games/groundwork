@@ -67,6 +67,30 @@ impl MarkId {
     }
 }
 
+/// Which placement group in the scene's anchor table.
+///
+/// A dense index rather than a `CandidateId`, because every mark carries one and
+/// a scene holds hundreds of thousands of marks. The table it indexes is small —
+/// one entry per accepted candidate that emitted anything — and it is what turns
+/// "these six primitives" into "this one plant".
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct AnchorIndex(pub u32);
+
+impl AnchorIndex {
+    /// The group a mark belongs to when nothing grouped it.
+    ///
+    /// Zero, and it is a real entry rather than a sentinel: the scene builder
+    /// seeds its anchor table with one ungrouped placeholder so that a mark
+    /// pushed without an anchor still indexes something valid. Validation
+    /// reports marks that land here in a compile that was supposed to group
+    /// everything, rather than letting a dangling index reach a renderer.
+    pub const UNGROUPED: Self = Self(0);
+
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// Which broad band of the picture a mark belongs to.
 ///
 /// Coarse, and deliberately so. It exists to keep things that are *conceptually*
@@ -378,6 +402,12 @@ pub struct SceneMaterialIndex(pub u16);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RibbonMark {
     pub stable_id: MarkId,
+    /// The placement group this mark belongs to.
+    ///
+    /// A flower is a stem and a head; a rosette is several leaves. They are one
+    /// *plant*, and a trace slice that kept the stem and dropped the head would
+    /// render half a flower. See [`crate::scene::PlacementAnchor`].
+    pub anchor: AnchorIndex,
     pub order: PainterOrder,
     pub material: SceneMaterialIndex,
     pub root: ScenePoint,
@@ -390,6 +420,12 @@ pub struct RibbonMark {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CurveMark {
     pub stable_id: MarkId,
+    /// The placement group this mark belongs to.
+    ///
+    /// A flower is a stem and a head; a rosette is several leaves. They are one
+    /// *plant*, and a trace slice that kept the stem and dropped the head would
+    /// render half a flower. See [`crate::scene::PlacementAnchor`].
+    pub anchor: AnchorIndex,
     pub order: PainterOrder,
     pub material: SceneMaterialIndex,
     pub root: ScenePoint,
@@ -410,6 +446,12 @@ pub struct CurveMark {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AnalyticMark {
     pub stable_id: MarkId,
+    /// The placement group this mark belongs to.
+    ///
+    /// A flower is a stem and a head; a rosette is several leaves. They are one
+    /// *plant*, and a trace slice that kept the stem and dropped the head would
+    /// render half a flower. See [`crate::scene::PlacementAnchor`].
+    pub anchor: AnchorIndex,
     pub order: PainterOrder,
     pub material: SceneMaterialIndex,
     pub centre: ScenePoint,
@@ -432,11 +474,22 @@ pub struct AnalyticMark {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StampMark {
     pub stable_id: MarkId,
+    /// The placement group this mark belongs to.
+    ///
+    /// A flower is a stem and a head; a rosette is several leaves. They are one
+    /// *plant*, and a trace slice that kept the stem and dropped the head would
+    /// render half a flower. See [`crate::scene::PlacementAnchor`].
+    pub anchor: AnchorIndex,
     pub order: PainterOrder,
     pub material: SceneMaterialIndex,
     /// Which stamp in the scene's stamp table.
     pub stamp: u16,
-    pub anchor: ScenePoint,
+    /// Where on the ground the stamp sits.
+    ///
+    /// Named `centre` rather than `anchor` since marks gained a placement
+    /// group: two different meanings of the same word on one struct is the
+    /// kind of thing that reads fine until somebody wires the wrong one.
+    pub centre: ScenePoint,
     /// Size on the ground, metres.
     pub size_m: [f32; 2],
     pub rotation_rad: f32,
@@ -499,7 +552,7 @@ impl SceneMark {
             Self::Ribbon(m) => m.root,
             Self::Curve(m) => m.root,
             Self::Analytic(m) => m.centre,
-            Self::Stamp(m) => m.anchor,
+            Self::Stamp(m) => m.centre,
         }
     }
 
@@ -509,6 +562,16 @@ impl SceneMark {
             Self::Curve(m) => m.attributes,
             Self::Analytic(m) => m.attributes,
             Self::Stamp(m) => m.attributes,
+        }
+    }
+
+    /// The placement group this mark belongs to.
+    pub fn anchor(&self) -> AnchorIndex {
+        match self {
+            Self::Ribbon(m) => m.anchor,
+            Self::Curve(m) => m.anchor,
+            Self::Analytic(m) => m.anchor,
+            Self::Stamp(m) => m.anchor,
         }
     }
 
@@ -800,6 +863,7 @@ mod tests {
         // digested is a parameter no fingerprint can prove was preserved.
         let base = SceneMark::Ribbon(RibbonMark {
             stable_id: MarkId(1),
+            anchor: AnchorIndex::UNGROUPED,
             order: PainterOrder::new(Stratum::Canopy, 0.0, 0, MarkId(1)),
             material: SceneMaterialIndex(0),
             root: ScenePoint::default(),
@@ -850,6 +914,7 @@ mod tests {
         let make = |attributes: MarkAttributes| {
             SceneMark::Ribbon(RibbonMark {
                 stable_id: MarkId(1),
+                anchor: AnchorIndex::UNGROUPED,
                 order: PainterOrder::new(Stratum::Canopy, 0.0, 0, MarkId(1)),
                 material: SceneMaterialIndex(0),
                 root: ScenePoint::default(),
@@ -885,6 +950,7 @@ mod tests {
         let marks = [
             SceneMark::Ribbon(RibbonMark {
                 stable_id: id,
+                anchor: AnchorIndex::UNGROUPED,
                 order,
                 material,
                 root: point,
@@ -894,6 +960,7 @@ mod tests {
             }),
             SceneMark::Curve(CurveMark {
                 stable_id: id,
+                anchor: AnchorIndex::UNGROUPED,
                 order,
                 material,
                 root: point,
@@ -907,6 +974,7 @@ mod tests {
             }),
             SceneMark::Analytic(AnalyticMark {
                 stable_id: id,
+                anchor: AnchorIndex::UNGROUPED,
                 order,
                 material,
                 centre: point,
@@ -918,10 +986,11 @@ mod tests {
             }),
             SceneMark::Stamp(StampMark {
                 stable_id: id,
+                anchor: AnchorIndex::UNGROUPED,
                 order,
                 material,
                 stamp: 0,
-                anchor: point,
+                centre: point,
                 size_m: [0.0, 0.0],
                 rotation_rad: 0.0,
                 upright: false,

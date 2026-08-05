@@ -115,6 +115,18 @@ fn step_table(steps: usize) -> &'static [StepSample] {
 /// One mark, described in world space and cache pixels.
 #[derive(Clone, Copy, Debug)]
 pub struct Stroke {
+    /// Which planting pass produced this mark.
+    ///
+    /// Not a shape parameter and not read by the rasteriser — every shape
+    /// decision has already been made by the time a stroke exists. It rides
+    /// along so that counts, controls and obstacle responses can be *per pass*
+    /// without reconstructing which of the four loops emitted a mark from its
+    /// dimensions, which would be guesswork the moment two passes overlap in
+    /// length.
+    ///
+    /// Deliberately outside the scene fingerprint: it labels a mark rather than
+    /// describing it, so adding it must not move a single pinned meadow.
+    pub pass: crate::tuned::TunedPass,
     /// Where it grows from, world metres.
     pub root: Vec3,
     /// Ground direction it leans toward, world radians.
@@ -235,6 +247,11 @@ impl Stroke {
 impl Default for Stroke {
     fn default() -> Self {
         Self {
+            // The statement layer, because the default stroke is blade-shaped.
+            // `placement::scatter` stamps the real pass over this for every mark
+            // it plants, so the default only reaches a stroke built by hand in a
+            // test.
+            pass: crate::tuned::TunedPass::Tuft,
             root: Vec3::ZERO,
             azimuth: 0.0,
             length: 0.22,

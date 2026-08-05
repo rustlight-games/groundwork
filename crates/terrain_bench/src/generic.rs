@@ -162,6 +162,11 @@ pub fn ribbon_from_stroke(
     let reach = geometry.reach_m() as f64;
     SceneMark::Ribbon(RibbonMark {
         stable_id,
+        // A converted tuned stroke has no placement group: the tuned generator
+        // does not have one to convert. Ungrouped rather than invented, so a
+        // count of placements over a converted scene reports zero instead of
+        // reporting one plant per blade.
+        anchor: terrain_scene::mark::AnchorIndex::UNGROUPED,
         order,
         material,
         root,

@@ -31,9 +31,11 @@
 use terrain_core::coords::{WorldPoint, WorldRect};
 use terrain_core::digest::{Digest, Digestible, Fingerprint};
 
+use terrain_core::seed::CandidateId;
+
 use crate::ground::GroundSurface;
-use crate::instance::PrototypeInstance;
-use crate::mark::{Aabb3, SceneMark, SceneMaterialBinding};
+use crate::instance::{PrototypeBinding, PrototypeIndex, PrototypeInstance};
+use crate::mark::{Aabb3, AnchorIndex, MarkId, SceneMark, SceneMaterialBinding};
 use crate::projection::{Projection, ScenePoint, ScreenRect};
 
 /// What was asked for.
@@ -178,6 +180,142 @@ pub struct StampBinding {
     pub asset: String,
 }
 
+/// One accepted candidate, and everything it grew.
+///
+/// ## Why a plant needs a name of its own
+///
+/// A flower is a curved stem plus a head instance plus a whorl of petals. A
+/// rosette is several leaves sharing a crown. Each of those primitives has its
+/// own [`MarkId`], its own painter order and its own bounding box — and a trace
+/// slice that selected them independently would keep the stem and drop the head,
+/// or classify the stem as halo geometry and the head as camera geometry. The
+/// result is not a missing flower; it is half a flower, which is worse.
+///
+/// So every primitive names the placement it came from, and the slice selector
+/// classifies *placements*. Four consequences follow, and all four are things
+/// the framework previously had no way to express:
+///
+/// - a group is kept or dropped whole;
+/// - a report can count plants rather than only primitives;
+/// - an interaction footprint can name the object that caused it;
+/// - the fingerprint records the grouping and not merely its members.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlacementAnchor {
+    /// The candidate that was accepted here.
+    pub candidate: CandidateId,
+    /// Where it meets the ground, at the final rendered surface height.
+    pub root: ScenePoint,
+}
+
+/// A deterministic obstacle that content can grow around.
+///
+/// Emitted by the recipe that placed the obstacle, not derived afterwards from
+/// its geometry. That direction matters: a stone's *physical* footprint is a
+/// decision its recipe made — a conservative ellipse it guarantees to stay
+/// inside — and recovering one from a mesh after the fact would be an estimate
+/// that is sometimes smaller than the object.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InteractionPrimitive {
+    /// The mark that caused it.
+    pub source: MarkId,
+    pub anchor: AnchorIndex,
+    pub centre: WorldPoint,
+    pub shape: InteractionShape,
+    /// Inside this, a root is refused outright.
+    pub hard_clearance_m: f32,
+    /// How far past the hard boundary the smooth response reaches.
+    ///
+    /// Beyond `hard_clearance_m + response_reach_m` the field is *exactly*
+    /// nothing — not a small number — so that removing the obstacle leaves
+    /// distant content bit-identical.
+    pub response_reach_m: f32,
+    /// Which passes are affected.
+    pub channels: InteractionChannels,
+}
+
+/// The footprint an obstacle occupies on the ground.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum InteractionShape {
+    /// An oriented ellipse.
+    ///
+    /// The only shape version one needs, and a deliberate choice rather than a
+    /// placeholder: a conservative ground-plane footprint for a stone is an
+    /// ellipse, and the query is evaluated at every prospective grass root —
+    /// millions per plate — so it has to be a handful of multiplies.
+    Ellipse {
+        semi_u_m: f32,
+        semi_v_m: f32,
+        yaw_rad: f32,
+    },
+}
+
+/// Which kinds of content an obstacle pushes around.
+///
+/// A bitfield rather than a set, because it is read inside the placement loop.
+/// Thatch, for instance, is excluded from a stone's footprint but barely bends
+/// around it — a mat lies over whatever is there — so the channels differ per
+/// pass rather than being one boolean.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct InteractionChannels(pub u8);
+
+impl InteractionChannels {
+    pub const THATCH: Self = Self(1 << 0);
+    pub const FINE: Self = Self(1 << 1);
+    pub const TUFT: Self = Self(1 << 2);
+    pub const BROADLEAF: Self = Self(1 << 3);
+    /// Everything the tuned generator plants.
+    pub const ALL_TUNED: Self = Self(0b1111);
+
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl Digestible for InteractionPrimitive {
+    fn absorb(&self, digest: &mut Digest) {
+        digest
+            .u64(self.source.0)
+            .u32(self.anchor.0)
+            .f64(self.centre.u_m)
+            .f64(self.centre.v_m);
+        match self.shape {
+            InteractionShape::Ellipse {
+                semi_u_m,
+                semi_v_m,
+                yaw_rad,
+            } => {
+                digest.tag(0).f32(semi_u_m).f32(semi_v_m).f32(yaw_rad);
+            }
+        }
+        digest
+            .f32(self.hard_clearance_m)
+            .f32(self.response_reach_m)
+            .u32(self.channels.0 as u32);
+    }
+}
+
+impl Digestible for PlacementAnchor {
+    fn absorb(&self, digest: &mut Digest) {
+        digest
+            .u64(self.candidate.population.bits())
+            .i64(self.candidate.cell.x)
+            .i64(self.candidate.cell.y)
+            .u32(self.candidate.rank as u32)
+            .f64(self.root.u_m)
+            .f64(self.root.v_m)
+            .f64(self.root.z_m);
+    }
+}
+
 /// Everything to render, for one request.
 #[derive(Clone, Debug)]
 pub struct TerrainScene {
@@ -188,6 +326,16 @@ pub struct TerrainScene {
     pub instances: Vec<PrototypeInstance>,
     pub materials: Vec<SceneMaterialBinding>,
     pub stamps: Vec<StampBinding>,
+    /// One entry per accepted candidate that grew something.
+    ///
+    /// Index zero is always the ungrouped placeholder, so
+    /// [`AnchorIndex::UNGROUPED`] is a valid index into a scene that never
+    /// bound an anchor at all.
+    pub anchors: Vec<PlacementAnchor>,
+    /// The geometry instances refer to, canonical and deduplicated.
+    pub prototypes: Vec<PrototypeBinding>,
+    /// Obstacles other content grows around.
+    pub interactions: Vec<InteractionPrimitive>,
     /// The prepared terrain's document digest, so a scene can say what it came
     /// from without holding the terrain alive.
     pub document_digest: Fingerprint,
@@ -220,9 +368,107 @@ impl TerrainScene {
             instances: Vec::new(),
             materials: Vec::new(),
             stamps: Vec::new(),
+            // Seeded with the ungrouped placeholder, so index zero is always a
+            // real entry and a mark that named no group still indexes something
+            // rather than dangling. Its candidate address is deliberately the
+            // zero address: nothing the domain lattice can produce, so a real
+            // placement can never collide with it.
+            anchors: vec![PlacementAnchor {
+                candidate: CandidateId::new(
+                    terrain_core::seed::PopulationHash::from_bits(0),
+                    terrain_core::coords::CellCoord::new(0, 0),
+                    0,
+                ),
+                root: ScenePoint::default(),
+            }],
+            prototypes: Vec::new(),
+            interactions: Vec::new(),
             document_digest,
             generator_version,
         }
+    }
+
+    /// Every mark belonging to one placement group.
+    ///
+    /// A linear scan. The alternative is a per-anchor index built at
+    /// `build` time, which is the right answer once slice selection is doing
+    /// this per anchor per slice; for now the caller that needs it walks the
+    /// marks once and buckets them, which is the same work done once instead of
+    /// once per group.
+    pub fn marks_for_anchor(&self, anchor: AnchorIndex) -> impl Iterator<Item = &SceneMark> {
+        self.marks.iter().filter(move |m| m.anchor() == anchor)
+    }
+
+    /// Every instance belonging to one placement group.
+    pub fn instances_for_anchor(
+        &self,
+        anchor: AnchorIndex,
+    ) -> impl Iterator<Item = &PrototypeInstance> {
+        self.instances.iter().filter(move |i| i.anchor == anchor)
+    }
+
+    /// Every interaction belonging to one placement group.
+    pub fn interactions_for_anchor(
+        &self,
+        anchor: AnchorIndex,
+    ) -> impl Iterator<Item = &InteractionPrimitive> {
+        self.interactions.iter().filter(move |i| i.anchor == anchor)
+    }
+
+    /// A conservative bound around everything one placement grew.
+    ///
+    /// What slice selection classifies. Returns `None` for a group that grew
+    /// nothing, which the ungrouped placeholder normally is.
+    pub fn group_bounds(&self, anchor: AnchorIndex) -> Option<Aabb3> {
+        let mut bounds: Option<Aabb3> = None;
+        for mark in self.marks_for_anchor(anchor) {
+            bounds = Some(match bounds {
+                None => mark.bounds(),
+                Some(current) => current.union(mark.bounds()),
+            });
+        }
+        for instance in self.instances_for_anchor(anchor) {
+            bounds = Some(match bounds {
+                None => instance.bounds,
+                Some(current) => current.union(instance.bounds),
+            });
+        }
+        bounds
+    }
+
+    /// Bounds for every placement group that grew something, by anchor index.
+    ///
+    /// One pass over the marks and instances rather than one pass per group,
+    /// which is what a slice selector actually wants: it classifies all of them
+    /// and the quadratic version is minutes rather than milliseconds on a plate
+    /// with a hundred thousand placements.
+    pub fn all_group_bounds(&self) -> Vec<(AnchorIndex, Aabb3)> {
+        let mut bounds: Vec<Option<Aabb3>> = vec![None; self.anchors.len()];
+        let mut widen = |anchor: AnchorIndex, box3: Aabb3| {
+            if let Some(slot) = bounds.get_mut(anchor.index()) {
+                *slot = Some(match *slot {
+                    None => box3,
+                    Some(current) => current.union(box3),
+                });
+            }
+        };
+        for mark in &self.marks {
+            widen(mark.anchor(), mark.bounds());
+        }
+        for instance in &self.instances {
+            widen(instance.anchor, instance.bounds);
+        }
+        bounds
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, box3)| box3.map(|b| (AnchorIndex(index as u32), b)))
+            .collect()
+    }
+
+    /// How many placements grew something.
+    pub fn placement_count(&self) -> usize {
+        // Minus the ungrouped placeholder, which is not a placement.
+        self.anchors.len().saturating_sub(1)
     }
 
     pub fn mark_count(&self) -> usize {
@@ -295,8 +541,15 @@ impl TerrainScene {
         digest.slice(&self.stamps, |d, stamp| {
             d.str(&stamp.asset);
         });
+        // Grouping is semantic, not bookkeeping: two scenes with identical
+        // primitives that grouped them differently would render the same still
+        // and slice differently, and a fingerprint that could not tell them
+        // apart would call that no change at all.
+        digest.slice(&self.anchors, |d, anchor| anchor.absorb(d));
+        digest.slice(&self.prototypes, |d, prototype| prototype.absorb(d));
         digest.slice(&self.marks, |d, mark| mark.absorb(d));
         digest.slice(&self.instances, |d, instance| instance.absorb(d));
+        digest.slice(&self.interactions, |d, interaction| interaction.absorb(d));
         digest.finish()
     }
 
@@ -389,6 +642,45 @@ impl SceneBuilder {
         (self.scene.stamps.len() - 1) as u16
     }
 
+    /// Register a placement group and return the index its primitives name.
+    ///
+    /// Not idempotent, and deliberately not: two accepted candidates at the
+    /// same position are two plants, and folding them would make one of them
+    /// vanish from every per-group count while both still rendered.
+    pub fn bind_anchor(&mut self, anchor: PlacementAnchor) -> AnchorIndex {
+        self.scene.anchors.push(anchor);
+        AnchorIndex((self.scene.anchors.len() - 1) as u32)
+    }
+
+    /// Register a prototype and return the index instances refer to it by.
+    ///
+    /// Canonical and idempotent: equal bindings return the same index, so a
+    /// recipe can name its prototype per instance without building a table with
+    /// a thousand copies of one rock in it.
+    ///
+    /// Equality is on the *whole binding* rather than on the key. Two bindings
+    /// under one key with different parameters are two different shapes, and
+    /// resolving that by "last one wins" would make the geometry depend on
+    /// traversal order — which is the one thing this framework will not do. The
+    /// compiler reports the collision instead; see `validate_scene`.
+    pub fn bind_prototype(&mut self, binding: PrototypeBinding) -> PrototypeIndex {
+        if let Some(index) = self
+            .scene
+            .prototypes
+            .iter()
+            .position(|existing| *existing == binding)
+        {
+            return PrototypeIndex(index as u16);
+        }
+        self.scene.prototypes.push(binding);
+        PrototypeIndex((self.scene.prototypes.len() - 1) as u16)
+    }
+
+    pub fn push_interaction(&mut self, interaction: InteractionPrimitive) -> &mut Self {
+        self.scene.interactions.push(interaction);
+        self
+    }
+
     pub fn push_mark(&mut self, mark: SceneMark) -> &mut Self {
         self.scene.marks.push(mark);
         self
@@ -407,6 +699,13 @@ impl SceneBuilder {
     pub fn build(mut self) -> TerrainScene {
         self.scene.sort_marks();
         self.scene.instances.sort_by_key(|instance| instance.order);
+        // By the causing mark rather than by insertion, so the query field
+        // built from these has an order that does not depend on which recipe
+        // emitted first. `MarkId` is a total order derived from the candidate
+        // address, so this is stable across windows.
+        self.scene
+            .interactions
+            .sort_by_key(|interaction| interaction.source);
         self.scene
     }
 }
@@ -429,6 +728,7 @@ mod tests {
     fn ribbon(id: u64, depth: f64, root: ScenePoint) -> SceneMark {
         SceneMark::Ribbon(RibbonMark {
             stable_id: MarkId(id),
+            anchor: AnchorIndex::UNGROUPED,
             order: PainterOrder::new(Stratum::Canopy, depth, 0, MarkId(id)),
             material: SceneMaterialIndex(0),
             root,

@@ -212,7 +212,8 @@ fn every_committed_ground_profile_loads() {
     // cannot catch a RON spelling the deserialiser refuses, and that is the
     // mistake an author hits first. This also runs every range check in
     // `GroundMaterialProfile::problems` against the shipped library.
-    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/terrain/materials");
+    let directory =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/terrain/materials");
     let mut checked = 0;
     for entry in std::fs::read_dir(&directory).expect("materials directory") {
         let path = entry.expect("entry").path();

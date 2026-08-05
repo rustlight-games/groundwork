@@ -61,11 +61,11 @@ use terrain_core::seed::SeedContext;
 use terrain_scene::derive::{DerivedFieldRequest, derive_fields, flow_reach_m, sample_fields};
 use terrain_scene::field::{FieldGridSpec, TerrainFieldStack};
 use terrain_scene::mark::{
-    Aabb3, AnalyticMark, CurveMark, MarkId, PainterOrder, RibbonMark, SceneMark,
+    Aabb3, AnalyticMark, AnchorIndex, CurveMark, MarkId, PainterOrder, RibbonMark, SceneMark,
     SceneMaterialBinding, SceneMaterialIndex,
 };
 use terrain_scene::projection::ScenePoint;
-use terrain_scene::scene::{SceneBuilder, SceneRequest, TerrainScene};
+use terrain_scene::scene::{PlacementAnchor, SceneBuilder, SceneRequest, TerrainScene};
 
 use crate::domain::{
     CandidateDomainDef, DOMAIN_ALGORITHM_VERSION, DomainCandidate, DomainRequest, accepts, generate,
@@ -73,7 +73,8 @@ use crate::domain::{
 use crate::ownership::{OwnerOption, assign};
 use crate::population::EmittedMark;
 use crate::recipe::{RecipeContext, RecipeOutput, TerrainRecipeRegistry};
-use crate::transition::{TransitionProfile, realise};
+use crate::transition::TransitionProfile;
+use crate::tuned::{RecipeRenderClass, TunedPass};
 
 /// The version the compiler stamps on the scenes it builds.
 ///
@@ -93,6 +94,14 @@ pub struct SceneCompileOptions {
     pub transition: TransitionProfile,
     /// Check the finished scene before returning it.
     pub validate: bool,
+    /// The ground lattice to split relief bands at, when no profile chooses one.
+    ///
+    /// Only reached by a document whose materials carry no ground profile at
+    /// all: with profiles present, [`BandSplit::spacing_for`] derives the
+    /// spacing from the finest band any of them declares, which is the whole
+    /// point of the three-tier ladder. A constant here would decide the ladder
+    /// for materials that had already said what they need.
+    pub fallback_ground_spacing_m: f32,
 }
 
 impl Default for SceneCompileOptions {
@@ -102,6 +111,9 @@ impl Default for SceneCompileOptions {
             derive: DerivedFieldRequest::PLACEMENT,
             transition: TransitionProfile::default(),
             validate: true,
+            // Four centimetres: what the CLI used before this became an option,
+            // preserved so that adding the field moved nothing.
+            fallback_ground_spacing_m: 0.04,
         }
     }
 }
@@ -118,9 +130,20 @@ const FIELD_SAMPLES_PER_PIXEL: f64 = 0.25;
 const SPACING_BOUNDS_M: (f64, f64) = (0.005, 0.10);
 
 /// What a compile produced.
+///
+/// Every member is immutable and shared. The point of returning them together
+/// rather than letting each caller rebuild what it needs is that they must be
+/// the *same* objects: a `GroundEvaluator` built twice from the same inputs
+/// agrees to the bit, but only until somebody changes one construction site and
+/// not the other — and the symptom of that is a stone floating a centimetre
+/// above the mesh it is supposed to be resting in.
 pub struct SceneCompilation {
     pub scene: Arc<TerrainScene>,
     pub fields: Arc<TerrainFieldStack>,
+    /// The one answer about the ground, shared by the mesh that carries its
+    /// relief, the shader that colours it, the overlay that decides how much
+    /// grass grows on it, and every secondary root registered to it.
+    pub ground: Arc<crate::ground::GroundEvaluator>,
     pub report: SceneCompileReport,
 }
 
@@ -142,6 +165,17 @@ pub struct SceneCompileReport {
     pub marks_emitted: usize,
     /// Per population key, so a document author can see which one went quiet.
     pub marks_by_population: BTreeMap<String, usize>,
+    /// Who owns each population's rendering, by population key.
+    ///
+    /// Reported rather than inferred, because "why is my flower not in the
+    /// picture" and "why is my grass not doubled" are the same question asked
+    /// from two directions, and the answer to both is this table.
+    pub render_classes: BTreeMap<String, RecipeRenderClass>,
+    /// Populations declared, understood, and deliberately not drawn.
+    ///
+    /// A separate list rather than a filter over `render_classes`, so that a
+    /// caller printing a report cannot omit it by forgetting to filter.
+    pub deferred_populations: Vec<String>,
 }
 
 /// Why a compile could not finish.
@@ -171,6 +205,8 @@ struct Claimant {
     /// Index into the compiler's own list, and what ownership returns.
     owner: u16,
     recipe: RecipeKey,
+    /// Who draws this. Only `Secondary` reaches the scene — see [`crate::tuned`].
+    render_class: RecipeRenderClass,
     domain: DomainKey,
     affinity: Vec<(MaterialIndex, f32)>,
     abundance_channel: Option<ModifierIndex>,
@@ -210,6 +246,9 @@ pub fn compile_scene(
     let mut claimants: Vec<Claimant> = Vec::new();
     let mut domains: BTreeMap<String, CandidateDomainDef> = BTreeMap::new();
     let mut appearances: Vec<&'static str> = Vec::new();
+    // Which population claimed each tuned pass. One each, in version 1 — see
+    // below for why a merge is an error rather than a silent fold.
+    let mut tuned_claims: BTreeMap<TunedPass, String> = BTreeMap::new();
 
     for population in terrain.populations() {
         let Some(recipe) = recipes.get(&population.recipe) else {
@@ -225,18 +264,73 @@ pub fn compile_scene(
         };
         recipe.validate(&population.parameters, &population.key, &mut diagnostics);
 
+        let render_class = recipe.render_class();
+        // One population per tuned pass. The tuned generator has exactly one
+        // pass identity, so folding two authored populations into it would
+        // destroy persistent population identity and leave the density
+        // semantics ambiguous — is the pass the sum of the two, the max, or the
+        // last one resolved? A future version may define a stable merge; this
+        // one says so rather than picking.
+        if let Some(pass) = render_class.tuned_pass() {
+            // The *first* claimant is kept and later ones are reported against
+            // it. Overwriting instead would diagnose the third population
+            // against the second, so a document with three claimants on one
+            // pass would name a different "original" in each message and send
+            // the author looking at the wrong file.
+            match tuned_claims.get(&pass) {
+                None => {
+                    tuned_claims.insert(pass, population.key.as_str().to_string());
+                }
+                Some(first) => {
+                    diagnostics.error(
+                        "duplicate_tuned_pass",
+                        Location::at(format!("populations.{}", population.key)),
+                        format!(
+                            "`{}` and `{first}` both drive the tuned {pass} pass; \
+                         one population may control a tuned pass",
+                            population.key
+                        ),
+                    );
+                }
+            }
+        }
+
         let domain = recipe.domain();
-        domains
-            .entry(domain.as_str().to_string())
-            .or_insert_with(|| recipe.domain_definition());
+        let definition = recipe.domain_definition();
+        // A domain is one lattice, and two recipes sharing its name must agree
+        // about what it is. Keeping whichever definition arrived first would
+        // make the cell size — and therefore every candidate address in it —
+        // depend on the order populations happen to be declared in.
+        match domains.get(domain.as_str()) {
+            None => {
+                domains.insert(domain.as_str().to_string(), definition);
+            }
+            Some(existing) if *existing == definition => {}
+            Some(_) => {
+                diagnostics.error(
+                    "conflicting_domain_definition",
+                    Location::at(format!("populations.{}", population.key)),
+                    format!(
+                        "`{}` defines domain `{domain}` differently from another population \
+                     that shares it; a domain is one lattice and its cell size decides \
+                     every candidate address on it",
+                        population.key
+                    ),
+                );
+            }
+        }
 
         let appearance_base = appearances.len() as u16;
         appearances.extend(recipe.appearances());
 
         claimants.push(Claimant {
             key: population.key.as_str().to_string(),
-            owner: claimants.len() as u16,
+            // Provisional. Replaced below by a rank derived from the population
+            // key, so that reordering declarations in a document does not
+            // reassign candidates.
+            owner: 0,
             recipe: population.recipe.clone(),
+            render_class,
             domain,
             affinity: population.material_affinity.clone(),
             abundance_channel: population.abundance_channel,
@@ -245,6 +339,57 @@ pub fn compile_scene(
             reach_m: recipe.maximum_reach_m(&population.parameters),
             appearance_base,
         });
+    }
+
+    // The owner index is a rank in *key* order, not declaration order.
+    //
+    // `ownership::assign` sorts its options by this index and lays them out as
+    // consecutive intervals of one draw, so the index decides which population
+    // wins a given candidate. Deriving it from declaration order would mean
+    // that moving a population up a document — a pure edit, changing no value —
+    // swapped the intervals and reassigned every contested candidate between
+    // them. Identity here is the authored key, the same rule `terrain_core::ids`
+    // states for everything else.
+    {
+        let ranks = owner_ranks(claimants.iter().map(|c| c.key.as_str()));
+        for claimant in &mut claimants {
+            claimant.owner = ranks[&claimant.key];
+        }
+    }
+
+    // A shared domain must agree about who renders it. Two recipes sharing one
+    // lattice share one acceptance decision, so a secondary recipe drawing from
+    // the same domain as a tuned one would have its candidate count changed by
+    // a population that emits nothing — an invisible density coupling between
+    // the tuned canopy and the flowers. Version 1 refuses rather than defines a
+    // meaning for it.
+    for (name, _) in &domains {
+        let mut secondary: Vec<&str> = Vec::new();
+        let mut other: Vec<&str> = Vec::new();
+        for claimant in &claimants {
+            if claimant.domain.as_str() != name {
+                continue;
+            }
+            if claimant.render_class.emits_secondary() {
+                secondary.push(&claimant.key);
+            } else {
+                other.push(&claimant.key);
+            }
+        }
+        if !secondary.is_empty() && !other.is_empty() {
+            diagnostics.error(
+                "mixed_domain_render_classes",
+                Location::at(format!("domains.{name}")),
+                format!(
+                    "domain `{name}` is claimed by secondary population(s) {} and \
+                     non-secondary population(s) {}; one domain is one acceptance \
+                     decision, so mixing them would let a population that draws \
+                     nothing change how many flowers exist",
+                    secondary.join(", "),
+                    other.join(", "),
+                ),
+            );
+        }
     }
 
     if diagnostics.has_errors() {
@@ -279,6 +424,29 @@ pub fn compile_scene(
     // ---- Phase 3 and 4: the matrix, and what follows from it ---------------
     let mut fields = sample_fields(terrain, grid);
     derive_fields(&mut fields, options.derive);
+    let fields = Arc::new(fields);
+
+    // ---- Phase 4b: the one ground evaluator --------------------------------
+    //
+    // Built here, before a single recipe emits, and returned. Every previous
+    // version of this pipeline had the CLI construct its own evaluator *after*
+    // the compile, which meant secondary content was rooted at
+    // `fields.surface_height` while the mesh Cycles rendered added profile
+    // relief on top. The two surfaces differ by centimetres — enough to float a
+    // pebble or bury a stem — and nothing anywhere reported the disagreement,
+    // because from each side's own point of view it was on the ground.
+    let band_spacing = crate::ground::BandSplit::spacing_for(
+        (0..terrain.materials().len())
+            .filter_map(|index| terrain.material_profile(MaterialIndex(index as u16)))
+            .map(|profile| profile.as_ref()),
+    )
+    .unwrap_or(options.fallback_ground_spacing_m);
+    let ground = Arc::new(crate::ground::GroundEvaluator::new(
+        terrain,
+        Arc::clone(&fields),
+        options.transition,
+        band_spacing,
+    ));
 
     // ---- Phase 5: build the scene ------------------------------------------
     let mut builder = SceneBuilder::new(*request, terrain.document_digest(), COMPILER_VERSION);
@@ -304,12 +472,35 @@ pub fn compile_scene(
         ..Default::default()
     };
 
+    for claimant in &claimants {
+        report
+            .render_classes
+            .insert(claimant.key.clone(), claimant.render_class);
+        if claimant.render_class == RecipeRenderClass::Deferred {
+            report.deferred_populations.push(claimant.key.clone());
+        }
+    }
+
     for (name, domain) in &domains {
         let members: Vec<&Claimant> = claimants
             .iter()
             .filter(|claimant| claimant.domain.as_str() == name)
             .collect();
         if members.is_empty() {
+            continue;
+        }
+        // Only secondary content reaches the scene, and generating a domain
+        // whose every claimant renders elsewhere is pure waste — `vegetation.fine`
+        // alone offers several million candidates across a nine-tile plate, all
+        // of them destined to be thinned, owned, grown into ribbons and then
+        // never drawn. The domain-agreement check above has already guaranteed
+        // this is all-or-nothing per domain, so testing the first member would
+        // do; testing every member is the same cost and does not depend on that
+        // guarantee holding.
+        if !members
+            .iter()
+            .any(|claimant| claimant.render_class.emits_secondary())
+        {
             continue;
         }
 
@@ -329,14 +520,12 @@ pub fn compile_scene(
         for candidate in &candidates {
             // The realised substrate, from the same function the ground shading
             // calls. One answer, so a tuft stands on the mud it belongs to.
-            let mut weights: Vec<(MaterialIndex, f32)> = Vec::new();
-            fields.substrate_weights_into(candidate.position, &mut weights);
-            let substrate = realise(
-                weights.iter().copied(),
-                candidate.position,
-                &options.transition,
-                root_seed,
-            );
+            //
+            // Read straight out of the evaluator rather than realised again
+            // here. The old code called `realise` with its own copy of the
+            // transition profile, which agreed with the evaluator right up
+            // until somebody changed one of them.
+            let substrate = ground.substrates(vec2(candidate.position));
 
             // One blended target density from every claimant, so acceptance is
             // decided before any material owns anything.
@@ -379,18 +568,40 @@ pub fn compile_scene(
                 continue;
             };
 
+            // One full ground sample, paid for once, only for candidates that
+            // survived acceptance and found an owner. Sampling every candidate
+            // would evaluate every relief band of every profile for a lattice
+            // that rejects the great majority of them.
+            let ground_sample = ground.sample(vec2(candidate.position));
             let context = RecipeContext {
                 fields: &fields,
+                ground: &ground,
+                ground_sample: &ground_sample,
                 seeds: seeds.for_recipe(recipe.version()),
                 parameters: &claimant.parameters,
                 substrate,
-                surface_z_m: fields.surface_height(candidate.position) as f64,
+                // The surface the render actually has, relief included. See
+                // `GroundEvaluator::final_surface_z_m`.
+                surface_z_m: (fields.surface_height(candidate.position)
+                    + ground_sample.displacement_m) as f64,
                 root_seed,
             };
+            // One placement group per accepted, owned candidate. Everything the
+            // recipe emits below names it, so a trace slice keeps a flower's
+            // stem and head together or drops both.
+            let anchor = builder.bind_anchor(PlacementAnchor {
+                candidate: candidate.id,
+                root: ScenePoint::new(
+                    candidate.position.u_m,
+                    candidate.position.v_m,
+                    context.surface_z_m,
+                ),
+            });
             let mut sink = MarkSink {
                 builder: &mut builder,
                 projection: request.projection,
                 candidate,
+                anchor,
                 appearance_base: claimant.appearance_base,
                 bound: &bound,
                 emitted: 0,
@@ -416,9 +627,36 @@ pub fn compile_scene(
 
     Ok(SceneCompilation {
         scene: Arc::new(scene),
-        fields: Arc::new(fields),
+        fields,
+        ground,
         report,
     })
+}
+
+/// A world point as the flat vector the ground evaluator speaks.
+///
+/// The evaluator works in `f32` because its noise does; the field stack works
+/// in `f64` because world positions do. One conversion function rather than a
+/// cast at each call site, so the narrowing is visible and happens in exactly
+/// one place.
+fn vec2(at: WorldPoint) -> glam::Vec2 {
+    glam::Vec2::new(at.u_m as f32, at.v_m as f32)
+}
+
+/// Rank every population key, so ownership does not depend on file order.
+///
+/// A `BTreeMap` collects in key order by construction, so the enumeration is
+/// the rank. Extracted from the compile so it can be tested without preparing a
+/// document: the property it carries — that ranks come from the keys and not
+/// from the sequence — is exactly the kind of thing that is easy to reintroduce
+/// by writing `claimants.len()` back into the loop.
+fn owner_ranks<'a>(keys: impl IntoIterator<Item = &'a str>) -> BTreeMap<String, u16> {
+    let sorted: std::collections::BTreeSet<&str> = keys.into_iter().collect();
+    sorted
+        .into_iter()
+        .enumerate()
+        .map(|(rank, key)| (key.to_string(), rank as u16))
+        .collect()
 }
 
 /// A field spacing that resolves what the output can show.
@@ -438,6 +676,13 @@ struct MarkSink<'a> {
     builder: &'a mut SceneBuilder,
     projection: terrain_scene::projection::Projection,
     candidate: &'a DomainCandidate,
+    /// The placement group everything this candidate grows belongs to.
+    ///
+    /// Bound before the recipe runs rather than on its first emission, so a
+    /// recipe that emits nothing still has an identity — which is what lets a
+    /// report distinguish "no candidate here" from "a candidate that chose to
+    /// grow nothing".
+    anchor: AnchorIndex,
     appearance_base: u16,
     bound: &'a [SceneMaterialIndex],
     emitted: usize,
@@ -472,6 +717,7 @@ impl RecipeOutput for MarkSink<'_> {
                 let root = ScenePoint::new(root[0], root[1], root[2]);
                 SceneMark::Ribbon(RibbonMark {
                     stable_id: id,
+                    anchor: self.anchor,
                     order: PainterOrder::at(stratum, self.projection, root, 0, id),
                     material: self.material(appearance),
                     root,
@@ -494,6 +740,7 @@ impl RecipeOutput for MarkSink<'_> {
                 let root = ScenePoint::new(root[0], root[1], root[2]);
                 SceneMark::Curve(CurveMark {
                     stable_id: id,
+                    anchor: self.anchor,
                     order: PainterOrder::at(stratum, self.projection, root, 0, id),
                     material: self.material(appearance),
                     root,
@@ -518,6 +765,7 @@ impl RecipeOutput for MarkSink<'_> {
                 let reach = radius_m[0].max(radius_m[1]).max(height_m) as f64;
                 SceneMark::Analytic(AnalyticMark {
                     stable_id: id,
+                    anchor: self.anchor,
                     order: PainterOrder::at(
                         terrain_scene::mark::Stratum::Ground,
                         self.projection,
@@ -575,6 +823,97 @@ fn validate_scene(scene: &TerrainScene, diagnostics: &mut DiagnosticReport) {
             format!("{bad_material} marks name an appearance the scene has not bound"),
         );
     }
+
+    // A dangling index is silent at every layer that carries it and loud only
+    // at the renderer, which by then has no idea which recipe produced it.
+    let anchors = scene.anchors.len();
+    let dangling_marks = scene
+        .marks
+        .iter()
+        .filter(|mark| mark.anchor().index() >= anchors)
+        .count();
+    if dangling_marks > 0 {
+        diagnostics.error(
+            "dangling_anchor",
+            Location::at("scene.marks"),
+            format!("{dangling_marks} marks name a placement group the scene has no entry for"),
+        );
+    }
+
+    let prototypes = scene.prototypes.len();
+    let dangling_instances = scene
+        .instances
+        .iter()
+        .filter(|instance| {
+            instance.prototype.0 as usize >= prototypes || instance.anchor.index() >= anchors
+        })
+        .count();
+    if dangling_instances > 0 {
+        diagnostics.error(
+            "dangling_instance_reference",
+            Location::at("scene.instances"),
+            format!(
+                "{dangling_instances} instances name a prototype or placement group \
+                 the scene has no entry for"
+            ),
+        );
+    }
+
+    // A prototype key claimed twice with different geometry is a validation
+    // error rather than "last one wins": resolving it by order would make the
+    // shape depend on which recipe was traversed first.
+    let mut by_key: BTreeMap<(&str, u64), usize> = BTreeMap::new();
+    let mut collisions = 0usize;
+    for binding in &scene.prototypes {
+        let slot = by_key
+            .entry((binding.recipe.as_str(), binding.seed))
+            .or_insert(0);
+        *slot += 1;
+        if *slot > 1 {
+            collisions += 1;
+        }
+    }
+    if collisions > 0 {
+        diagnostics.error(
+            "prototype_key_collision",
+            Location::at("scene.prototypes"),
+            format!(
+                "{collisions} prototype bindings share a recipe and seed but describe \
+                 different geometry; two shapes cannot answer to one name"
+            ),
+        );
+    }
+
+    let mut bad_interactions = 0usize;
+    for interaction in &scene.interactions {
+        if interaction.anchor.index() >= anchors {
+            bad_interactions += 1;
+            continue;
+        }
+        if interaction.hard_clearance_m < 0.0 || interaction.response_reach_m < 0.0 {
+            bad_interactions += 1;
+            continue;
+        }
+        // A wildcard arm because the shape enum is `non_exhaustive`: a shape
+        // added later must not silently pass this check, so anything this
+        // build does not recognise is counted as bad rather than as fine.
+        match interaction.shape {
+            terrain_scene::scene::InteractionShape::Ellipse {
+                semi_u_m, semi_v_m, ..
+            } if semi_u_m > 0.0 && semi_v_m > 0.0 => {}
+            _ => bad_interactions += 1,
+        }
+    }
+    if bad_interactions > 0 {
+        diagnostics.error(
+            "invalid_interaction",
+            Location::at("scene.interactions"),
+            format!(
+                "{bad_interactions} interaction primitives have a nonpositive axis, a \
+                 negative reach, or name a placement group that does not exist"
+            ),
+        );
+    }
 }
 
 /// The world rectangle a request generates, halo included.
@@ -585,4 +924,46 @@ pub fn generated_bounds(request: &SceneRequest, halo_m: f64) -> WorldRect {
 /// A point at the ground surface, for a recipe placing something.
 pub fn ground_point(fields: &TerrainFieldStack, at: WorldPoint) -> [f64; 3] {
     [at.u_m, at.v_m, fields.surface_height(at) as f64]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owner_ranks_come_from_the_keys_and_not_from_the_order() {
+        // The property the fix exists for. `ownership::assign` lays owners out
+        // as consecutive intervals of one draw, so this index decides which
+        // population wins a contested candidate — and a document edit that
+        // moved a population up the file must not reassign anything.
+        let declared = ["meadow_flowers", "field_stones", "meadow_undergrowth"];
+        let reversed = ["meadow_undergrowth", "field_stones", "meadow_flowers"];
+        assert_eq!(
+            owner_ranks(declared.iter().copied()),
+            owner_ranks(reversed.iter().copied())
+        );
+    }
+
+    #[test]
+    fn owner_ranks_are_dense_and_start_at_zero() {
+        // Dense because ownership walks them as intervals; from zero because a
+        // gap would leave an interval nothing can win.
+        let ranks = owner_ranks(["c", "a", "b"].iter().copied());
+        let mut values: Vec<u16> = ranks.values().copied().collect();
+        values.sort_unstable();
+        assert_eq!(values, vec![0, 1, 2]);
+        assert_eq!(ranks["a"], 0);
+        assert_eq!(ranks["b"], 1);
+        assert_eq!(ranks["c"], 2);
+    }
+
+    #[test]
+    fn a_repeated_key_collapses_rather_than_producing_two_ranks() {
+        // Duplicate population keys are refused upstream by document
+        // validation. If one ever reached here, one key must still mean one
+        // owner — two ranks for one key would give that population two
+        // intervals and double its share of every contested candidate.
+        let ranks = owner_ranks(["a", "b", "a"].iter().copied());
+        assert_eq!(ranks.len(), 2);
+    }
 }

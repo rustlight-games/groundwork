@@ -727,7 +727,8 @@ impl GroundProfileLibrary {
     }
 
     pub fn insert(&mut self, path: impl Into<String>, profile: GroundMaterialProfile) {
-        self.entries.insert(path.into(), std::sync::Arc::new(profile));
+        self.entries
+            .insert(path.into(), std::sync::Arc::new(profile));
     }
 
     pub fn with(mut self, path: impl Into<String>, profile: GroundMaterialProfile) -> Self {

@@ -33,9 +33,9 @@ pub mod domain;
 pub mod families;
 pub mod fastmath;
 pub mod field;
-pub mod ground;
 pub mod fixtures;
 pub mod geometry;
+pub mod ground;
 pub mod iso;
 pub mod ownership;
 pub mod page;
@@ -51,6 +51,7 @@ pub mod style;
 pub mod sun;
 pub mod tone;
 pub mod transition;
+pub mod tuned;
 
 pub use compiler::{
     COMPILER_VERSION, SceneCompilation, SceneCompileError, SceneCompileOptions, SceneCompileReport,
@@ -75,3 +76,4 @@ pub use tone::Tone;
 pub use transition::{
     RealisedSubstrate, TRANSITION_VERSION, TransitionProfile, realise, realise_set,
 };
+pub use tuned::{RecipeRenderClass, TunedPass};

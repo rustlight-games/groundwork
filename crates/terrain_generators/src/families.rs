@@ -36,6 +36,7 @@ use terrain_scene::mark::{MarkAttributes, RibbonGeometry, Stratum, TipShape, Wid
 use crate::domain::{CandidateDomainDef, DomainCandidate, SpacingPolicy};
 use crate::population::EmittedMark;
 use crate::recipe::{RecipeContext, RecipeOutput, TerrainRecipe, TerrainRecipeRegistry};
+use crate::tuned::{RecipeRenderClass, TunedPass};
 
 /// Every family this build knows how to grow.
 ///
@@ -126,6 +127,14 @@ const TUFT_SPREAD_M: f64 = 0.03;
 impl TerrainRecipe for GrassTuft {
     fn key(&self) -> RecipeKey {
         key("population.grass_tuft")
+    }
+
+    fn render_class(&self) -> RecipeRenderClass {
+        // The tuned tuft pass already grows this, and grows it better. What a
+        // document declaring `population.grass_tuft` buys is *control* over that
+        // pass — not a second scatter of generic clumps standing in the same
+        // ground.
+        RecipeRenderClass::Tuned(TunedPass::Tuft)
     }
 
     fn domain(&self) -> DomainKey {
@@ -336,6 +345,14 @@ impl TerrainRecipe for GrassFine {
         key("population.grass_fine")
     }
 
+    fn render_class(&self) -> RecipeRenderClass {
+        // The closed canopy. Emitting these generically would put a coarse
+        // ribbon field behind the tuned one at four thousand marks a square
+        // metre, which is the most expensive way there is to make a meadow
+        // look worse.
+        RecipeRenderClass::Tuned(TunedPass::Fine)
+    }
+
     fn domain(&self) -> DomainKey {
         domain_key("vegetation.fine")
     }
@@ -446,6 +463,10 @@ impl TerrainRecipe for GroundThatch {
         key("population.ground_thatch")
     }
 
+    fn render_class(&self) -> RecipeRenderClass {
+        RecipeRenderClass::Tuned(TunedPass::Thatch)
+    }
+
     fn domain(&self) -> DomainKey {
         domain_key("vegetation.fine")
     }
@@ -542,6 +563,13 @@ pub struct MeadowFlowers;
 impl TerrainRecipe for MeadowFlowers {
     fn key(&self) -> RecipeKey {
         key("population.meadow_flowers")
+    }
+
+    fn render_class(&self) -> RecipeRenderClass {
+        // Nothing in the tuned generator grows a flower — `placement.rs` has no
+        // petal, bloom or flower anywhere in it. This recipe is the only source,
+        // so it is the one that renders.
+        RecipeRenderClass::Secondary
     }
 
     fn domain(&self) -> DomainKey {
@@ -655,6 +683,10 @@ impl TerrainRecipe for FieldStones {
         key("population.field_stones")
     }
 
+    fn render_class(&self) -> RecipeRenderClass {
+        RecipeRenderClass::Secondary
+    }
+
     fn domain(&self) -> DomainKey {
         domain_key("rock.large")
     }
@@ -747,6 +779,15 @@ pub struct DirtClods;
 impl TerrainRecipe for DirtClods {
     fn key(&self) -> RecipeKey {
         key("population.dirt_clods")
+    }
+
+    fn render_class(&self) -> RecipeRenderClass {
+        // Deferred, not deleted. The ground profile's aggregate relief band
+        // already carries clod-scale structure as displaced mesh; drawing this
+        // population beside it would count one physical signal twice. The
+        // declaration stays so the intent is not lost, and the compiler reports
+        // it rather than dropping it in silence.
+        RecipeRenderClass::Deferred
     }
 
     fn domain(&self) -> DomainKey {
@@ -863,9 +904,17 @@ mod tests {
     }
 
     fn emit_all(recipe: &dyn TerrainRecipe) -> crate::recipe::CollectedEmissions {
-        let fields = context_fields();
+        let fields = std::sync::Arc::new(context_fields());
+        let ground = crate::ground::GroundEvaluator::bare(
+            std::sync::Arc::clone(&fields),
+            crate::transition::TransitionProfile::SMOOTH,
+            0xabcd,
+        );
+        let ground_sample = ground.sample(glam::Vec2::new(0.1, 0.2));
         let context = RecipeContext {
             fields: &fields,
+            ground: &ground,
+            ground_sample: &ground_sample,
             seeds: SeedContext::new(RootSeed::new(0xabcd), recipe.version()),
             parameters: &ParameterObject::default(),
             substrate: crate::transition::realise(

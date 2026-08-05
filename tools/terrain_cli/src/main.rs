@@ -1014,7 +1014,6 @@ fn describe(page: Page, params: &GrassParams) -> String {
     )
 }
 
-
 /// Compile a document into one scene and render the nine-tile plate.
 ///
 /// The whole production path in one command, and the order is the point: the
@@ -1094,6 +1093,7 @@ fn compile(args: &CompileArgs) -> ExitCode {
         derive: terrain_scene::derive::DerivedFieldRequest::ALL,
         transition,
         validate: true,
+        ..terrain_generators::SceneCompileOptions::default()
     };
 
     // The halo is derived by the compiler from every reach that exists, so the
@@ -1116,26 +1116,18 @@ fn compile(args: &CompileArgs) -> ExitCode {
     let compile_time = started.elapsed();
 
     // One evaluator, shared by everything that asks about the ground: the mesh
-    // that carries its relief, the shader that colours it, and the overlay that
-    // decides how much grass grows on it. See `terrain_generators::ground`.
+    // that carries its relief, the shader that colours it, the overlay that
+    // decides how much grass grows on it, and every secondary root registered
+    // to it. See `terrain_generators::ground`.
     //
-    // The lattice it splits its relief bands at is chosen by the soils in play,
-    // so a document of hardpan and beach sand gets a finer mesh than one of
-    // turned farm soil rather than both getting a constant that suits neither.
-    let spacing = terrain_generators::ground::BandSplit::spacing_for(
-        (0..terrain.materials().len())
-            .filter_map(|index| {
-                terrain.material_profile(terrain_core::MaterialIndex(index as u16))
-            })
-            .map(|profile| profile.as_ref()),
-    )
-    .unwrap_or(0.04);
-    let evaluator = std::sync::Arc::new(terrain_generators::ground::GroundEvaluator::new(
-        &terrain,
-        compiled.fields.clone(),
-        transition,
-        spacing,
-    ));
+    // Taken from the compilation rather than rebuilt here, and that is the
+    // whole of this line's significance. The CLI used to construct a second
+    // evaluator from the same inputs — which agreed, until the day one of the
+    // two construction sites was edited and the other was not. The lattice it
+    // splits its relief bands at is still chosen by the soils in play, but the
+    // choosing now happens once, in the compiler, before any content is placed
+    // against it.
+    let evaluator = std::sync::Arc::clone(&compiled.ground);
     for (key, bands) in &evaluator.band_split().geometry {
         let shader = evaluator
             .band_split()
@@ -1257,8 +1249,22 @@ fn compile(args: &CompileArgs) -> ExitCode {
         report.marks_emitted,
         report.marks_by_population.len()
     );
-    for (population, count) in &report.marks_by_population {
-        println!("             {population}: {count}");
+    // Every population and who draws it, not only the ones that emitted. A
+    // population showing nothing is the question an author actually has, and
+    // "tuned(fine)" answers it where a missing row does not.
+    for (population, class) in &report.render_classes {
+        let marks = report
+            .marks_by_population
+            .get(population)
+            .copied()
+            .unwrap_or(0);
+        println!("             {population}: {class}, {marks} marks");
+    }
+    if !report.deferred_populations.is_empty() {
+        println!(
+            "  deferred {} — declared and understood, not drawn yet",
+            report.deferred_populations.join(", ")
+        );
     }
     println!(
         "  scene    {} — {:.1} marks/m2",

@@ -1,3 +1,8 @@
 docs/references/*.jpg filter=lfs diff=lfs merge=lfs -text
 docs/references/*.jpeg filter=lfs diff=lfs merge=lfs -text
 docs/references/*.png filter=lfs diff=lfs merge=lfs -text
+
+# Pinned baselines are compared as text, and a checkout that rewrote their line
+# endings would fail the comparison while the content was identical.
+crates/*/tests/fixtures/**/*.txt text eol=lf
+crates/*/tests/fixtures/**/*.ron text eol=lf

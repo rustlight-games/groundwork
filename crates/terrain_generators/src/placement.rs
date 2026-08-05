@@ -38,6 +38,7 @@ use crate::rng::{Draw, Stream};
 use crate::stroke::{Profile, Stroke};
 use crate::style::GrassParams;
 use crate::tone::Tone;
+use crate::tuned::TunedPass;
 
 /// Hermite ramp between two edges.
 #[inline]
@@ -156,6 +157,7 @@ pub fn plant(marks: &mut Vec<Stroke>, bed: &Bed) {
         bed,
         &mut ground,
         Stream::Thatch,
+        TunedPass::Thatch,
         bed.params.style.thatch,
         // Thinned hard over bare ground, on top of the coverage every pass
         // gets. The mat is the layer that actually closes a clearing: it is
@@ -188,6 +190,7 @@ pub fn plant(marks: &mut Vec<Stroke>, bed: &Bed) {
         bed,
         &mut ground,
         Stream::Fine,
+        TunedPass::Fine,
         bed.params.style.fine,
         // Thickest where the tufts are thinnest, so a quiet passage is a
         // *smoother* canopy rather than a balder one.
@@ -213,6 +216,7 @@ pub fn plant(marks: &mut Vec<Stroke>, bed: &Bed) {
         bed,
         &mut ground,
         Stream::Blade,
+        TunedPass::Tuft,
         bed.params.style.tufts,
         // Wider than it was, now that this field runs mostly at the broad scale
         // rather than the mound scale. Thinning the tufts inside a single mound
@@ -227,6 +231,7 @@ pub fn plant(marks: &mut Vec<Stroke>, bed: &Bed) {
         bed,
         &mut ground,
         Stream::Leaf,
+        TunedPass::Broadleaf,
         bed.params.style.leaves,
         |ground| (0.35 + ground.resolution * 0.35) * ground.colony,
         leaf_cluster,
@@ -293,6 +298,7 @@ fn scatter(
     bed: &Bed,
     cache: &mut GroundCache,
     stream: Stream,
+    pass: TunedPass,
     per_square_metre: f32,
     weight: impl Fn(&Ground) -> f32,
     mut place: impl FnMut(&mut Vec<Stroke>, &Page, &mut Draw, Vec2, &Ground, &GrassParams),
@@ -346,7 +352,16 @@ fn scatter(
             if !draw.chance((ground.density * coverage * weight(&ground)).min(1.0)) {
                 continue;
             }
+            // Stamped over the range this call added rather than threaded into
+            // every stroke constructor. A tuft emits five to nine blades and a
+            // leaf cluster several leaves, so the alternative is the same label
+            // written out at a dozen construction sites — and one of them
+            // eventually gets it wrong.
+            let before = marks.len();
             place(marks, page, &mut draw, root, &ground, params);
+            for mark in &mut marks[before..] {
+                mark.pass = pass;
+            }
         }
     }
 }

@@ -27,7 +27,7 @@
 
 use terrain_core::digest::{Digest, Digestible};
 
-use crate::mark::{Aabb3, MarkAttributes, MarkId, PainterOrder, SceneMaterialIndex};
+use crate::mark::{Aabb3, AnchorIndex, MarkAttributes, MarkId, PainterOrder, SceneMaterialIndex};
 use crate::projection::ScenePoint;
 
 /// Which prototype in the scene's table.
@@ -38,6 +38,11 @@ pub struct PrototypeIndex(pub u16);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PrototypeInstance {
     pub stable_id: MarkId,
+    /// The placement group this instance belongs to.
+    ///
+    /// A flower head is an instance and its stem is a curve mark; they are one
+    /// plant. See [`crate::scene::PlacementAnchor`].
+    pub anchor: AnchorIndex,
     pub order: PainterOrder,
     pub prototype: PrototypeIndex,
     pub material: SceneMaterialIndex,
@@ -76,6 +81,7 @@ impl Digestible for PrototypeInstance {
     fn absorb(&self, digest: &mut Digest) {
         digest
             .u64(self.stable_id.0)
+            .u32(self.anchor.0)
             .u64(self.order.bits())
             .u32(self.prototype.0 as u32)
             .u32(self.material.0 as u32)
@@ -139,6 +145,7 @@ mod tests {
     fn instance(id: u64) -> PrototypeInstance {
         PrototypeInstance {
             stable_id: MarkId(id),
+            anchor: AnchorIndex::UNGROUPED,
             order: PainterOrder::new(Stratum::Canopy, 0.0, 0, MarkId(id)),
             prototype: PrototypeIndex(0),
             material: SceneMaterialIndex(0),

@@ -270,6 +270,32 @@ impl GroundEvaluator {
         }
     }
 
+    /// An evaluator over bare fields: no materials, no profiles, no roles.
+    ///
+    /// What every answer degenerates to when a document names no ground
+    /// profiles — empty substrate, default state, zero relief, full vegetation
+    /// support — expressed directly rather than reached through a
+    /// `PreparedTerrain` that has nothing to contribute.
+    ///
+    /// Its real use is fixtures. A recipe test wants to check that a stem comes
+    /// out the right length, and making it construct a document, prepare it and
+    /// resolve a profile library first would mean every geometry test also
+    /// tested the loader.
+    pub fn bare(
+        fields: Arc<TerrainFieldStack>,
+        transition: TransitionProfile,
+        root_seed: u64,
+    ) -> Self {
+        Self {
+            fields,
+            transition,
+            root_seed,
+            materials: Vec::new(),
+            split: BandSplit::resolve(std::iter::empty(), 0.04),
+            roles: Roles::default(),
+        }
+    }
+
     /// The document's vegetation-density channel here, or one.
     ///
     /// Separate from [`vegetation_support`](Self::vegetation_support) because
@@ -466,6 +492,37 @@ impl GroundEvaluator {
             state,
             vegetation_support,
         }
+    }
+
+    /// The height a thing standing on this ground actually rests at, metres.
+    ///
+    /// ```text
+    /// final_surface_z = authored elevation
+    ///                 + authored microrelief      (both inside surface_height)
+    ///                 + profile geometry displacement
+    /// ```
+    ///
+    /// The one number a stone, a stem or a leaf should be registered to, and the
+    /// reason it exists as a named method rather than being spelled out at each
+    /// call site: the ground mesh Cycles renders is displaced by the third term,
+    /// and anything placed against only the first two floats or sinks by however
+    /// much relief the profile happened to have there. Centimetres, which is
+    /// exactly the scale at which a pebble stops touching the ground.
+    ///
+    /// Deliberately geometry only. Shader bump is not in here and must not be: a
+    /// stone rests on a surface, not on a normal perturbation, and adding the
+    /// bump would put objects at a height no mesh in the scene has.
+    pub fn final_surface_z_m(&self, world: Vec2) -> f32 {
+        let at = WorldPoint::new(world.x as f64, world.y as f64);
+        self.fields.surface_height(at) + self.displacement(world)
+    }
+
+    /// The field stack this evaluator reads.
+    ///
+    /// Exposed so a caller holding the evaluator does not need to carry the
+    /// stack beside it and risk the two being different objects.
+    pub fn fields(&self) -> &Arc<TerrainFieldStack> {
+        &self.fields
     }
 
     /// The mesh relief at a point, in metres.
@@ -732,8 +789,10 @@ fn crack_depth(
         return 0.0;
     }
     let dryness = 1.0 - state.moisture / cracks.moisture_ceiling.max(f32::MIN_POSITIVE);
-    let opportunity =
-        dryness * state.desiccation.max(dryness * 0.5) * (1.0 - state.disturbance) * profile.structure.cohesion;
+    let opportunity = dryness
+        * state.desiccation.max(dryness * 0.5)
+        * (1.0 - state.disturbance)
+        * profile.structure.cohesion;
     if opportunity <= 0.0 {
         return 0.0;
     }
@@ -889,10 +948,7 @@ mod tests {
         assert_eq!(BandSplit::spacing_for([&cloddy]), Some(0.09 / 4.0));
         // Two soils together need the finer of the two lattices, or the smooth
         // one aliases while the cloddy one looks fine.
-        assert_eq!(
-            BandSplit::spacing_for([&cloddy, &smooth]),
-            Some(0.03 / 4.0)
-        );
+        assert_eq!(BandSplit::spacing_for([&cloddy, &smooth]), Some(0.03 / 4.0));
     }
 
     #[test]
@@ -1083,6 +1139,9 @@ mod tests {
         };
         let along_wind = variation(Vec2::new(0.01, 0.0));
         let across_wind = variation(Vec2::new(0.0, 0.01));
-        assert!(across_wind < along_wind * 0.01, "{across_wind} vs {along_wind}");
+        assert!(
+            across_wind < along_wind * 0.01,
+            "{across_wind} vs {along_wind}"
+        );
     }
 }

@@ -32,10 +32,12 @@
 
 pub mod compare;
 pub mod critique;
+pub mod documents;
 pub mod fingerprint;
 pub mod fixtures;
 pub mod generic;
 pub mod iso;
+pub mod meadow;
 pub mod metrics;
 pub mod report;
 pub mod scenarios;

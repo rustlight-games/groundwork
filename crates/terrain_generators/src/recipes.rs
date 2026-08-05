@@ -817,8 +817,7 @@ mod tests {
             materials: vec![terrain_core::document::MaterialDef {
                 key: MaterialKey::new("grass_lush").expect("valid"),
                 display_name: "Lush Grass".into(),
-                appearance: terrain_core::ids::AppearanceKey::new("surface.ground")
-                    .expect("valid"),
+                appearance: terrain_core::ids::AppearanceKey::new("surface.ground").expect("valid"),
                 profile: None,
                 vegetation_affinity: None,
             }],

@@ -1,0 +1,631 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://groundwork.local/schemas/ground-benchmark-report-v1.schema.json",
+  "title": "Groundwork Ground Benchmark Report",
+  "description": "Durable interchange schema for one deterministic Groundwork soil/ground benchmark result. Rust report types remain authoritative; this schema exists for validation, CI, comparison tools, and archived baselines.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run",
+    "source",
+    "scenario",
+    "relief_plan",
+    "counts",
+    "topography",
+    "spectrum",
+    "optics",
+    "composability",
+    "performance",
+    "artifacts",
+    "verdict"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "run": { "$ref": "#/$defs/runIdentity" },
+    "source": { "$ref": "#/$defs/sourceIdentity" },
+    "scenario": { "$ref": "#/$defs/scenarioIdentity" },
+    "relief_plan": { "$ref": "#/$defs/reliefPlan" },
+    "counts": { "$ref": "#/$defs/groundCounts" },
+    "topography": { "$ref": "#/$defs/topographyMetrics" },
+    "spectrum": { "$ref": "#/$defs/spectralMetrics" },
+    "cracks": {
+      "oneOf": [
+        { "$ref": "#/$defs/crackMetrics" },
+        { "type": "null" }
+      ]
+    },
+    "ripples": {
+      "oneOf": [
+        { "$ref": "#/$defs/rippleMetrics" },
+        { "type": "null" }
+      ]
+    },
+    "optics": { "$ref": "#/$defs/opticsMetrics" },
+    "composability": { "$ref": "#/$defs/composabilityMetrics" },
+    "render": {
+      "oneOf": [
+        { "$ref": "#/$defs/renderMetrics" },
+        { "type": "null" }
+      ]
+    },
+    "performance": { "$ref": "#/$defs/performanceMetrics" },
+    "artifacts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/artifactRecord" }
+    },
+    "verdict": { "$ref": "#/$defs/verdict" }
+  },
+  "$defs": {
+    "finiteNumber": {
+      "type": "number"
+    },
+    "nonNegativeNumber": {
+      "type": "number",
+      "minimum": 0
+    },
+    "fraction": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "seed": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "checksum": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128,
+      "pattern": "^[0-9a-f]+$"
+    },
+    "vec2": {
+      "type": "array",
+      "prefixItems": [
+        { "$ref": "#/$defs/finiteNumber" },
+        { "$ref": "#/$defs/finiteNumber" }
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min_m", "max_m"],
+      "properties": {
+        "min_m": { "$ref": "#/$defs/vec2" },
+        "max_m": { "$ref": "#/$defs/vec2" }
+      }
+    },
+    "scalarSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count",
+        "min",
+        "max",
+        "mean",
+        "median",
+        "stddev",
+        "mad",
+        "p01",
+        "p05",
+        "p95",
+        "p99"
+      ],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "min": { "$ref": "#/$defs/finiteNumber" },
+        "max": { "$ref": "#/$defs/finiteNumber" },
+        "mean": { "$ref": "#/$defs/finiteNumber" },
+        "median": { "$ref": "#/$defs/finiteNumber" },
+        "stddev": { "$ref": "#/$defs/nonNegativeNumber" },
+        "mad": { "$ref": "#/$defs/nonNegativeNumber" },
+        "p01": { "$ref": "#/$defs/finiteNumber" },
+        "p05": { "$ref": "#/$defs/finiteNumber" },
+        "p95": { "$ref": "#/$defs/finiteNumber" },
+        "p99": { "$ref": "#/$defs/finiteNumber" }
+      }
+    },
+    "machineIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "arch", "cpu", "gpu", "rustc", "blender", "cycles_device"],
+      "properties": {
+        "os": { "type": "string", "minLength": 1 },
+        "arch": { "type": "string", "minLength": 1 },
+        "cpu": { "type": "string", "minLength": 1 },
+        "gpu": { "type": "string", "minLength": 1 },
+        "driver": { "type": "string" },
+        "rustc": { "type": "string", "minLength": 1 },
+        "cargo_profile": { "type": "string", "enum": ["dev", "release", "bench", "custom"] },
+        "blender": { "type": "string", "minLength": 1 },
+        "blender_build_hash": { "type": "string" },
+        "cycles_device": { "type": "string", "minLength": 1 },
+        "logical_threads": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "runIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "machine", "repetitions", "warmup_repetitions"],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "timestamp_utc": { "type": "string", "format": "date-time" },
+        "machine": { "$ref": "#/$defs/machineIdentity" },
+        "repetitions": { "type": "integer", "minimum": 1 },
+        "warmup_repetitions": { "type": "integer", "minimum": 0 },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "namedFingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "fingerprint"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "fingerprint": { "$ref": "#/$defs/fingerprint" }
+      }
+    },
+    "sourceIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "document_digest",
+        "root_seed",
+        "prepared_version",
+        "compiler_version",
+        "generator_version",
+        "render_profile_digest",
+        "profile_digests"
+      ],
+      "properties": {
+        "document_path": { "type": "string" },
+        "document_digest": { "$ref": "#/$defs/fingerprint" },
+        "root_seed": { "$ref": "#/$defs/seed" },
+        "prepared_version": { "type": "integer", "minimum": 0 },
+        "compiler_version": { "type": "integer", "minimum": 0 },
+        "generator_version": { "type": "integer", "minimum": 0 },
+        "seed_algorithm_version": { "type": "integer", "minimum": 0 },
+        "digest_algorithm_version": { "type": "integer", "minimum": 0 },
+        "scene_fingerprint": { "$ref": "#/$defs/fingerprint" },
+        "field_fingerprint": { "$ref": "#/$defs/fingerprint" },
+        "render_profile_digest": { "$ref": "#/$defs/fingerprint" },
+        "relief_plan_fingerprint": { "$ref": "#/$defs/fingerprint" },
+        "roughness_lut_digest": { "$ref": "#/$defs/fingerprint" },
+        "profile_digests": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/namedFingerprint" }
+        },
+        "recipe_versions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "version"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1 },
+              "version": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "gridIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin_index", "spacing_m", "columns", "rows", "anchor", "row_order"],
+      "properties": {
+        "origin_index": {
+          "type": "array",
+          "prefixItems": [
+            { "type": "integer" },
+            { "type": "integer" }
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "spacing_m": { "type": "number", "exclusiveMinimum": 0 },
+        "columns": { "type": "integer", "minimum": 1 },
+        "rows": { "type": "integer", "minimum": 1 },
+        "anchor": { "type": "string", "enum": ["Centre", "Edge"] },
+        "row_order": { "type": "string", "enum": ["TopDown", "BottomUp"] }
+      }
+    },
+    "scenarioIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "seed", "bounds", "analysis_grid"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "seed": { "$ref": "#/$defs/seed" },
+        "bounds": { "$ref": "#/$defs/bounds" },
+        "analysis_grid": { "$ref": "#/$defs/gridIdentity" },
+        "trace_px_per_metre": { "type": "number", "exclusiveMinimum": 0 },
+        "visible_margin_m": { "$ref": "#/$defs/nonNegativeNumber" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "plannedContribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "profile", "index", "wavelength_m", "amplitude_m", "tier"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["band", "ripple", "crack_primary", "crack_secondary", "crack_curl"] },
+        "profile": { "type": "string", "minLength": 1 },
+        "index": { "type": "integer", "minimum": 0 },
+        "wavelength_m": { "type": "number", "exclusiveMinimum": 0 },
+        "amplitude_m": { "$ref": "#/$defs/nonNegativeNumber" },
+        "tier": { "type": "string", "enum": ["Geometry", "Bump", "Microfacet", "DroppedWithDiagnostic"] },
+        "compaction_response": { "$ref": "#/$defs/fraction" },
+        "moisture_flattening": { "$ref": "#/$defs/fraction" },
+        "clustered": { "type": "boolean" },
+        "reason": { "type": "string" }
+      }
+    },
+    "reliefPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint", "geometry_spacing_m", "traced_pixel_m", "contributions"],
+      "properties": {
+        "fingerprint": { "$ref": "#/$defs/fingerprint" },
+        "geometry_spacing_m": { "type": "number", "exclusiveMinimum": 0 },
+        "bump_spacing_m": {
+          "oneOf": [
+            { "type": "number", "exclusiveMinimum": 0 },
+            { "type": "null" }
+          ]
+        },
+        "traced_pixel_m": { "type": "number", "exclusiveMinimum": 0 },
+        "geometry_samples_per_wavelength": { "type": "number", "minimum": 2 },
+        "bump_samples_per_wavelength": { "type": "number", "minimum": 2 },
+        "budget_reclassified": { "type": "boolean" },
+        "contributions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/plannedContribution" }
+        }
+      }
+    },
+    "groundCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ground_samples", "geometry_vertices", "geometry_triangles", "profile_count", "relief_contribution_count"],
+      "properties": {
+        "ground_samples": { "type": "integer", "minimum": 0 },
+        "bump_samples": { "type": "integer", "minimum": 0 },
+        "geometry_vertices": { "type": "integer", "minimum": 0 },
+        "geometry_triangles": { "type": "integer", "minimum": 0 },
+        "profile_count": { "type": "integer", "minimum": 0 },
+        "relief_contribution_count": { "type": "integer", "minimum": 0 },
+        "geometry_contribution_count": { "type": "integer", "minimum": 0 },
+        "bump_contribution_count": { "type": "integer", "minimum": 0 },
+        "microfacet_contribution_count": { "type": "integer", "minimum": 0 },
+        "package_bytes": { "type": "integer", "minimum": 0 },
+        "blender_object_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "scaleMetric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lag_m", "height_difference_rms_m", "slope_rms", "curvature_rms_per_m"],
+      "properties": {
+        "direction_rad": { "$ref": "#/$defs/finiteNumber" },
+        "lag_m": { "type": "number", "exclusiveMinimum": 0 },
+        "height_difference_rms_m": { "$ref": "#/$defs/nonNegativeNumber" },
+        "slope_rms": { "$ref": "#/$defs/nonNegativeNumber" },
+        "curvature_rms_per_m": { "$ref": "#/$defs/nonNegativeNumber" }
+      }
+    },
+    "semivariogramMetric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["direction_rad", "nugget_m2", "sill_m2", "practical_range_m", "samples"],
+      "properties": {
+        "direction_rad": { "$ref": "#/$defs/finiteNumber" },
+        "nugget_m2": { "$ref": "#/$defs/nonNegativeNumber" },
+        "sill_m2": { "$ref": "#/$defs/nonNegativeNumber" },
+        "practical_range_m": { "$ref": "#/$defs/nonNegativeNumber" },
+        "autocorrelation_1e_m": { "$ref": "#/$defs/nonNegativeNumber" },
+        "samples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["lag_m", "gamma_m2", "pair_count"],
+            "properties": {
+              "lag_m": { "$ref": "#/$defs/nonNegativeNumber" },
+              "gamma_m2": { "$ref": "#/$defs/nonNegativeNumber" },
+              "pair_count": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "topographyMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "height_m",
+        "sa_m",
+        "sq_m",
+        "ssk",
+        "sku",
+        "rms_slope",
+        "cavity_height_pearson",
+        "cavity_height_spearman",
+        "scale_dependent",
+        "semivariograms"
+      ],
+      "properties": {
+        "height_m": { "$ref": "#/$defs/scalarSummary" },
+        "sa_m": { "$ref": "#/$defs/nonNegativeNumber" },
+        "sq_m": { "$ref": "#/$defs/nonNegativeNumber" },
+        "ssk": { "$ref": "#/$defs/finiteNumber" },
+        "sku": { "$ref": "#/$defs/nonNegativeNumber" },
+        "rms_slope": { "$ref": "#/$defs/nonNegativeNumber" },
+        "positive_area_fraction": { "$ref": "#/$defs/fraction" },
+        "cavity_height_pearson": { "$ref": "#/$defs/finiteNumber" },
+        "cavity_height_spearman": { "$ref": "#/$defs/finiteNumber" },
+        "detrend_plane": {
+          "type": "array",
+          "prefixItems": [
+            { "$ref": "#/$defs/finiteNumber" },
+            { "$ref": "#/$defs/finiteNumber" },
+            { "$ref": "#/$defs/finiteNumber" }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "scale_dependent": { "type": "array", "items": { "$ref": "#/$defs/scaleMetric" } },
+        "semivariograms": { "type": "array", "items": { "$ref": "#/$defs/semivariogramMetric" } }
+      }
+    },
+    "spectralBandMetric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "declared_wavelength_m", "dominant_wavelength_m", "energy_m2", "energy_ratio_to_reference"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1 },
+        "declared_wavelength_m": { "type": "number", "exclusiveMinimum": 0 },
+        "dominant_wavelength_m": { "type": "number", "exclusiveMinimum": 0 },
+        "energy_m2": { "$ref": "#/$defs/nonNegativeNumber" },
+        "energy_ratio_to_reference": { "$ref": "#/$defs/nonNegativeNumber" },
+        "out_of_band_fraction": { "$ref": "#/$defs/fraction" },
+        "tier": { "type": "string", "enum": ["Geometry", "Bump", "Microfacet"] }
+      }
+    },
+    "spectralMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variance_from_psd_m2", "parseval_relative_error", "axis_grid_energy_fraction", "alias_energy_fraction", "bands"],
+      "properties": {
+        "variance_from_psd_m2": { "$ref": "#/$defs/nonNegativeNumber" },
+        "parseval_relative_error": { "$ref": "#/$defs/nonNegativeNumber" },
+        "axis_grid_energy_fraction": { "$ref": "#/$defs/fraction" },
+        "alias_energy_fraction": { "$ref": "#/$defs/fraction" },
+        "anisotropy": { "$ref": "#/$defs/fraction" },
+        "principal_wavevector_rad": { "$ref": "#/$defs/finiteNumber" },
+        "bands": { "type": "array", "items": { "$ref": "#/$defs/spectralBandMetric" } }
+      }
+    },
+    "crackMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["area_fraction", "width_m", "skeleton_length_per_m2", "endpoint_density_per_m2", "junction_density_per_m2", "component_count", "depth_m"],
+      "properties": {
+        "area_fraction": { "$ref": "#/$defs/fraction" },
+        "width_m": { "$ref": "#/$defs/scalarSummary" },
+        "skeleton_length_per_m2": { "$ref": "#/$defs/nonNegativeNumber" },
+        "endpoint_density_per_m2": { "$ref": "#/$defs/nonNegativeNumber" },
+        "junction_density_per_m2": { "$ref": "#/$defs/nonNegativeNumber" },
+        "component_count": { "type": "integer", "minimum": 0 },
+        "equivalent_polygon_diameter_m": { "$ref": "#/$defs/scalarSummary" },
+        "primary_secondary_length_ratio": { "$ref": "#/$defs/nonNegativeNumber" },
+        "depth_m": { "$ref": "#/$defs/scalarSummary" },
+        "curl_height_m": { "$ref": "#/$defs/scalarSummary" }
+      }
+    },
+    "rippleMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dominant_wavelength_m", "wavelength_relative_error", "crest_direction_rad", "direction_error_deg", "anisotropy", "crest_lee_slope_ratio"],
+      "properties": {
+        "dominant_wavelength_m": { "type": "number", "exclusiveMinimum": 0 },
+        "wavelength_relative_error": { "$ref": "#/$defs/nonNegativeNumber" },
+        "crest_direction_rad": { "$ref": "#/$defs/finiteNumber" },
+        "direction_error_deg": { "$ref": "#/$defs/nonNegativeNumber" },
+        "anisotropy": { "$ref": "#/$defs/fraction" },
+        "crest_lee_slope_ratio": { "$ref": "#/$defs/nonNegativeNumber" },
+        "phase_meander_rms_m": { "$ref": "#/$defs/nonNegativeNumber" },
+        "meander_correlation_length_m": { "$ref": "#/$defs/nonNegativeNumber" },
+        "wet_directional_energy_ratio": { "$ref": "#/$defs/nonNegativeNumber" }
+      }
+    },
+    "colourMetric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "linear_rgb_mean", "linear_rgb_median", "luminance", "g_over_r", "b_over_r"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1 },
+        "linear_rgb_mean": {
+          "type": "array",
+          "prefixItems": [
+            { "$ref": "#/$defs/nonNegativeNumber" },
+            { "$ref": "#/$defs/nonNegativeNumber" },
+            { "$ref": "#/$defs/nonNegativeNumber" }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "linear_rgb_median": {
+          "type": "array",
+          "prefixItems": [
+            { "$ref": "#/$defs/nonNegativeNumber" },
+            { "$ref": "#/$defs/nonNegativeNumber" },
+            { "$ref": "#/$defs/nonNegativeNumber" }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "luminance": { "$ref": "#/$defs/nonNegativeNumber" },
+        "g_over_r": { "$ref": "#/$defs/nonNegativeNumber" },
+        "b_over_r": { "$ref": "#/$defs/nonNegativeNumber" },
+        "lab_median": {
+          "type": "array",
+          "prefixItems": [
+            { "$ref": "#/$defs/finiteNumber" },
+            { "$ref": "#/$defs/finiteNumber" },
+            { "$ref": "#/$defs/finiteNumber" }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "delta_e_2000_to_reference": { "$ref": "#/$defs/nonNegativeNumber" }
+      }
+    },
+    "opticsMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["colours", "moisture_albedo_monotone", "wet_film_coat_monotone", "wet_film_zero_exact"],
+      "properties": {
+        "colours": { "type": "array", "items": { "$ref": "#/$defs/colourMetric" } },
+        "moisture_albedo_monotone": { "type": "boolean" },
+        "wet_film_coat_monotone": { "type": "boolean" },
+        "wet_film_zero_exact": { "type": "boolean" },
+        "cavity_luminance_correlation": { "$ref": "#/$defs/finiteNumber" },
+        "coat_peak_luminance": { "$ref": "#/$defs/nonNegativeNumber" },
+        "coat_integrated_glossy_energy": { "$ref": "#/$defs/nonNegativeNumber" },
+        "highlight_width_px": { "$ref": "#/$defs/nonNegativeNumber" }
+      }
+    },
+    "comparisonMetric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "max_abs", "rms", "bit_exact"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1 },
+        "max_abs": { "$ref": "#/$defs/nonNegativeNumber" },
+        "rms": { "$ref": "#/$defs/nonNegativeNumber" },
+        "bit_exact": { "type": "boolean" }
+      }
+    },
+    "composabilityMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["whole_vs_partition", "overlap", "all_structural_exact"],
+      "properties": {
+        "whole_vs_partition": { "type": "array", "items": { "$ref": "#/$defs/comparisonMetric" } },
+        "overlap": { "type": "array", "items": { "$ref": "#/$defs/comparisonMetric" } },
+        "all_structural_exact": { "type": "boolean" },
+        "seam_strip_flip": { "$ref": "#/$defs/nonNegativeNumber" }
+      }
+    },
+    "renderMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height", "samples", "raw", "denoised", "aovs"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "samples": { "type": "integer", "minimum": 1 },
+        "raw": { "$ref": "#/$defs/imageDifference" },
+        "denoised": { "$ref": "#/$defs/imageDifference" },
+        "aovs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "difference"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "difference": { "$ref": "#/$defs/imageDifference" }
+            }
+          }
+        }
+      }
+    },
+    "imageDifference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_abs", "rms", "flip_mean", "flip_p95"],
+      "properties": {
+        "max_abs": { "$ref": "#/$defs/nonNegativeNumber" },
+        "rms": { "$ref": "#/$defs/nonNegativeNumber" },
+        "flip_mean": { "$ref": "#/$defs/nonNegativeNumber" },
+        "flip_p95": { "$ref": "#/$defs/nonNegativeNumber" },
+        "ssim": { "type": "number", "minimum": -1, "maximum": 1 },
+        "delta_e_2000_mean": { "$ref": "#/$defs/nonNegativeNumber" }
+      }
+    },
+    "stageTiming": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "median_ms", "mad_ms", "p95_ms", "peak_bytes"],
+      "properties": {
+        "stage": { "type": "string", "minLength": 1 },
+        "median_ms": { "$ref": "#/$defs/nonNegativeNumber" },
+        "mad_ms": { "$ref": "#/$defs/nonNegativeNumber" },
+        "p95_ms": { "$ref": "#/$defs/nonNegativeNumber" },
+        "peak_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "performanceMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total_median_ms", "total_p95_ms", "peak_bytes", "stages"],
+      "properties": {
+        "total_median_ms": { "$ref": "#/$defs/nonNegativeNumber" },
+        "total_p95_ms": { "$ref": "#/$defs/nonNegativeNumber" },
+        "peak_bytes": { "type": "integer", "minimum": 0 },
+        "stages": { "type": "array", "items": { "$ref": "#/$defs/stageTiming" } }
+      }
+    },
+    "artifactRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path", "checksum", "bytes"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "checksum": { "$ref": "#/$defs/checksum" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "mime_type": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "gateResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "status", "observed", "limit", "message"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "enum": ["pass", "fail", "needs_review", "not_applicable"] },
+        "observed": {},
+        "limit": {},
+        "message": { "type": "string" }
+      }
+    },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "gates"],
+      "properties": {
+        "status": { "type": "string", "enum": ["pass", "fail", "needs_review"] },
+        "gates": { "type": "array", "items": { "$ref": "#/$defs/gateResult" } },
+        "weakest_seed": { "$ref": "#/$defs/seed" },
+        "summary": { "type": "string" },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

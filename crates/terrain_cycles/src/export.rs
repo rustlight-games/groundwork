@@ -465,6 +465,7 @@ mod tests {
             let root = ScenePoint::new(i as f64 * 0.1, 0.0, 0.0);
             builder.push_mark(SceneMark::Ribbon(RibbonMark {
                 stable_id: id,
+                anchor: AnchorIndex::UNGROUPED,
                 order: PainterOrder::new(Stratum::Canopy, i as f64, 0, id),
                 material,
                 root,
@@ -590,6 +591,7 @@ mod tests {
             let root = ScenePoint::new(i as f64 * 0.1, 0.0, 0.0);
             builder.push_mark(SceneMark::Ribbon(RibbonMark {
                 stable_id: id,
+                anchor: AnchorIndex::UNGROUPED,
                 order: PainterOrder::new(Stratum::Canopy, i as f64, 0, id),
                 material,
                 root,
@@ -639,6 +641,7 @@ mod tests {
         let mut points = Vec::new();
         let ribbon = RibbonMark {
             stable_id: MarkId(0),
+            anchor: AnchorIndex::UNGROUPED,
             order: PainterOrder::new(Stratum::Canopy, 0.0, 0, MarkId(0)),
             material: SceneMaterialIndex(0),
             root: ScenePoint::new(1.0, 2.0, 0.0),

@@ -211,9 +211,22 @@ pub fn page(digest: &mut Digest, page: &Page) {
 
 /// Absorb one mark, exactly.
 ///
-/// Every field of [`Stroke`] appears here, and that is a maintenance contract
-/// rather than an accident: a parameter added to the vocabulary and not added
-/// here is a parameter the migration cannot prove it preserved.
+/// Every field of [`Stroke`] that *describes* the mark appears here, and that is
+/// a maintenance contract rather than an accident: a parameter added to the
+/// vocabulary and not added here is a parameter the migration cannot prove it
+/// preserved.
+///
+/// ## The one deliberate exclusion
+///
+/// [`Stroke::pass`] is a label, not a parameter. It names which planting pass
+/// produced the mark so that counts, per-pass controls and obstacle responses
+/// can address one layer, and it changes nothing about where the mark is or what
+/// shape it has. Digesting it would have made every pinned meadow move on the
+/// commit that introduced it, for no change to a single blade.
+///
+/// The distinction to hold on to: a field belongs here if a renderer reads it.
+/// `pass` is read by the generator and by reports, never by the rasteriser or
+/// the exporter. `the_pass_label_is_not_part_of_the_meadow` asserts it.
 pub fn mark(digest: &mut Digest, mark: &Stroke) {
     // Where it grows.
     digest.f32(mark.root.x).f32(mark.root.y).f32(mark.root.z);
@@ -330,6 +343,35 @@ mod tests {
     use super::*;
     use std::str::FromStr;
     use terrain_generators::style::GrassParams;
+    use terrain_generators::tuned::TunedPass;
+
+    #[test]
+    fn the_pass_label_is_not_part_of_the_meadow() {
+        // The exclusion documented on `mark`, asserted rather than described.
+        // `pass` says which loop planted a stroke; it does not say anything
+        // about where the stroke is or what shape it has, and a digest that
+        // absorbed it would have moved every pinned meadow on the commit that
+        // introduced the label.
+        let base = Stroke::default();
+        let mut relabelled = base;
+        relabelled.pass = match base.pass {
+            TunedPass::Tuft => TunedPass::Thatch,
+            _ => TunedPass::Tuft,
+        };
+
+        let digest_of = |stroke: &Stroke| {
+            let mut digest = Digest::new();
+            mark(&mut digest, stroke);
+            digest.finish()
+        };
+        assert_eq!(digest_of(&base), digest_of(&relabelled));
+
+        // And a real parameter still moves it, so the test above is not
+        // passing because `mark` stopped digesting anything.
+        let mut longer = base;
+        longer.length += 0.01;
+        assert_ne!(digest_of(&base), digest_of(&longer));
+    }
 
     fn scene_at(origin: Vec2, side: usize, seed: u64) -> (GrassScene, WorldField, u64) {
         let params = GrassParams {

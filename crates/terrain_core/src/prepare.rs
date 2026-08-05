@@ -924,7 +924,7 @@ mod tests {
                 default_value: 1.0,
                 composition: ModifierComposition::Multiply,
                 unit: ModifierUnit::Unitless,
-            role: None,
+                role: None,
             }],
             sources: vec![constant_source("everywhere", 1.0)],
             layers: vec![LayerDef {

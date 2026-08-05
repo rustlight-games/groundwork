@@ -4957,6 +4957,7 @@ dependencies = [
  "ron",
  "serde",
  "terrain_core",
+ "terrain_format",
  "terrain_generators",
  "terrain_scene",
  "thiserror 2.0.19",

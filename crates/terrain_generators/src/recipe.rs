@@ -40,8 +40,10 @@ use terrain_core::seed::SeedContext;
 use terrain_scene::field::TerrainFieldStack;
 
 use crate::domain::{CandidateDomainDef, DomainCandidate};
+use crate::ground::{GroundEvaluator, GroundSample};
 use crate::population::EmittedMark;
 use crate::transition::RealisedSubstrate;
+use crate::tuned::RecipeRenderClass;
 
 /// Where a recipe puts what it makes.
 ///
@@ -57,6 +59,20 @@ pub struct RecipeContext<'a> {
     /// The matrix, for anything the recipe wants to read: moisture, wetness,
     /// slope, curvature, exposure, flow.
     pub fields: &'a TerrainFieldStack,
+    /// The one ground evaluator, for anything the matrix does not answer.
+    ///
+    /// A recipe should reach for [`RecipeContext::ground_sample`] first — the
+    /// compiler has already paid for one sample at this candidate and reusing
+    /// it is free. This is here for the rarer case of asking about a *different*
+    /// point, which a leaf tip probing away from its crown genuinely needs.
+    pub ground: &'a GroundEvaluator,
+    /// The ground at this candidate, sampled once by the compiler.
+    ///
+    /// Realised substrate, state, relief, cavity and wet film in one value. It
+    /// is the same sample the ownership draw and the affinity score used, which
+    /// is what keeps a recipe's idea of its own ground identical to the one that
+    /// decided it should be there at all.
+    pub ground_sample: &'a GroundSample,
     /// Seeded for this recipe's own version, so a change to one recipe moves
     /// only what that recipe drew.
     pub seeds: SeedContext,
@@ -64,7 +80,12 @@ pub struct RecipeContext<'a> {
     /// The realised substrate under this candidate — after the transition
     /// solver, so a recipe sees the ragged boundary rather than the smooth ramp.
     pub substrate: RealisedSubstrate,
-    /// The ground height at the candidate.
+    /// The height the ground Cycles renders actually sits at here.
+    ///
+    /// [`GroundEvaluator::final_surface_z_m`], not the matrix's surface height:
+    /// authored elevation plus authored microrelief plus the profile's geometry
+    /// displacement. A recipe rooting content at anything else puts it on a
+    /// surface that does not exist in the rendered scene.
     pub surface_z_m: f64,
     pub root_seed: u64,
 }
@@ -87,6 +108,14 @@ impl RecipeContext<'_> {
 pub trait TerrainRecipe: Send + Sync {
     /// The key a document names this by.
     fn key(&self) -> RecipeKey;
+
+    /// Who draws what this recipe describes.
+    ///
+    /// Deliberately without a default. A recipe added without an answer here is
+    /// a compile error, which is the only way to be sure a new grass family
+    /// cannot arrive in the production image beside the tuned one — see
+    /// [`crate::tuned`] for what that costs.
+    fn render_class(&self) -> RecipeRenderClass;
 
     /// A version, mixed into every seed this recipe derives.
     fn version(&self) -> u32 {

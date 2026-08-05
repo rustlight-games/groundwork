@@ -439,8 +439,7 @@ impl CyclesScene {
         points.append(&mut halo_points);
         attributes.append(&mut halo_attributes);
 
-        let (footprint, ground, surface, rows, columns) =
-            sample_ground(&page, field, &settings);
+        let (footprint, ground, surface, rows, columns) = sample_ground(&page, field, &settings);
         let camera = Camera::for_page(&page, scene.canopy_ceiling());
 
         Self {

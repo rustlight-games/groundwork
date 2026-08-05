@@ -7,6 +7,7 @@ description = "Shared benchmark fixtures, metrics, and reporting"
 
 [dependencies]
 terrain_core.workspace = true
+terrain_format.workspace = true
 terrain_generators.workspace = true
 terrain_scene.workspace = true
 glam.workspace = true
