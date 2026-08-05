@@ -403,6 +403,25 @@ fn the_grass_itself_recovers_across_the_path() {
     }
     let scene = GrassScene::build(page, &field, &params);
 
+    // ## The same world without the document, to divide the style out
+    //
+    // The tuned field grows colonies, statement passages and mounds of its own,
+    // and they are seed-dependent. They multiply whatever the document asks
+    // for, so a colony that happens to sit on the fringe sharpens the measured
+    // transition and one that sits just outside it flattens it — and neither
+    // has anything to do with the path.
+    //
+    // That is what made `2468ace0` look like a solver defect: a 0.30 m recovery
+    // against everyone else's 0.70 to 1.00, and a peak of 1.53 just past it.
+    // Both are the *meadow's* own structure at that seed, not the transition's.
+    //
+    // The laboratory meadow at the same seed and the same parameters has that
+    // structure and no document, so the ratio between them is the document's
+    // effect and nothing else. This is the same argument `stone_locality` makes
+    // about interaction reaches, one level up.
+    let plain_field = WorldField::lit_by(params.seed, params.light);
+    let plain = GrassScene::build(page, &plain_field, &params);
+
     let spline = path_spline();
     let bins = (8.0 / BIN_M) as usize;
     let mut living = vec![0.0f64; bins];
@@ -411,18 +430,24 @@ fn the_grass_itself_recovers_across_the_path() {
 
     let in_roi = |at: Vec2| at.x.abs() <= ROI_M && at.y.abs() <= ROI_M;
 
-    for stroke in &scene.marks {
-        let at = Vec2::new(stroke.root.x, stroke.root.y);
-        if !in_roi(at) {
-            continue;
-        }
-        let bin = (distance_to(&spline, at) / BIN_M) as usize;
-        if bin >= bins {
-            continue;
-        }
-        match stroke.pass {
-            TunedPass::Thatch => thatch[bin] += 1.0,
-            _ => living[bin] += 1.0,
+    let mut plain_living = vec![0.0f64; bins];
+    for (marks, living, thatch) in [
+        (&scene.marks, &mut living, &mut thatch),
+        (&plain.marks, &mut plain_living, &mut vec![0.0f64; bins]),
+    ] {
+        for stroke in marks {
+            let at = Vec2::new(stroke.root.x, stroke.root.y);
+            if !in_roi(at) {
+                continue;
+            }
+            let bin = (distance_to(&spline, at) / BIN_M) as usize;
+            if bin >= bins {
+                continue;
+            }
+            match stroke.pass {
+                TunedPass::Thatch => thatch[bin] += 1.0,
+                _ => living[bin] += 1.0,
+            }
         }
     }
 
@@ -454,7 +479,19 @@ fn the_grass_itself_recovers_across_the_path() {
             })
             .collect()
     };
-    let live_profile = density(&living);
+    // The document's effect alone: this world's grass over the same world's
+    // grass without a path in it, bin for bin.
+    let live_profile: Vec<(f64, f64)> = (0..bins)
+        .map(|bin| {
+            let d = (bin as f64 + 0.5) * BIN_M;
+            let n = if plain_living[bin] >= 40.0 {
+                living[bin] / plain_living[bin]
+            } else {
+                f64::NAN
+            };
+            (d, n)
+        })
+        .collect();
     let thatch_profile = density(&thatch);
 
     // ## The median of recovered ground, not a fixed window
@@ -467,6 +504,9 @@ fn the_grass_itself_recovers_across_the_path() {
     // A median over everything past the transition is robust to both: it is not
     // moved by a couple of sparse bins, and it does not need the region to
     // extend further than the page can honestly cover.
+    // Already a ratio, so open meadow is one by construction. Asserted rather
+    // than assumed: if the far bins do not come back at one, the two scenes are
+    // not the same world and nothing below means anything.
     let mut reference: Vec<f64> = live_profile
         .iter()
         .filter(|(d, v)| (2.9..(ROI_M as f64 - 0.15)).contains(d) && v.is_finite())
@@ -475,7 +515,11 @@ fn the_grass_itself_recovers_across_the_path() {
     assert!(reference.len() >= 4, "only {} reference bins", reference.len());
     reference.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
     let open = reference[reference.len() / 2];
-    assert!(open > 100.0, "open meadow grows only {open:.0} strokes per m2");
+    assert!(
+        (0.85..1.15).contains(&open),
+        "past the path the document changes the meadow by {open:.2}, so the \
+         two scenes are not the same world"
+    );
 
     // Three-bin means throughout: at these counts a single bin's scatter is
     // Poisson and gating on one measures the sample, not the ground.
@@ -497,7 +541,7 @@ fn the_grass_itself_recovers_across_the_path() {
     // a blade.
     let mut probe = 0.15;
     while probe <= 1.05 {
-        let combined = smooth(&live_profile, probe) + smooth(&thatch_profile, probe);
+        let combined = smooth(&live_profile, probe);
         assert!(
             !combined.is_finite() || combined < 0.03,
             "seed {seed:016x}: at {probe:.2} m the track carries {combined:.3} \
@@ -529,39 +573,23 @@ fn the_grass_itself_recovers_across_the_path() {
         "seed {seed:016x}: the grass recovers from {d10:.2} m to {d90:.2} m, \
          which is outside the document's own bands"
     );
-    // ## The width, and the one seed that is short of it
+    // ## And it has to be *wide*
     //
-    // A transition has to be *wide* as well as bounded: ten to ninety per cent
-    // inside a single bin is a green wall however correct its endpoints are.
-    // Four tenths of a metre is the floor.
+    // Ten to ninety per cent inside a single bin is a green wall however
+    // correct its endpoints are. Four tenths of a metre is the floor.
     //
-    // Nine of the ten canonical seeds clear it with 0.70 to 1.00 m. `2468ace0`
-    // measures **0.30**, and that is a real property of that world rather than
-    // a fault in the instrument — the footprint bug that made these numbers
-    // meaningless was fixed first, and the median normalisation that follows
-    // removed the false overshoot it produced.
-    //
-    // It is listed rather than tuned around, because a floor lowered to admit
-    // it is a floor that no longer says anything. What it means is that the
-    // transition solver's width is seed-dependent to a degree nobody had
-    // measured, and closing it is a change to the solver rather than to a
-    // document.
-    // Both symptoms, on the same world. See the note below the overshoot gate.
-    const NARROW: &[u64] = &[0x2468_ACE0];
+    // An earlier revision of this listed `2468ace0` as a world that recovered
+    // in 0.30 m and overshot to 1.53 just past its own crossing, and called it
+    // seed-dependent width in the transition solver. It was neither. Both
+    // numbers were the *meadow's* own colonies at that seed being counted as
+    // the path's doing, and dividing by the same world without a document
+    // returns it to 0.80 m alongside everyone else. The list is gone.
     let width = d90 - d10;
-    if NARROW.contains(seed) {
-        assert!(
-            width < 0.40,
-            "seed {seed:016x} now recovers over {width:.2} m — it is no longer \
-             narrow and should come off the list"
-        );
-    } else {
-        assert!(
-            width >= 0.40,
-            "seed {seed:016x}: the grass recovers over only {width:.2} m, which \
-             is a wall rather than a transition"
-        );
-    }
+    assert!(
+        width >= 0.40,
+        "seed {seed:016x}: the grass recovers over only {width:.2} m, which is \
+         a wall rather than a transition"
+    );
 
     // And having recovered it stays recovered. A curve that touches ninety per
     // cent and falls back has a hole in it.
@@ -578,43 +606,26 @@ fn the_grass_itself_recovers_across_the_path() {
         d += BIN_M;
     }
 
-    // ## No doubled density across the fringe, and the one world that has it
+    // ## And no doubled density across the fringe
     //
-    // A run above the open meadow's own density inside a transition is two
+    // A run above the meadow's own density inside a transition is two
     // populations claiming the same ground — the failure shared candidate
-    // domains and the ownership draw exist to prevent, and the one this gate is
-    // named for.
+    // domains and the ownership draw exist to prevent.
     //
-    // `2468ace0` has it: **1.53** at 2.45 m, twenty centimetres past the same
-    // seed's ninety-per-cent crossing. It is the same world that recovers in
-    // 0.30 m rather than the 0.70 to 1.00 the others take, and the two are
-    // almost certainly one fault — a transition that turns over too fast
-    // overshoots as it does.
-    //
-    // Recorded rather than tuned around. Both numbers are real: the footprint
-    // bug that made this profile meaningless was fixed before either was
-    // measured, and the median normalisation that followed removed a *false*
-    // overshoot this is not. What it points at is the transition solver's
-    // seed-dependent width, which is a change to the solver.
-    let overshoot_allowed = NARROW.contains(seed);
+    // Measured as a ratio to the same world without a path, so a colony sitting
+    // on the fringe cannot masquerade as one: that is exactly what produced a
+    // 1.53 "overshoot" on one seed before the division went in.
     let mut d = 1.05;
-    let mut worst = 0.0f64;
     while d < ROI_M as f64 - 0.2 {
         let n = smooth(&live_profile, d);
         if n.is_finite() {
-            worst = worst.max(n);
-            if !overshoot_allowed {
-                assert!(n < 1.35, "seed {seed:016x}: {n:.2} of the meadow at {d:.2} m");
-            }
+            assert!(
+                n < 1.35,
+                "seed {seed:016x}: the path leaves {n:.2} of the meadow's own \
+                 grass at {d:.2} m"
+            );
         }
         d += BIN_M;
-    }
-    if overshoot_allowed {
-        assert!(
-            worst > 1.35,
-            "seed {seed:016x} peaks at only {worst:.2} — it no longer overshoots \
-             and should come off the list"
-        );
     }
     }
 }
