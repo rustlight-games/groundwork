@@ -121,6 +121,81 @@ pub fn prepare(document: &Path) -> Result<Arc<PreparedTerrain>, LoadError> {
     })
 }
 
+/// Prepare a document with every layer that reads one source removed.
+///
+/// ## What a control has to hold fixed
+///
+/// The instrument this exists for is a paired measurement: the same world with
+/// and without a feature, so that everything the feature did not cause divides
+/// out. That only works if the two halves differ by the feature *and nothing
+/// else*.
+///
+/// Dropping the whole `SemanticOverlay` is not that. It removes the document's
+/// tuned population controls and every stone interaction along with the path,
+/// so a difference measured against it is a difference against a world that is
+/// not the same world in several ways at once — and a far-field agreement
+/// cannot prove local equivalence, which is exactly where the measurement is
+/// taken.
+///
+/// Removing the layers that read one source leaves materials, channels,
+/// populations, seeds and every other layer untouched. The document is edited
+/// in memory rather than on disk, because a control written into the asset tree
+/// is an asset somebody will later find and wonder about.
+pub fn prepare_without_source(
+    document: &Path,
+    source: &str,
+) -> Result<Arc<PreparedTerrain>, LoadError> {
+    let mut loaded = terrain_format::load(document).map_err(|error| LoadError::Read {
+        path: document.display().to_string(),
+        message: error.to_string(),
+    })?;
+
+    let before = loaded.document.layers.len();
+    loaded
+        .document
+        .layers
+        .retain(|layer| layer.mask.source().map(|key| key.as_str()) != Some(source));
+    assert!(
+        loaded.document.layers.len() < before,
+        "{}: no layer reads `{source}`, so this control is the document itself",
+        document.display()
+    );
+
+    let assets = BesideDocument {
+        root: asset_root(document),
+    };
+    let named = loaded
+        .document
+        .materials
+        .iter()
+        .filter_map(|material| material.profile.clone());
+    let (profiles, problems) = terrain_format::load_library(named, &assets);
+    if !problems.is_empty() {
+        return Err(LoadError::Profiles {
+            path: document.display().to_string(),
+            message: problems
+                .iter()
+                .map(|problem| problem.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        });
+    }
+
+    terrain_core::prepare(
+        &loaded.document,
+        &assets,
+        &terrain_core::SourceRegistry::new(),
+        &PrepareOptions {
+            profiles,
+            ..PrepareOptions::default()
+        },
+    )
+    .map_err(|report| LoadError::Prepare {
+        path: document.display().to_string(),
+        message: report.to_string(),
+    })
+}
+
 /// The documents shipped in the repository, by name.
 ///
 /// Listed rather than globbed. A glob would silently start measuring a document

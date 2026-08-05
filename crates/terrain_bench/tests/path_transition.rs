@@ -329,6 +329,19 @@ fn the_grass_itself_recovers_across_the_path() {
     )
     .expect("compiles");
 
+    let control_terrain = documents::prepare_without_source(
+        &documents::shipped("meadow_path"),
+        "main_path",
+    )
+    .expect("the control prepares");
+    let control = compile_scene(
+        &control_terrain,
+        &request,
+        &terrain_generators::family_registry(),
+        &SceneCompileOptions::default(),
+    )
+    .expect("the control compiles");
+
     // Every canonical seed, each normalised against its own open meadow.
     //
     // Pooling them would hide the failure this is for: a transition that is
@@ -351,10 +364,28 @@ fn the_grass_itself_recovers_across_the_path() {
     const ROI_M: f32 = 3.6;
 
     for seed in terrain_bench::fixtures::SEEDS.iter().take(SEEDS_MEASURED) {
-    let params = GrassParams {
+    // Production's own parameters, on both halves. `cycles_params` scales the
+    // populations sevenfold, and density sets the candidate *lattice* rather
+    // than only the final count — so it does not cancel in a ratio unless both
+    // halves share it. Measuring at defaults would be measuring a lattice
+    // production never uses.
+    // `terrain_cycles::plate::CYCLES_DENSITY` and `CYCLES_LENGTH`, applied
+    // here rather than imported: `terrain_bench` does not depend on the Cycles
+    // crate and adding a dependency for two constants would point the
+    // dependency arrow the wrong way. Kept in step by the assertion below.
+    const CYCLES_DENSITY: f32 = 7.0;
+    const CYCLES_LENGTH: f32 = 1.2;
+    let mut params = GrassParams {
         seed: *seed,
         ..GrassParams::default()
     };
+    params.style.tufts *= CYCLES_DENSITY;
+    params.style.fine *= CYCLES_DENSITY;
+    params.style.thatch *= CYCLES_DENSITY;
+    params.style.leaves *= CYCLES_DENSITY;
+    params.style.blade_length.0 *= CYCLES_LENGTH;
+    params.style.blade_length.1 *= CYCLES_LENGTH;
+    let params = params;
     let field = WorldField::lit_by(params.seed, params.light).with_overlay(Arc::new(
         SemanticOverlay {
             ground: Arc::clone(&compiled.ground),
@@ -403,23 +434,36 @@ fn the_grass_itself_recovers_across_the_path() {
     }
     let scene = GrassScene::build(page, &field, &params);
 
-    // ## The same world without the document, to divide the style out
+    // ## The same document with the path taken out
     //
     // The tuned field grows colonies, statement passages and mounds of its own,
     // and they are seed-dependent. They multiply whatever the document asks
-    // for, so a colony that happens to sit on the fringe sharpens the measured
-    // transition and one that sits just outside it flattens it — and neither
-    // has anything to do with the path.
+    // for, so a colony sitting on the fringe sharpens the measured transition
+    // and one just outside it flattens it — and neither has anything to do with
+    // the path. That is what made `2468ace0` look like a solver defect at
+    // 0.30 m and 1.53; both were the meadow's own structure being counted as
+    // the path's doing.
     //
-    // That is what made `2468ace0` look like a solver defect: a 0.30 m recovery
-    // against everyone else's 0.70 to 1.00, and a peak of 1.53 just past it.
-    // Both are the *meadow's* own structure at that seed, not the transition's.
+    // ## And the control has to differ by the path *only*
     //
-    // The laboratory meadow at the same seed and the same parameters has that
-    // structure and no document, so the ratio between them is the document's
-    // effect and nothing else. This is the same argument `stone_locality` makes
-    // about interaction reaches, one level up.
-    let plain_field = WorldField::lit_by(params.seed, params.light);
+    // The first version of this divided by the laboratory meadow — no overlay
+    // at all — which removes the document's tuned population controls and every
+    // stone interaction along with the path. A ratio against that is a ratio
+    // against a world that differs in several ways at once, and agreeing in the
+    // far field cannot prove local equivalence where the measurement is taken.
+    //
+    // `prepare_without_source` drops the layers that read the path spline and
+    // nothing else, so materials, channels, populations, seeds, the tuned
+    // controls and the stones are identical on both sides. Same seed, same
+    // page, same parameters: a paired control with common random numbers, which
+    // is why dividing by a second stochastic scene is sound rather than noisy.
+    let plain_field = WorldField::lit_by(params.seed, params.light).with_overlay(Arc::new(
+        SemanticOverlay {
+            ground: Arc::clone(&control.ground),
+            interactions: Arc::clone(&control.interactions),
+            tuned: Arc::clone(&control.tuned),
+        },
+    ));
     let plain = GrassScene::build(page, &plain_field, &params);
 
     let spline = path_spline();
@@ -431,9 +475,10 @@ fn the_grass_itself_recovers_across_the_path() {
     let in_roi = |at: Vec2| at.x.abs() <= ROI_M && at.y.abs() <= ROI_M;
 
     let mut plain_living = vec![0.0f64; bins];
+    let mut plain_thatch = vec![0.0f64; bins];
     for (marks, living, thatch) in [
         (&scene.marks, &mut living, &mut thatch),
-        (&plain.marks, &mut plain_living, &mut vec![0.0f64; bins]),
+        (&plain.marks, &mut plain_living, &mut plain_thatch),
     ] {
         for stroke in marks {
             let at = Vec2::new(stroke.root.x, stroke.root.y);
@@ -485,8 +530,12 @@ fn the_grass_itself_recovers_across_the_path() {
     let thatch_profile: Vec<(f64, f64)> = (0..bins)
         .map(|bin| {
             let d = (bin as f64 + 0.5) * BIN_M;
-            let n = if area[bin] > 0.03 {
-                thatch[bin] / area[bin]
+            // Against the *matched control*, bin for bin, like the living
+            // grass. Normalising against an open-density median sampled at
+            // 2.95–3.35 m was normalising against the fringe: the authored
+            // thatch band runs to 3.40 m, so that window is inside it.
+            let n = if plain_thatch[bin] >= 40.0 {
+                thatch[bin] / plain_thatch[bin]
             } else {
                 f64::NAN
             };
@@ -542,31 +591,28 @@ fn the_grass_itself_recovers_across_the_path() {
     // Every tuned pass, not the living ones only: a mat left behind on a bare
     // track is as wrong as a blade. The thatch is compared against its own open
     // density, since it is a count rather than a ratio.
-    let thatch_open = {
-        let mut open: Vec<f64> = thatch_profile
-            .iter()
-            .filter(|(d, v)| (2.9..(ROI_M as f64 - 0.15)).contains(d) && v.is_finite())
-            .map(|(_, v)| *v)
-            .collect();
-        open.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
-        open.get(open.len() / 2).copied().unwrap_or(f64::NAN)
-    };
     let mut probe = 0.15;
     while probe <= 1.05 {
-        let mat = thatch_profile
-            .iter()
-            .filter(|(d, v)| (*d - probe).abs() < BIN_M * 1.5 && v.is_finite())
-            .map(|(_, v)| v / thatch_open)
-            .sum::<f64>()
-            / 3.0;
+        let mat = smooth(&thatch_profile, probe);
+        // Fails closed. A bin with no measurement is a bin nobody checked, and
+        // silently skipping it is how a core gate passes on a plate that grew
+        // nothing there for an unrelated reason.
         assert!(
-            !mat.is_finite() || mat < 0.03,
+            mat.is_finite(),
+            "seed {seed:016x}: no mat measurement at {probe:.2} m"
+        );
+        assert!(
+            mat < 0.03,
             "seed {seed:016x}: at {probe:.2} m the track keeps {mat:.3} of the \
              meadow's mat"
         );
         let combined = smooth(&live_profile, probe);
         assert!(
-            !combined.is_finite() || combined < 0.03,
+            combined.is_finite(),
+            "seed {seed:016x}: no grass measurement at {probe:.2} m"
+        );
+        assert!(
+            combined < 0.03,
             "seed {seed:016x}: at {probe:.2} m the track carries {combined:.3} \
              of the meadow's tuned strokes"
         );
