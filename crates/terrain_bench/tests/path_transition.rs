@@ -492,7 +492,20 @@ fn the_grass_itself_recovers_across_the_path() {
             (d, n)
         })
         .collect();
-    let thatch_profile = density(&thatch);
+    // The mat, as its own ratio. Separate from the living grass because they
+    // answer different questions: a mat that thickens where the canopy thins is
+    // correct authoring and would be invisible inside a total.
+    let thatch_profile: Vec<(f64, f64)> = (0..bins)
+        .map(|bin| {
+            let d = (bin as f64 + 0.5) * BIN_M;
+            let n = if area[bin] > 0.03 {
+                thatch[bin] / area[bin]
+            } else {
+                f64::NAN
+            };
+            (d, n)
+        })
+        .collect();
 
     // ## The median of recovered ground, not a fixed window
     //
@@ -539,8 +552,31 @@ fn the_grass_itself_recovers_across_the_path() {
     // The pure core grows nothing, and that is *every* tuned pass rather than
     // the living ones only — a mat left behind on a bare track is as wrong as
     // a blade.
+    // Every tuned pass, not the living ones only: a mat left behind on a bare
+    // track is as wrong as a blade. The thatch is compared against its own open
+    // density, since it is a count rather than a ratio.
+    let thatch_open = {
+        let mut open: Vec<f64> = thatch_profile
+            .iter()
+            .filter(|(d, v)| (2.9..(ROI_M as f64 - 0.15)).contains(d) && v.is_finite())
+            .map(|(_, v)| *v)
+            .collect();
+        open.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        open.get(open.len() / 2).copied().unwrap_or(f64::NAN)
+    };
     let mut probe = 0.15;
     while probe <= 1.05 {
+        let mat = thatch_profile
+            .iter()
+            .filter(|(d, v)| (*d - probe).abs() < BIN_M * 1.5 && v.is_finite())
+            .map(|(_, v)| v / thatch_open)
+            .sum::<f64>()
+            / 3.0;
+        assert!(
+            !mat.is_finite() || mat < 0.03,
+            "seed {seed:016x}: at {probe:.2} m the track keeps {mat:.3} of the \
+             meadow's mat"
+        );
         let combined = smooth(&live_profile, probe);
         assert!(
             !combined.is_finite() || combined < 0.03,
