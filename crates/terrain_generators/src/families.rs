@@ -1446,7 +1446,10 @@ impl TerrainRecipe for DirtClods {
         // 110 and nothing anywhere said so. The profile is the authority on what
         // a soil carries, so the document has to be able to hold it.
         let supply = read(parameters, "density", 220.0);
-        let radius = read(parameters, "radius_m", 0.022);
+        // Against the recipe's own reach rather than the raw parameter: the
+        // halo is sized from `maximum_reach_m`, which is three times the
+        // authored radius, so that is the bound a fragment has to fit inside.
+        let reach = self.maximum_reach_m(parameters);
         for profile in profiles {
             let rate = (profile.scatter.grit_per_m2 + profile.scatter.pebble_per_m2) as f64;
             if rate > supply {
@@ -1462,14 +1465,14 @@ impl TerrainRecipe for DirtClods {
                 );
             }
             let largest = profile.scatter.fragment_radius_m.high as f64;
-            if largest > radius {
+            if largest > reach {
                 diagnostics.error(
                     "scatter_reach_below_profile",
                     Location::at(format!("populations[{population}].parameters.radius_m")),
                     format!(
                         "`{}` declares fragments up to {largest:.3} m and this \
-                         population bounds its reach at {radius:.3} m, so a fragment \
-                         can extend past the halo the compiler sized for it",
+                         population's reach is {reach:.3} m, so a fragment can \
+                         extend past the halo the compiler sized for it",
                         profile.key
                     ),
                 );
