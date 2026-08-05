@@ -1,19 +1,18 @@
-//! Streaming baked pages around the camera.
+//! Streaming traced pages around the camera.
 //!
-//! Baking a page costs tens of milliseconds, which is far too long to do on the
-//! frame that needs it, and far too cheap to justify shipping the whole world as
-//! art. So pages are baked on the compute pool as the camera approaches them and
-//! kept until it leaves. Nothing here decides what grass looks like; that is
-//! [`crate::bake`]. This is only the bookkeeping that gets it on screen.
+//! Reading a page from the cache is a filesystem call, which is small but not
+//! free on the frame that needs it, so pages are loaded on the compute pool as
+//! the camera approaches them and kept until it leaves. Nothing here decides
+//! what grass looks like; that is Cycles, offline, once — see
+//! [`crate::cache`]. This is only the bookkeeping that gets a traced page on
+//! screen.
 //!
 //! ## Why the camera's tonemapping is turned off
 //!
-//! The palette is measured from reference art in the space that art was authored
-//! in, and the baker writes final colours. Running those through a film curve at
-//! display time would quietly move every one of them — the plate would no longer
-//! be the thing that was measured, and every number in the comparison table
-//! would be describing an image nobody sees. [`grass_camera`] exists to make
-//! that decision once, in the open.
+//! A traced page already holds finished colour. Running it through a film
+//! curve at display time would quietly move every value — the plate would no
+//! longer be the image Cycles produced. [`grass_camera`] exists to make that
+//! decision once, in the open.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::ScalingMode;
@@ -26,7 +25,6 @@ use bevy::sprite_render::Material2dPlugin;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 
 use crate::material::{GrassSurfaceMaterial, SurfaceSettings};
-use terrain_bake::bake::{BakeParams, bake};
 use terrain_generators::iso;
 use terrain_generators::page::Page;
 
@@ -35,27 +33,21 @@ use terrain_generators::page::Page;
 /// A little over two and a half metres of ground. Small enough that arriving at
 /// a new one is a few tens of milliseconds of work on a background thread, large
 /// enough that a 1080p view is a couple of dozen draws rather than hundreds.
-///
-/// The same number the offline baker tiles at, and deliberately one definition
-/// rather than two: page size sets the ratio of guard band to interior, so a
-/// benchmark tiling at some other size would be measuring work that never
-/// ships.
-pub const PAGE_PIXELS: usize = terrain_bake::bake::TILE_PIXELS;
+pub const PAGE_PIXELS: usize = 256;
 
-/// The grass world: what to grow, and what has been grown so far.
+/// The grass world: which seed, and what has been loaded so far.
 #[derive(Resource)]
 pub struct GrassWorld {
-    /// Everything the look depends on.
-    pub params: BakeParams,
-    /// Extra cache pixels baked beyond the view, so a page is ready before it
+    pub seed: u64,
+    /// Extra cache pixels loaded beyond the view, so a page is ready before it
     /// is needed rather than popping in once it is.
     pub lookahead: f32,
     /// How far beyond [`GrassWorld::lookahead`] a page may drift before it is
     /// dropped, in cache pixels.
     ///
-    /// Deliberately not the same distance it was baked at. Evicting at exactly
+    /// Deliberately not the same distance it was loaded at. Evicting at exactly
     /// the lookahead means a camera nudged back and forth across one boundary
-    /// rebakes the same page forever, which is the worst behaviour a cache can
+    /// re-reads the same page forever, which is the worst behaviour a cache can
     /// have: it costs the most exactly when the player is standing still.
     pub hysteresis: f32,
     pages: HashMap<IVec2, PageState>,
@@ -64,7 +56,7 @@ pub struct GrassWorld {
 impl Default for GrassWorld {
     fn default() -> Self {
         Self {
-            params: BakeParams::default(),
+            seed: 0x5eed_1234,
             lookahead: PAGE_PIXELS as f32,
             hysteresis: PAGE_PIXELS as f32 * 1.5,
             pages: HashMap::default(),
@@ -73,9 +65,20 @@ impl Default for GrassWorld {
 }
 
 enum PageState {
-    Baking(Task<Vec<u8>>),
+    Loading(Task<Option<Vec<u8>>>),
     Ready(Entity),
+    /// Asked for and not found. Counts down to zero before `request_pages`
+    /// asks again — without this, a page nobody has traced yet spawns a new
+    /// filesystem read on the compute pool every single frame, forever.
+    Missing(u32),
 }
+
+/// Frames a missing page waits before it is asked for again.
+///
+/// Two seconds at sixty frames a second. Long enough that a prebake finishing
+/// mid-session is noticed promptly; short enough that this is a retry
+/// interval and not effectively "never".
+const MISSING_RETRY_FRAMES: u32 = 120;
 
 /// Ordering within a frame.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -115,15 +118,16 @@ impl Plugin for GrassPlugin {
 /// `view_height` is world metres visible vertically, the same unit the battle
 /// camera uses.
 pub fn grass_camera(view_height: f32) -> impl Bundle {
-    // The mid-tone of the grass ramp, so that a page which has not finished
-    // baking is a slightly flat patch of the right green rather than a black
-    // hole. It will still be visible if you look for it, and that is the point:
-    // hiding it entirely would hide the streaming falling behind as well.
-    let waiting = terrain_bake::palette::shade(terrain_generators::tone::Tone::Grass, 0.45);
+    // A flat, plausible mid-green, so that a page which has not finished
+    // loading is a slightly flat patch of the right hue rather than a black
+    // hole. It will still be visible if you look for it, and that is the
+    // point: hiding it entirely would hide the streaming falling behind as
+    // well. Not measured — there is no ramp to sample now that the raster
+    // tier is gone, only a placeholder for ground nobody has traced yet.
     (
         Camera2d,
         Camera {
-            clear_color: ClearColorConfig::Custom(Color::srgb(waiting.x, waiting.y, waiting.z)),
+            clear_color: ClearColorConfig::Custom(Color::srgb(0.24, 0.30, 0.14)),
             ..default()
         },
         Projection::Orthographic(OrthographicProjection {
@@ -170,12 +174,43 @@ fn view_rect(camera: &Projection, transform: &GlobalTransform, window: Vec2) -> 
     (low, high)
 }
 
-/// Start baking every page the camera can see and does not have.
+/// Count every waiting page down, and forget the ones whose wait is over.
+///
+/// Forgetting is what lets [`request_pages`] ask again: it skips any
+/// coordinate already in the map, so a page stays unasked-for exactly as long
+/// as it stays in it.
+fn tick_missing(pages: &mut HashMap<IVec2, PageState>) {
+    let mut elapsed = Vec::new();
+    for (coordinate, state) in pages.iter_mut() {
+        if let PageState::Missing(remaining) = state {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                elapsed.push(*coordinate);
+            }
+        }
+    }
+    for coordinate in elapsed {
+        pages.remove(&coordinate);
+    }
+}
+
+/// Start loading every page the camera can see and does not have.
 fn request_pages(
     mut world: ResMut<GrassWorld>,
     cameras: Query<(&Projection, &GlobalTransform), With<Camera2d>>,
     windows: Query<&Window>,
 ) {
+    // Every retry costs a page's worth of tasks; tick every waiting one down
+    // before deciding what to (re)request this frame.
+    tick_missing(&mut world.pages);
+
+    // Nothing is traced, so nothing will ever load — see `crate::cache`,
+    // "Cycles is the only renderer". Without this, every visible page would
+    // ask, miss, and ask again every single frame for no reason.
+    if !crate::cache::traced_enabled() {
+        return;
+    }
+
     let Ok((projection, transform)) = cameras.single() else {
         return;
     };
@@ -200,45 +235,12 @@ fn request_pages(
             if world.pages.contains_key(&coordinate) {
                 continue;
             }
-            let params = world.params.clone();
+            let seed = world.seed;
             let page = Page::new(coordinate.as_vec2() * size, PAGE_PIXELS, PAGE_PIXELS);
-            let task = pool.spawn(async move { bake_to_rgba(page, &params) });
-            world.pages.insert(coordinate, PageState::Baking(task));
+            let task = pool.spawn(async move { crate::cache::load(&page, seed) });
+            world.pages.insert(coordinate, PageState::Loading(task));
         }
     }
-}
-
-/// Bake a page straight to the bytes a texture wants.
-///
-/// Traced pages first, and rasterised only when there is not one.
-///
-/// This is where the two renderers meet. Cycles takes seconds a page and the
-/// game has a frame, so the path tracer can never run here — but it does not
-/// have to. A page is a *cache*, its content is a pure function of the world
-/// coordinate and the seed, and that means a page traced last week is exactly
-/// the page this function would produce if it had the time. So it is looked up
-/// on disk, and the rasteriser becomes the fallback for ground nobody has traced
-/// yet rather than the way the game is meant to look.
-///
-/// Off unless `TERRAIN_GRASS_TRACED` is set — see [`crate::cache::TERRAIN_GRASS_TRACED`]
-/// for why mixing the two renderers by accident is worse than not mixing them at
-/// all. Pre-trace a region with
-/// `cargo run --release -p terrain_bevy --example grass_prebake`, then
-/// `TERRAIN_GRASS_TRACED=1 ./run`.
-///
-/// For one whole scene traced at once — which is what to screenshot — use
-/// `./render` instead. It has no page grid at all.
-fn bake_to_rgba(page: Page, params: &BakeParams) -> Vec<u8> {
-    if let Some(bytes) = crate::cache::load(&page, params) {
-        return bytes;
-    }
-    let colours = bake(page, params);
-    let mut bytes = Vec::with_capacity(colours.len() * 4);
-    for colour in colours {
-        let rgb = terrain_bake::palette::to_bytes(colour);
-        bytes.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
-    }
-    bytes
 }
 
 /// Put finished bakes on screen.
@@ -251,13 +253,25 @@ fn publish_pages(
 ) {
     let size = PAGE_PIXELS as f32 / iso::PX_PER_METRE;
     let mut finished = Vec::new();
+    // Loaded and empty: nothing traced there yet. Held as `Missing` rather
+    // than shown or immediately re-asked for — see `crate::cache`, "Cycles is
+    // the only renderer" — and rather than removed outright, which would have
+    // `request_pages` spawn a fresh filesystem read for it every frame.
+    let mut missed = Vec::new();
     for (coordinate, state) in world.pages.iter_mut() {
-        let PageState::Baking(task) = state else {
+        let PageState::Loading(task) = state else {
             continue;
         };
-        if let Some(bytes) = future::block_on(future::poll_once(task)) {
-            finished.push((*coordinate, bytes));
+        match future::block_on(future::poll_once(task)) {
+            Some(Some(bytes)) => finished.push((*coordinate, bytes)),
+            Some(None) => missed.push(*coordinate),
+            None => {}
         }
+    }
+    for coordinate in missed {
+        world
+            .pages
+            .insert(coordinate, PageState::Missing(MISSING_RETRY_FRAMES));
     }
 
     for (coordinate, bytes) in finished {
@@ -269,8 +283,7 @@ fn publish_pages(
             },
             TextureDimension::D2,
             bytes,
-            // sRGB, because the palette is measured in the space the reference
-            // art was authored in and the baker writes finished colours.
+            // sRGB, matching the space a traced page is written to disk in.
             TextureFormat::Rgba8UnormSrgb,
             RenderAssetUsages::RENDER_WORLD,
         );
@@ -391,5 +404,54 @@ mod tests {
             app.world().entity(entity).get::<Tonemapping>(),
             Some(Tonemapping::None)
         ));
+    }
+
+    #[test]
+    fn a_page_nobody_has_traced_is_not_asked_for_every_frame() {
+        // The failure this exists to prevent: with no renderer to fall back to,
+        // a cache miss used to be dropped from the map outright, so the very
+        // next frame asked for it again. At a normal view size that is a few
+        // hundred filesystem reads spawned onto the compute pool every frame,
+        // forever, for ground that will not appear until somebody traces it.
+        let mut pages = HashMap::default();
+        pages.insert(IVec2::new(3, -4), PageState::Missing(MISSING_RETRY_FRAMES));
+
+        for frame in 1..MISSING_RETRY_FRAMES {
+            tick_missing(&mut pages);
+            assert!(
+                pages.contains_key(&IVec2::new(3, -4)),
+                "the page was released for a retry after {frame} frames, not \
+                 {MISSING_RETRY_FRAMES}"
+            );
+        }
+
+        // The last tick retires it, and only then will `request_pages` — which
+        // skips any coordinate already present — ask for it again.
+        tick_missing(&mut pages);
+        assert!(
+            !pages.contains_key(&IVec2::new(3, -4)),
+            "the page was never released, so it would never be retried"
+        );
+    }
+
+    #[test]
+    fn waiting_is_a_wait_and_not_a_synonym_for_never() {
+        // Both directions matter. One frame would be the hot loop again; a
+        // wait long enough to outlast a session would mean a prebake finishing
+        // mid-run never showed up.
+        assert!(MISSING_RETRY_FRAMES > 1);
+        assert!(MISSING_RETRY_FRAMES < 60 * 30);
+    }
+
+    #[test]
+    fn a_loading_or_ready_page_is_left_alone_by_the_countdown() {
+        // `tick_missing` walks every entry; only the waiting ones are its
+        // business. Evicting a page mid-load would leak its task, and evicting
+        // a ready one would drop a page off the screen for no reason.
+        let mut pages = HashMap::default();
+        let entity = App::new().world_mut().spawn_empty().id();
+        pages.insert(IVec2::ZERO, PageState::Ready(entity));
+        tick_missing(&mut pages);
+        assert!(matches!(pages.get(&IVec2::ZERO), Some(PageState::Ready(_))));
     }
 }

@@ -63,9 +63,9 @@ pub fn footprint(page: &Page, caster_reach: f32) -> (Vec2, Vec2) {
     // that direction, because this rectangle decides which cells are *visited*
     // at all and [`reaches_page`] only narrows it afterwards.
     //
-    // Measured the way [`MARGIN`] is, by
-    // [`tests::the_placement_rectangle_covers_every_direction_a_mark_reaches`],
-    // which sweeps the vocabulary rather than reasoning about it. Each of these
+    // Measured the way [`MARGIN`] was: by sweeping the vocabulary against a
+    // rasterised stroke's actual reach, in a test that no longer has a
+    // renderer to run against — see CLAUDE.md's known gaps. Each of these
     // sits comfortably above its requirement, which is worth keeping an eye on
     // in the other direction too: widening this rectangle costs bake time on
     // every page in proportion to its area, and an extra thirty pixels all round
@@ -274,8 +274,8 @@ impl Bed<'_> {
 /// walks on every page — so a metre added here is paid for a few hundred
 /// thousand times.
 ///
-/// [`the baker's tests::the_canopy_bound_is_never_beaten`] sweeps the
-/// vocabulary against it rather than trusting this paragraph.
+/// `tests::the_canopy_bound_is_never_beaten` sweeps the vocabulary against it
+/// rather than trusting this paragraph.
 pub const CANOPY_METRES: f32 = 1.20;
 
 /// Walk a jittered grid over the page's world footprint, placing one thing per
@@ -403,10 +403,10 @@ fn reaches_page(page: &Page, root: Vec2) -> bool {
 /// grown by a vigorous mound and a tall-accent draw: 0.40 m of arc times 1.25
 /// times 1.35 times 1.35. Arc length is not reach, though — the mark bends as it
 /// grows and its tip curls back — so the honest bound is the furthest a
-/// *rasterised* stroke gets from its own root, which
-/// [`tests::the_guard_band_covers_the_longest_mark_the_field_can_grow`] measures
-/// rather than assumes. Add the tuft radius the mark may be rooted at, and the
-/// half-width plus under-stroke of the rib itself.
+/// rasterised stroke gets from its own root — measured, not assumed, though
+/// the test that measured it needed a rasteriser and no longer exists; see
+/// CLAUDE.md's known gaps. Add the tuft radius the mark may be rooted at, and
+/// the half-width plus under-stroke of the rib itself.
 ///
 /// Measured, that comes to about 125 pixels. This is 140, and the extra eighth
 /// is not slack — it is the room for the next person to lengthen a blade. Too
@@ -726,17 +726,17 @@ pub const DOWN_SCREEN: f32 = std::f32::consts::FRAC_PI_4;
 
 /// How far from its centre a tuft may root a blade, metres.
 ///
-/// Named rather than written into the draw because both guard-band tests have to
-/// add it to the reach they measure, and a copy of it in a test is a copy that
-/// goes stale silently — the test then certifies a band as sufficient for a
-/// narrower tuft than the one the baker actually grows.
+/// Named rather than written into the draw because the guard-band reach it
+/// feeds is swept elsewhere, and a copy of it in that sweep is a copy that
+/// goes stale silently — the sweep then certifies a band as sufficient for a
+/// narrower tuft than the one placement actually grows.
 pub const TUFT_RADIUS: f32 = 0.185;
 
 /// The most a vigorous mound can lengthen the grass standing on it.
 ///
-/// Named because three guard-band tests have to reach the same number, and a
-/// copy of it in a test is a copy that goes stale silently. One of them had:
-/// the clamp read 1.45 and the test read 1.35, so the band was certified against
+/// Named because the guard-band sweep has to reach the same number, and a
+/// copy of it there is a copy that goes stale silently. It has: the clamp
+/// once read 1.45 and the sweep read 1.35, so the band was certified against
 /// a mark seven percent shorter than the field can actually grow, and the
 /// symptom of that being wrong is a stroke present on one side of a page join
 /// and missing on the other.
@@ -744,23 +744,23 @@ pub const VIGOUR_CEILING: f32 = 1.45;
 
 /// Extra bend a skirt blade is laid over by, at most, radians.
 ///
-/// Only here so the guard-band test can sweep to the same limit the baker
-/// reaches. See the skirt in [`grow_tuft`].
+/// Only here so a guard-band sweep can reach the same limit placement does.
+/// See the skirt in [`grow_tuft`].
 pub const SKIRT_BEND: f32 = 0.75;
 
 /// The most a tiller's structural role can add to a mark's bend, radians.
 ///
 /// [`Role::Perimeter`] is the outlier: it exists to lay the skirt over, and the
-/// skirt is what the tuft sits on. Named for the same reason [`SKIRT_BEND`] is —
-/// three guard-band tests have to sweep to the limit the baker actually reaches,
-/// and a copy of the number in a test is a copy that goes stale silently.
+/// skirt is what the tuft sits on. Named for the same reason [`SKIRT_BEND`] is
+/// — a guard-band sweep has to reach the same limit placement does, and a
+/// copy of the number in that sweep is a copy that goes stale silently.
 ///
-/// The two stack. A perimeter blade that is *also* turned down-screen takes both,
-/// so the vocabulary's true bend ceiling is a family's own maximum plus
-/// `ROLE_LEAN + SKIRT_BEND`, and that is what
-/// [`the baker's tests::the_placement_rectangle_covers_every_direction_a_mark_reaches`]
-/// has to sweep to. Getting this wrong does not clip a blade — it puts a
-/// straight line down every page join.
+/// The two stack. A perimeter blade that is *also* turned down-screen takes
+/// both, so the vocabulary's true bend ceiling is a family's own maximum plus
+/// `ROLE_LEAN + SKIRT_BEND`. Getting this wrong does not clip a blade — it
+/// puts a straight line down every page join. (The sweep that checked this
+/// against a rasterised stroke's actual reach needed a rasteriser and no
+/// longer exists; see CLAUDE.md's known gaps.)
 pub const ROLE_LEAN: f32 = 0.85;
 
 /// The largest bend any mark in the vocabulary can end up with, radians.
@@ -1852,6 +1852,83 @@ fn leaf_cluster(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::quality::GrassRenderQuality;
+    use crate::scene::GrassScene;
+
+    #[test]
+    fn the_canopy_bound_is_never_beaten() {
+        // The shadow guard band is sized from `CANOPY_METRES`, so a mark that
+        // stands taller than it can cast onto a page from outside the band —
+        // and the symptom is not a clipped shadow, it is a missing one, on the
+        // pages whose casters happened to fall outside.
+        //
+        // Swept over real pages rather than reasoned about, because the bound is
+        // the product of four independent multipliers and any one of them can be
+        // raised without the others being looked at.
+        let mut tallest = 0.0f32;
+        for (index, origin) in crate::fixtures::PLACES.iter().enumerate() {
+            let params = GrassParams {
+                seed: 0x5eed_1234u64.wrapping_add(index as u64 * 0x9e37_79b9),
+                quality: GrassRenderQuality::Reference,
+                ..GrassParams::default()
+            };
+            let page = Page::new(*origin, 192, 192);
+            let field = WorldField::lit_by(params.seed, params.light);
+            let scene = GrassScene::build(page, &field, &params);
+            tallest = tallest.max(scene.canopy_ceiling());
+        }
+        assert!(
+            tallest <= CANOPY_METRES,
+            "the field grows {tallest:.3} m of canopy against a {CANOPY_METRES} m \
+             bound the shadow guard band is sized from"
+        );
+        // And not so far over that the band is costing area for nothing: every
+        // extra metre of reach widens the rectangle every scatter pass walks.
+        assert!(
+            tallest > CANOPY_METRES * 0.55,
+            "the canopy bound is {CANOPY_METRES} m for a field that reaches \
+             {tallest:.3} m, which is guard band nobody needs"
+        );
+    }
+
+    #[test]
+    fn the_shadow_guard_covers_every_caster_that_can_reach_a_page() {
+        // Measured against the sun rather than against a constant, and swept
+        // down to the lowest elevation the renderer claims to support. Getting
+        // this wrong at 35° and right at 55° is exactly the shape of the bug
+        // this exists to prevent.
+        let field = WorldField::lit_by(1, GrassParams::default().light);
+        for degrees in [35.0f32, 45.0, 55.0] {
+            let elevation = degrees.to_radians();
+            let params = GrassParams {
+                quality: GrassRenderQuality::Reference,
+                light: crate::sun::Key {
+                    azimuth: 0.0,
+                    elevation,
+                }
+                .direction(),
+                ..GrassParams::default()
+            };
+            for detail in [1.0f32, 0.5, 0.25] {
+                let page = Page::at_detail(Vec2::new(-64.0, -64.0), 128, 128, detail);
+                let bed = Bed {
+                    page: &page,
+                    field: &field,
+                    params: &params,
+                };
+                let (low, high) = footprint(&page, bed.caster_reach());
+                // Where the page itself is, without any band at all.
+                let (bare_low, bare_high) = footprint(&page, -1.0e6);
+                let needed = CANOPY_METRES / elevation.tan();
+                let margin = (bare_low - low).min(high - bare_high);
+                assert!(
+                    margin.x >= needed && margin.y >= needed,
+                    "at {degrees}° detail {detail} the band gives {margin:?} m \
+                     where a caster reaches {needed:.3} m"
+                );
+            }
+        }
+    }
 
     #[test]
     fn a_crown_stays_inside_the_guard_band() {

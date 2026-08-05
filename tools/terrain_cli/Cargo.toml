@@ -3,7 +3,7 @@ name = "terrain_cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "The terrain framework's command line: validate, inspect, render, dataset"
+description = "The terrain framework's command line: validate, inspect, render"
 
 # One binary, named for the verb rather than the crate. `terrain render` reads
 # better than `terrain_cli render`, and the crate name only ever appears in a
@@ -13,16 +13,11 @@ name = "terrain"
 path = "src/main.rs"
 
 [dependencies]
-# Transitional. Every headless path here goes through the grass crate today and
-# will go through `terrain_core`, `terrain_scene` and `terrain_cycles` once those
-# exist — see the migration note in `main.rs`.
 terrain_core.workspace = true
 terrain_generators.workspace = true
 terrain_format.workspace = true
 terrain_scene.workspace = true
-terrain_bake.workspace = true
 terrain_cycles.workspace = true
-terrain_dataset.workspace = true
 terrain_bench.workspace = true
 bevy.workspace = true
 clap.workspace = true

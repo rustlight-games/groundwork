@@ -26,9 +26,9 @@
 //! a systematic difference one tile away from the middle of every frame — which
 //! a neural renderer would learn in preference to learning grass.
 
+use crate::frame::{ResolvedIsoFrame, TilePolygon};
+use crate::layout::TileRole;
 use glam::Vec3;
-use terrain_scene::frame::{ResolvedIsoFrame, TilePolygon};
-use terrain_scene::layout::TileRole;
 
 /// How the tile grid is drawn.
 #[derive(Clone, Copy, Debug)]
@@ -346,9 +346,9 @@ fn glyph_for(character: char) -> [u8; GLYPH_ROWS] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use terrain_scene::frame::{IsoFrameOptions, ResolvedIsoFrame};
-    use terrain_scene::layout::{IsoTileLayout, WorldTileCoord};
-    use terrain_scene::projection::Projection;
+    use crate::frame::{IsoFrameOptions, ResolvedIsoFrame};
+    use crate::layout::{IsoTileLayout, WorldTileCoord};
+    use crate::projection::Projection;
 
     fn frame(width: u32, height: u32) -> ResolvedIsoFrame {
         let layout = IsoTileLayout::nine(WorldTileCoord::new(-713, 284), 4.0).expect("well formed");

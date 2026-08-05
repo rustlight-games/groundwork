@@ -1,26 +1,25 @@
 //! The terrain framework's command line.
 //!
 //! ```sh
-//! terrain render --out target/plate.png --samples 512
-//! terrain preview-export --out target/preview.png
+//! terrain compile assets/terrain/documents/meadow_path.terrain.ron --out target/plate.png
 //! terrain render --seed 5a17e33b0c9d2f14 --centre-tile=-713,284
-//! terrain dataset --out target/corpus --shards 8 --aovs
 //! ```
 //!
 //! ## A render is nine tiles
 //!
-//! Both raster commands frame a three-by-three isometric layout by default, with
-//! the middle tile as the subject: a fresh world every run, a manifest beside
-//! the picture, and the replay command printed at the end. `--manual` is the
-//! hand-framed laboratory plate this used to be. See `docs/ISOMETRIC_TILES.md`.
+//! `compile` and `render` frame a three-by-three isometric layout by default,
+//! with the middle tile as the subject: a fresh world every run, a manifest
+//! beside the picture, and the replay command printed at the end. `--manual` is
+//! the hand-framed laboratory plate `render` still offers. See
+//! `docs/ISOMETRIC_TILES.md`.
 //!
 //! This is the headless entry point, and its first job is a structural one: it
-//! must be possible to grow terrain, trace it through Cycles and export a corpus
-//! **without linking the game**. Until this existed, every one of those paths ran
-//! through an example inside the grass crate, and the grass crate sat in a
-//! workspace whose root package pulled in the simulation, the trainer and the
-//! renderer. Nothing was wrong with the code; the dependency graph simply said
-//! "this is a game with a grass module in it", and that is the sentence the whole
+//! must be possible to grow terrain and trace it through Cycles **without
+//! linking the game**. Until this existed, every one of those paths ran through
+//! an example inside the grass crate, and the grass crate sat in a workspace
+//! whose root package pulled in the simulation, the trainer and the renderer.
+//! Nothing was wrong with the code; the dependency graph simply said "this is a
+//! game with a grass module in it", and that is the sentence the whole
 //! migration is written to change.
 //!
 //! ## What is a stub, and why it says so loudly
@@ -33,23 +32,19 @@
 //! ## What it reaches for
 //!
 //! `terrain_format` to read a document, `terrain_core` to compile and sample it,
-//! `terrain_generators` to grow content, `terrain_bake` and `terrain_cycles` to
-//! draw it, and `terrain_dataset` to pair the two. Not Bevy — nothing this
-//! binary does wants a window.
+//! `terrain_generators` to grow content, and `terrain_cycles` to render it. Not
+//! Bevy — nothing this binary does wants a window.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bevy::math::{Vec2, Vec3};
 use clap::{Args, Parser, Subcommand};
-use terrain_bake::bake::BakeParams;
 use terrain_core::{SampleFootprint, SampleQuery, WorldPoint};
 use terrain_cycles::cycles::RenderSettings;
 use terrain_cycles::plate::{self, PlatePlan, PlateRequest, Progress};
-use terrain_dataset::dataset::{self, CorpusRequest};
 use terrain_generators::field::WorldField;
 use terrain_generators::page::Page;
-use terrain_generators::quality::GrassRenderQuality;
 use terrain_generators::scene::GrassScene;
 use terrain_generators::style::GrassParams;
 use terrain_scene::frame::{
@@ -75,20 +70,15 @@ enum Command {
     Validate(DocumentArgs),
     /// Sample a prepared terrain at a point and print what is there.
     Inspect(InspectArgs),
-    /// Render a plate through the cheap rasteriser.
-    PreviewExport(PreviewArgs),
-    /// Render a plate through Cycles.
+    /// Render a plate through Cycles: a hand-framed laboratory plate.
     Render(RenderArgs),
-    /// Generate a paired training corpus.
-    Dataset(DatasetArgs),
     /// Run a measurement suite and report against its baseline.
     Benchmark(BenchmarkArgs),
     /// Compile a document into one scene and render the nine-tile plate.
     ///
     /// The production path: document, matrix, shared candidates, one scene, one
-    /// picture. Named apart from `preview-export` because that one still drives
-    /// the older grass-specific generator, and a flag that silently chose
-    /// between two pipelines is how a render comes out of a path nobody meant.
+    /// picture, path-traced. There is no other renderer to fall back to — see
+    /// root `CLAUDE.md`, "Cycles is the only renderer".
     Compile(CompileArgs),
 }
 
@@ -111,9 +101,6 @@ struct CompileArgs {
     /// Metres along one tile edge.
     #[arg(long, default_value_t = 2.0)]
     tile_size_m: f64,
-    /// How hard the rasteriser is allowed to work.
-    #[arg(long, value_parser = parse_quality, default_value = "dataset")]
-    quality: GrassRenderQuality,
     /// Metres between field-stack samples. Omitted derives one from the framing.
     #[arg(long)]
     field_spacing_m: Option<f64>,
@@ -258,9 +245,9 @@ impl ResolvedFraming {
     ///
     /// `None` for a manual plate: the whole rectangle is the picture, which is
     /// what a laboratory plate has always meant.
-    fn visible_ground(&self) -> Option<terrain_bake::VisibleGround> {
+    fn visible_ground(&self) -> Option<(Vec2, Vec2)> {
         let bounds = self.sample.as_ref()?.frame.visible_bounds();
-        Some(terrain_bake::VisibleGround::new(
+        Some((
             Vec2::new(bounds.min.u_m as f32, bounds.min.v_m as f32),
             Vec2::new(bounds.max.u_m as f32, bounds.max.v_m as f32),
         ))
@@ -426,20 +413,6 @@ fn parse_origin(text: &str) -> Vec2 {
 }
 
 #[derive(Args, Debug)]
-struct PreviewArgs {
-    #[command(flatten)]
-    framing: Framing,
-    #[arg(long, default_value = "target/preview.png")]
-    out: PathBuf,
-    /// How hard the rasteriser is allowed to work.
-    #[arg(long, value_parser = parse_quality, default_value = "dataset")]
-    quality: GrassRenderQuality,
-    /// Write only the picture: no tile grid, no subject mask, no manifest.
-    #[arg(long)]
-    no_sidecars: bool,
-}
-
-#[derive(Args, Debug)]
 struct RenderArgs {
     #[command(flatten)]
     framing: Framing,
@@ -482,44 +455,9 @@ struct RenderArgs {
 }
 
 #[derive(Args, Debug)]
-struct DatasetArgs {
-    #[arg(long, default_value = "target/grass-dataset")]
-    out: PathBuf,
-    #[arg(long, default_value_t = 8)]
-    shards: usize,
-    /// Side of the bake, in pixels. Larger than the crop, deliberately.
-    #[arg(long, default_value_t = 448)]
-    page: usize,
-    /// Side of the crop actually kept.
-    #[arg(long, default_value_t = 256)]
-    crop: usize,
-    #[arg(long, default_value_t = 0x9a55_0001)]
-    seed: u64,
-    #[arg(long, default_value_t = 192)]
-    samples: u32,
-    /// Write the structural channels beside the picture.
-    #[arg(long)]
-    aovs: bool,
-    /// Pair against an expensive rasterisation rather than Cycles.
-    #[arg(long)]
-    raster: bool,
-}
-
-#[derive(Args, Debug)]
 struct BenchmarkArgs {
     /// Which suite to run.
     suite: Option<String>,
-}
-
-fn parse_quality(text: &str) -> Result<GrassRenderQuality, String> {
-    match text.to_ascii_lowercase().as_str() {
-        "preview" => Ok(GrassRenderQuality::Preview),
-        "dataset" => Ok(GrassRenderQuality::Dataset),
-        "reference" => Ok(GrassRenderQuality::Reference),
-        other => Err(format!(
-            "unknown quality {other}; expected preview, dataset or reference"
-        )),
-    }
 }
 
 fn main() -> ExitCode {
@@ -527,9 +465,7 @@ fn main() -> ExitCode {
         Command::Compile(args) => compile(&args),
         Command::Validate(args) => validate(&args),
         Command::Inspect(args) => inspect(&args),
-        Command::PreviewExport(args) => preview_export(&args),
         Command::Render(args) => render(&args),
-        Command::Dataset(args) => run_dataset(&args),
         Command::Benchmark(args) => not_yet(
             "benchmark",
             &args.suite.unwrap_or_else(|| "the default suite".into()),
@@ -886,13 +822,13 @@ fn write_sidecars(
 ) -> std::io::Result<Vec<PathBuf>> {
     let frame = &sample.frame;
     let (width, height) = (frame.output_size[0] as usize, frame.output_size[1] as usize);
-    let style = terrain_bake::overlay::GridStyle::default();
+    let style = terrain_scene::overlay::GridStyle::default();
     let mut written = Vec::new();
 
     let mut annotated = colours.to_vec();
-    let mut canvas = terrain_bake::overlay::Canvas::new(&mut annotated, width, height);
-    terrain_bake::overlay::draw_tile_grid(&mut canvas, frame, &style);
-    terrain_bake::overlay::draw_caption(
+    let mut canvas = terrain_scene::overlay::Canvas::new(&mut annotated, width, height);
+    terrain_scene::overlay::draw_tile_grid(&mut canvas, frame, &style);
+    terrain_scene::overlay::draw_caption(
         &mut canvas,
         &[
             format!("SEED {}", sample.identity.seed_hex().to_uppercase()),
@@ -906,16 +842,11 @@ fn write_sidecars(
         &style,
     );
     let grid = beside(out, "-tiles", "png");
-    save_rgb(
-        &grid,
-        &terrain_bake::surface::to_rgb8(&annotated),
-        width,
-        height,
-    )?;
+    save_rgb(&grid, &terrain_scene::to_rgb8(&annotated), width, height)?;
     written.push(grid);
 
     let mask = beside(out, "-subject-mask", "png");
-    let bytes = terrain_bake::overlay::mask_to_gray8(&terrain_bake::overlay::subject_mask(frame));
+    let bytes = terrain_scene::overlay::mask_to_gray8(&terrain_scene::overlay::subject_mask(frame));
     image::save_buffer(
         &mask,
         &bytes,
@@ -943,83 +874,6 @@ fn save_rgb(path: &Path, bytes: &[u8], width: usize, height: usize) -> std::io::
     .map_err(std::io::Error::other)
 }
 
-/// Write a plate with its silhouette.
-///
-/// Straight RGBA, unpremultiplied. A PNG of a nine-tile layout is mostly
-/// background, and flattening it against a chosen colour here would bake that
-/// choice into every downstream comparison.
-fn save_rgba(path: &Path, plate: &terrain_bake::RenderImage) -> std::io::Result<()> {
-    image::save_buffer(
-        path,
-        &plate.to_rgba8(),
-        plate.width as u32,
-        plate.height as u32,
-        image::ColorType::Rgba8,
-    )
-    .map_err(std::io::Error::other)
-}
-
-/// Bake a plate through the cheap rasteriser.
-fn preview_export(args: &PreviewArgs) -> ExitCode {
-    let framing = match args.framing.resolve() {
-        Ok(framing) => framing,
-        Err(problem) => {
-            eprintln!("terrain preview-export: {problem}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let (width, height) = framing.size();
-    let params = BakeParams {
-        seed: framing.seed,
-        quality: args.quality,
-        visible: framing.visible_ground(),
-        ..BakeParams::default()
-    };
-    let page = Page::at_detail(
-        framing.origin,
-        width,
-        height,
-        framing.px_per_metre / terrain_generators::iso::PX_PER_METRE,
-    );
-
-    report_framing(&framing);
-    println!("  {} tier", args.quality.name());
-
-    // Padded, so every neighbourhood-reading shading term sees the ground that
-    // is actually there rather than whatever part of it fell inside the
-    // rectangle. See `bake_padded`.
-    let plate = terrain_bake::bake::bake_padded_image(page, &params);
-    if let Err(error) = save_rgba(&args.out, &plate) {
-        eprintln!("cannot write {}: {error}", args.out.display());
-        return ExitCode::FAILURE;
-    }
-    println!(
-        "wrote {} ({:.0}% covered)",
-        args.out.display(),
-        plate.coverage() * 100.0
-    );
-
-    if let (Some(sample), false) = (&framing.sample, args.no_sidecars) {
-        let manifest = sample.manifest("preview-export", framing.preset, framing.fill);
-        match write_sidecars(&args.out, &plate.colour, sample, &manifest) {
-            Ok(paths) => {
-                for path in paths {
-                    println!("wrote {}", path.display());
-                }
-            }
-            Err(error) => {
-                eprintln!(
-                    "cannot write a sidecar beside {}: {error}",
-                    args.out.display()
-                );
-                return ExitCode::FAILURE;
-            }
-        }
-        println!("\nreplay:\n  {}", manifest.replay);
-    }
-    ExitCode::SUCCESS
-}
-
 /// Trace a plate through Cycles.
 fn render(args: &RenderArgs) -> ExitCode {
     let framing = match args.framing.resolve() {
@@ -1044,9 +898,7 @@ fn render(args: &RenderArgs) -> ExitCode {
         supersample: args.supersample,
         tiles: args.trace_tiles_across,
         blade_width: 0.0,
-        visible: framing
-            .visible_ground()
-            .map(|ground| (ground.min, ground.max)),
+        visible: framing.visible_ground(),
         settings: RenderSettings {
             samples: args.samples,
             device: if args.cpu { "CPU" } else { "GPU" }.to_string(),
@@ -1118,11 +970,9 @@ fn render(args: &RenderArgs) -> ExitCode {
     );
 
     if let (Some(sample), false) = (&framing.sample, args.no_sidecars) {
-        // Unpacked so the overlay is drawn the same way on both plates. The
-        // grid on a traced render and the grid on a raster preview have to be
-        // the same colour, or a reader comparing them sees a difference that is
-        // in the annotation rather than in the picture.
-        let colours = terrain_bake::palette::from_bytes_rgb(&plate.rgb());
+        // Unpacked, so the overlay is drawn in the same space it composites
+        // onto — see `terrain_scene::pixel`.
+        let colours = terrain_scene::from_bytes_rgb(&plate.rgb());
         let mut manifest = sample.manifest("render", framing.preset, framing.fill);
         manifest.samples = Some(args.samples);
         manifest.marks = Some(plate.blades);
@@ -1145,64 +995,6 @@ fn render(args: &RenderArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Generate a paired corpus.
-fn run_dataset(args: &DatasetArgs) -> ExitCode {
-    let request = CorpusRequest {
-        shards: args.shards,
-        page: args.page,
-        crop: args.crop,
-        seed: args.seed,
-        samples: args.samples,
-        aovs: args.aovs,
-        raster: args.raster,
-        out: args.out.clone(),
-        ..CorpusRequest::default()
-    };
-
-    println!(
-        "{} shards of {}² cropped from {}², margin {} px",
-        request.shards,
-        request.crop,
-        request.page,
-        request.margin(),
-    );
-    println!(
-        "  input {} (raster) · target {}",
-        request.input.name(),
-        if request.raster {
-            "raster".to_string()
-        } else {
-            format!("cycles {} spp", request.samples)
-        },
-    );
-
-    #[allow(clippy::disallowed_types)]
-    let started = std::time::Instant::now();
-    let mut progress = |shard: usize, images: usize| {
-        println!("  shard {shard:05}: {images} images");
-    };
-    let report = match dataset::generate(&request, &mut progress) {
-        Ok(report) => report,
-        Err(error) => {
-            eprintln!("cannot write {}: {error}", request.out.display());
-            return ExitCode::FAILURE;
-        }
-    };
-
-    println!(
-        "{} shards, {} images, {:.1} s → {}",
-        report.shards,
-        report.images,
-        started.elapsed().as_secs_f64(),
-        request.out.display()
-    );
-    if report.failed > 0 {
-        eprintln!("{} shards produced nothing", report.failed);
-        return ExitCode::FAILURE;
-    }
-    ExitCode::SUCCESS
-}
-
 /// Grow one page and report what it holds, without rendering anything.
 ///
 /// Unused by the command surface today and kept compiled, because it is the
@@ -1211,9 +1003,9 @@ fn run_dataset(args: &DatasetArgs) -> ExitCode {
 /// would lose the one thing worth keeping — that a scene can be interrogated
 /// without a renderer anywhere in the call.
 #[allow(dead_code)]
-fn describe(page: Page, params: &BakeParams) -> String {
+fn describe(page: Page, params: &GrassParams) -> String {
     let field = WorldField::lit_by(params.seed, params.light);
-    let scene = GrassScene::build(page, &field, &params.grass());
+    let scene = GrassScene::build(page, &field, params);
     format!(
         "{} marks, canopy ceiling {:.3} m, fingerprint {}",
         scene.len(),
@@ -1444,20 +1236,8 @@ mod tests {
     }
 
     #[test]
-    fn every_quality_tier_has_a_name_that_parses_back() {
-        for tier in [
-            GrassRenderQuality::Preview,
-            GrassRenderQuality::Dataset,
-            GrassRenderQuality::Reference,
-        ] {
-            assert_eq!(parse_quality(tier.name()), Ok(tier));
-        }
-        assert!(parse_quality("cinematic").is_err());
-    }
-
-    #[test]
     fn describing_a_page_reports_a_meadow() {
-        let params = BakeParams::default();
+        let params = GrassParams::default();
         let described = describe(Page::new(Vec2::ZERO, 64, 64), &params);
         assert!(described.contains("marks"));
         assert!(described.contains("fingerprint"));
@@ -1561,13 +1341,6 @@ fn compile(args: &CompileArgs) -> ExitCode {
     };
     let compile_time = started.elapsed();
 
-    // The tuned rasteriser, driven by the document.
-    //
-    // Deliberately *not* a fresh renderer over the generic scene. The painterly
-    // tier is years of tuning against reference art — canopy lighting, glazing,
-    // depth composition, the whole palette — and a from-scratch generic renderer
-    // is a regression however clean its architecture is. What the document
-    // controls is `SemanticOverlay`: how much grows, and where the earth shows.
     // One evaluator, shared by everything that asks about the ground: the mesh
     // that carries its relief, the shader that colours it, and the overlay that
     // decides how much grass grows on it. See `terrain_generators::ground`.
@@ -1627,14 +1400,14 @@ fn compile(args: &CompileArgs) -> ExitCode {
     let request = PlateRequest {
         width: args.width as usize,
         height: args.height as usize,
-        origin: terrain_bake::bake::vec2(frame.cache_origin[0], frame.cache_origin[1]),
+        origin: Vec2::new(frame.cache_origin[0], frame.cache_origin[1]),
         px_per_metre: frame.pixels_per_metre,
         supersample: args.supersample,
         tiles: args.trace_tiles_across,
         blade_width: 0.0,
         visible: Some((
-            terrain_bake::bake::vec2(visible.min.u_m as f32, visible.min.v_m as f32),
-            terrain_bake::bake::vec2(visible.max.u_m as f32, visible.max.v_m as f32),
+            Vec2::new(visible.min.u_m as f32, visible.min.v_m as f32),
+            Vec2::new(visible.max.u_m as f32, visible.max.v_m as f32),
         )),
         settings: RenderSettings {
             samples: args.samples,

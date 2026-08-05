@@ -20,10 +20,10 @@ semantic terrain compiler is to produce geometry good enough for a path tracer;
 anything that draws pixels here is a distraction that has to be maintained,
 tuned and kept in agreement with the real renderer — and it never is.
 
-The rasterisers that still exist are **being deleted** — see
-[issue #1](https://github.com/rustlight-games/groundwork/issues/1). Do not add
-features to them, do not tune them, and do not write a new one. If a change
-needs a picture, it needs a Cycles material or Cycles geometry.
+The two rasterisers this framework used to carry — the tuned painterly tier and
+the newer generic one, both formerly in `terrain_bake` — are gone. Do not write
+a new one. If a change needs a picture, it needs a Cycles material or Cycles
+geometry.
 
 Low fidelity does **not** mean a small picture. It means the
 `TerrainFieldStack` — typed planes with declared units. The neural renderer's
@@ -94,9 +94,11 @@ crates/
   terrain_generators  what grows: the tuned grass generator, the semantic
                       overlay, candidate domains, the transition solver,
                       ownership, the scene compiler, content families
-  terrain_bake        the tuned painterly raster tier, and bake requests
+  terrain_bake        bake requests: the renderer-agnostic contract for a
+                      page of ground
   terrain_cycles      the scene package, the tiled plate driver, Blender
-  terrain_dataset     paired renders and shards
+  terrain_dataset     the RenderPair contract and shard manifest/layout —
+                      corpus *generation* is a known gap, see below
   terrain_bevy        page cache, material, plugin  — the only Bevy crate
   terrain_bench       seeds, scenarios, metrics, seams, comparison, the lab
 
@@ -133,7 +135,7 @@ Dependencies point downward. `terrain_core` depends on nothing but `serde`.
 | **Why is mud a state and not a material?** | `terrain_core/src/ground_material.rs` |
 | **What decides whether relief is mesh, bump or roughness?** | `terrain_generators/src/ground.rs` — `BandSplit` |
 | **Where does one point of ground get its answer?** | `terrain_generators/src/ground.rs` — `GroundEvaluator` |
-| **What colour is earth, and how was that measured?** | `assets/terrain/materials/compacted_loam.ground.ron` |
+| **What colour is earth, and how was that measured?** | `assets/terrain/materials/compacted_loam.ground.ron`; `docs/materials/dirt.md` |
 | Why does the exporter not know about grass? | `terrain_cycles/src/export.rs` |
 | Why does a shard record all that? | `terrain_dataset/src/shard.rs` |
 
@@ -155,8 +157,6 @@ terrain compile assets/terrain/documents/meadow_path.terrain.ron \
 ```
 
 `terrain compile` reads a document and path-traces it. That is the pipeline.
-`preview-export` and `./run` render the laboratory meadow through the old
-rasteriser and are on their way out with issue #1.
 
 `TERRAIN_BLENDER` overrides where Blender is found. Pinned to 5.2 LTS.
 
@@ -196,10 +196,11 @@ one edit retunes both. See [docs/materials/dirt.md](docs/materials/dirt.md).
 
 - **`cargo test -p terrain_bench --test refactor_fingerprints`** — *is it the
   same meadow?* No renderer in the loop. A tenth of a second.
-- **`cargo bench -p terrain_bake --bench bake`** — *what did it cost?*
-- **`grass_snapshot`** — *did the picture move?*
-- **`terrain_bench::iso`** — *is the subject any good, and are the joins
-  invisible?*
+- **`terrain compile`** — *did the picture move?* The only renderer, so the
+  only answer. Minutes, and it needs Blender.
+- **`terrain_bench::iso`** — *do the subject and join metrics still measure
+  what they claim?* Against synthetic plates: there is no renderer in this
+  crate to produce a real one.
 
 `terrain_bench::SCENARIOS` is the pinned ground. Append only.
 
@@ -213,7 +214,7 @@ page in [docs/todo/](docs/todo/) saying what would make it done.
   stones and clods into a `TerrainScene`, and `terrain compile` does *not* draw
   them — it renders through the tuned generator with a `SemanticOverlay`. The
   families exist for the Cycles path and the corpus, and their look is nowhere
-  near `placement.rs`. Do not wire them into the cheap picture.
+  near `placement.rs`. Do not wire them into `terrain compile`.
 - **Bare earth has clods and cracks, but no ruts, pebbles or puddles.** The
   relief bands and the desiccation network are geometry; ruts need the spline
   feature context, which `FeatureContext` reserves and the sampler does not fill
@@ -227,7 +228,21 @@ page in [docs/todo/](docs/todo/) saying what would make it done.
   constants and noise compile.
 - **Cycles still renders through `GrassScene`**, not the generic package.
   `write_package` exists and is not on the active path.
-- **`terrain dataset` still frames by page, not by layout.**
+- **Dataset corpus generation is retired, not redesigned.** It paired a cheap
+  rasterised input against a Cycles target, and the input side rasterised the
+  shared scene even on the Cycles-target path — not only through the removed
+  `--raster` fallback. With the rasteriser gone, `terrain_dataset` keeps only
+  the renderer-agnostic `RenderPair`/`ShardManifest`/`ShardLayout` contracts;
+  the job that filled a shard is gone until the low-fidelity input side is
+  defined against the `TerrainFieldStack` directly, per this file's own claim
+  above that low fidelity means the matrix and not a smaller picture.
+- **The stroke reach bound has no cross-check.** `placement.rs`'s guard-band
+  constant used to be validated against the deleted rasteriser's own measured
+  reach; it is now trusted by inspection rather than tested.
+- **The geometry/picture separation for render style has no Rust-side test.**
+  `PreviewRasterStyle` used to prove that twenty-three shading parameters moved
+  a plate without moving a scene fingerprint. That split now lives in a Cycles
+  material, in Python, with no equivalent assertion.
 - **The world is flat.** All tile bases are coplanar; no steps, no cliffs, no
   camera pitch.
 - **Transcendental determinism is same-platform only.** `atan2`, `powf` and the

@@ -33,12 +33,12 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use glam::Vec2;
-use terrain_bake::bake::BakeParams;
 use terrain_bench::fingerprint::GENERATOR_VERSION;
 use terrain_generators::field::WorldField;
 use terrain_generators::fixtures::PLACES;
 use terrain_generators::page::Page;
 use terrain_generators::scene::GrassScene;
+use terrain_generators::style::GrassParams;
 
 /// One pinned scene.
 struct Fixture {
@@ -121,13 +121,13 @@ impl Fixture {
     /// to reason with — a digest that moved tells you nothing, a digest that
     /// moved with the count unchanged says "the same marks, differently".
     fn measure(&self) -> (String, usize) {
-        let params = BakeParams {
+        let params = GrassParams {
             seed: self.seed,
-            ..BakeParams::default()
+            ..GrassParams::default()
         };
         let field = WorldField::lit_by(params.seed, params.light);
         let page = Page::at_detail(self.origin, self.side, self.side, self.detail);
-        let scene = GrassScene::build(page, &field, &params.grass());
+        let scene = GrassScene::build(page, &field, &params);
         (
             terrain_bench::fingerprint::fingerprint(&scene, params.seed, &field).to_string(),
             scene.len(),

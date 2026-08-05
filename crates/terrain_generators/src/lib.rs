@@ -2,14 +2,14 @@
 //!
 //! This crate decides **where every mark goes and what shape it is**, and hands
 //! that description to whoever is drawing. It links no renderer: not Bevy, not
-//! the rasteriser, not the path tracer. That absence is the whole point of the
-//! crate existing — while placement and rasterisation shared a module, deciding
-//! that a blade was there required linking the code that fills pixels, and there
-//! was no way to state which of them owned a `Stroke`.
+//! the path tracer. That absence is the whole point of the crate existing —
+//! while placement and rasterisation used to share a module, deciding that a
+//! blade was there required linking the code that fills pixels, and there was
+//! no way to state which of them owned a `Stroke`.
 //!
-//! Three consumers read what this produces — the cheap rasteriser, the Cycles
-//! exporter, and the shadow pass — and none of them is more canonical than the
-//! others.
+//! Cycles is the only renderer that reads what this produces now — see root
+//! `CLAUDE.md` — but the boundary stayed after the rasteriser it was drawn
+//! against did not: this crate still links nothing that draws.
 //!
 //! ## Reading order
 //!

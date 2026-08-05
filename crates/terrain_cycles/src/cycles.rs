@@ -481,12 +481,13 @@ impl CyclesScene {
         for (index, plane) in self.surface.weights.iter().enumerate() {
             write_f32(&directory.join(format!("weight{index}.bin")), plane.iter())?;
         }
-        write_f32(&directory.join("moisture.bin"), self.surface.moisture.iter())?;
-        write_f32(
-            &directory.join("compaction.bin"),
-            self.surface.compaction.iter(),
-        )?;
-        write_f32(&directory.join("wet_film.bin"), self.surface.wet_film.iter())?;
+        // Only the planes that exist. A meadow with no document has no ground
+        // state to report, and writing an empty file whose name the manifest
+        // still declares is worse than declaring nothing: the reader trusts the
+        // manifest, finds no floats, and stops.
+        for (name, plane) in self.surface.state_planes() {
+            write_f32(&directory.join(format!("{name}.bin")), plane.iter())?;
+        }
 
         let header = directory.join("scene.json");
         std::fs::write(&header, self.header_json())?;
@@ -602,6 +603,18 @@ impl CyclesScene {
             }
             materials.push_str(&profile_json(index, entry));
         }
+        // Declared only when written. See `write`.
+        let state = self
+            .surface
+            .state_planes()
+            .map(|(name, _)| format!("\n      \"{name}\": \"{name}.bin\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let state = if state.is_empty() {
+            String::from("{}")
+        } else {
+            format!("{{{state}\n    }}")
+        };
         format!(
             r#"{{
     "path": "ground.bin",
@@ -610,11 +623,7 @@ impl CyclesScene {
     "low": [{:.6}, {:.6}],
     "high": [{:.6}, {:.6}],
     "spacing_m": {:.6},
-    "state": {{
-      "moisture": "moisture.bin",
-      "compaction": "compaction.bin",
-      "wet_film": "wet_film.bin"
-    }},
+    "state": {state},
     "materials": [
 {materials}
     ]
@@ -827,6 +836,23 @@ pub struct GroundSurface {
     /// exporter may coarsen it, and a manifest that still claimed the requested
     /// spacing would make a change in vertex budget look like a shader bug.
     pub spacing_m: f32,
+}
+
+impl GroundSurface {
+    /// The state planes that actually hold samples, by name.
+    ///
+    /// A scene with no ground profiles — the laboratory meadow, which has no
+    /// document — has none of these, and the manifest must say so rather than
+    /// naming files with nothing in them.
+    pub fn state_planes(&self) -> impl Iterator<Item = (&'static str, &Vec<f32>)> {
+        [
+            ("moisture", &self.moisture),
+            ("compaction", &self.compaction),
+            ("wet_film", &self.wet_film),
+        ]
+        .into_iter()
+        .filter(|(_, plane)| !plane.is_empty())
+    }
 }
 
 /// One soil in the export's material table.
@@ -1488,5 +1514,72 @@ mod tests {
                 "rib {rib} landed at {z} rather than {wanted}"
             );
         }
+    }
+
+    /// Every file the manifest names has to exist and be the declared length.
+    ///
+    /// This is here because the two documents that get rendered by hand both
+    /// carry ground profiles, and the path with *no* profiles — the laboratory
+    /// meadow, which has no document at all — went out with a manifest naming
+    /// three state planes it had not written. Blender read the manifest,
+    /// believed it, found nothing in `moisture.bin`, and rendered no tiles.
+    ///
+    /// The invariant is the general one: **a manifest declares only what was
+    /// written.** Checking it needs no renderer, which is why it can live here.
+    #[test]
+    fn a_manifest_names_only_files_that_were_written() {
+        fn check(surface: GroundSurface, samples: usize) {
+            let header = format!(
+                "{{ \"ground\": {} }}",
+                CyclesScene {
+                    page: Page::new(Vec2::ZERO, 16, 16),
+                    points: Vec::new(),
+                    attributes: Vec::new(),
+                    ground: vec![0.0; samples],
+                    surface,
+                    ground_rows: 4,
+                    ground_columns: 4,
+                    footprint: (Vec2::ZERO, Vec2::ONE),
+                    camera: Camera::for_page(&Page::new(Vec2::ZERO, 16, 16), 1.0),
+                    settings: RenderSettings::default(),
+                    visible_blades: 0,
+                    ribs: RIBS_PER_BLADE,
+                }
+                .ground_json(Vec2::ZERO, Vec2::ONE)
+            );
+            // Every `"name": "name.bin"` in the manifest must be a plane that
+            // was actually filled. Crude parsing on purpose: the point is to
+            // read the manifest the way the Python side does, as text.
+            for name in ["moisture", "compaction", "wet_film"] {
+                let declared = header.contains(&format!("\"{name}\": \"{name}.bin\""));
+                assert_eq!(
+                    declared,
+                    header.contains(&format!("\"{name}.bin\"")),
+                    "{name} half-declared in:\n{header}"
+                );
+            }
+        }
+
+        // A document-driven scene: three state planes, all present.
+        check(
+            GroundSurface {
+                weights: Vec::new(),
+                profiles: Vec::new(),
+                moisture: vec![0.5; 16],
+                compaction: vec![0.0; 16],
+                wet_film: vec![0.0; 16],
+                spacing_m: 0.01,
+            },
+            16,
+        );
+
+        // The laboratory meadow: no profiles, no state, and a manifest that
+        // says so rather than naming three empty files.
+        let bare = GroundSurface {
+            spacing_m: 0.04,
+            ..GroundSurface::default()
+        };
+        assert_eq!(bare.state_planes().count(), 0);
+        check(bare, 16);
     }
 }

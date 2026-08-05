@@ -98,10 +98,10 @@ impl Page {
     ///
     /// The inverse of [`Page::ground_at`] for points on the ground plane, and
     /// the projection for points above it. Placement needs this and used to
-    /// reach through a [`Painter`] for it, which meant deciding *where* a blade
-    /// goes required a mutable borrow of the surface it would eventually be
-    /// drawn on — the coupling that made a scene impossible to build without
-    /// also drawing it.
+    /// reach through the rasteriser's `Painter` for it, which meant deciding
+    /// *where* a blade goes required a mutable borrow of the surface it would
+    /// eventually be drawn on — the coupling that made a scene impossible to
+    /// build without also drawing it.
     #[inline]
     pub fn to_pixel(&self, world: Vec3) -> Vec2 {
         iso::to_cache_at(world, self.px_per_metre) - self.origin

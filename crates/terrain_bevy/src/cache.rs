@@ -3,12 +3,13 @@
 //! The path tracer takes seconds a page and the game has a frame, so Cycles can
 //! never run inside the render loop. It does not have to. A page is a *cache* —
 //! its content is a pure function of the world coordinate and the seed — so a
-//! page traced last week is exactly the page the rasteriser would produce if it
-//! had the time. Trace it once, store it, and the game reads it.
+//! page traced last week is exactly the page a fresh trace would produce.
+//! Trace it once, store it, and the game reads it.
 //!
-//! That makes the rasteriser the **fallback** rather than the way the game is
-//! meant to look: it covers ground nobody has traced yet, and the picture
-//! improves as the cache fills rather than as the renderer gets faster.
+//! There is no renderer here to fall back to — see root `CLAUDE.md`, "Cycles is
+//! the only renderer". Ground nobody has traced yet is ground the game does not
+//! draw, rather than ground drawn some cheaper way; [`crate::plugin`] holds the
+//! retry that keeps a miss from being re-asked every frame.
 //!
 //! ## The key has to name everything that changes the picture
 //!
@@ -36,7 +37,6 @@
 
 use std::path::{Path, PathBuf};
 
-use terrain_bake::bake::BakeParams;
 use terrain_generators::page::Page;
 
 /// Where traced pages live, unless [`TERRAIN_GRASS_CACHE`] says otherwise.
@@ -45,20 +45,19 @@ pub const DEFAULT_DIRECTORY: &str = "target/grass-pages";
 /// Environment variable pointing at the page cache.
 pub const TERRAIN_GRASS_CACHE: &str = "TERRAIN_GRASS_CACHE";
 
-/// Set this to read traced pages. Unset, the game rasterises everything.
+/// Set this to read traced pages. Unset, the game draws nothing at all.
 ///
-/// Off by default, and that is a correctness decision rather than caution.
+/// Off by default, and that is a correctness decision rather than caution:
+/// there is no second renderer to fall back to, so a page nobody has traced
+/// stays undrawn rather than standing in for one — see root `CLAUDE.md`,
+/// "Cycles is the only renderer".
 ///
-/// A traced page and a rasterised one are not two qualities of one picture, they
-/// are two pictures — different tone, different saturation, different blade
-/// vocabulary. Serving whichever happens to be on disk puts them side by side,
-/// and a single traced page in a field of rasterised ones does not read as "one
-/// page is better", it reads as **a rendering fault**: a hard-edged square of
-/// some other grass in the middle of the ground. Which is exactly what it looked
-/// like the first time this shipped.
-///
-/// So the mixing is opt-in. Trace a region, set the variable, and every page in
-/// that region is traced; leave it unset and the whole field is consistent.
+/// This still matters as a gate even with one renderer, because "traced" and
+/// "not traced yet" would otherwise look identical from inside the loop: a
+/// single traced page arriving in an otherwise-empty field does not read as
+/// "one page is better", it reads as **a rendering fault**, and turning
+/// tracing on only for a region under test keeps the rest of the field
+/// consistently undrawn rather than a mix.
 pub const TERRAIN_GRASS_TRACED: &str = "TERRAIN_GRASS_TRACED";
 
 /// Whether the game should read traced pages at all.
@@ -84,7 +83,7 @@ pub fn directory() -> PathBuf {
 /// Hashed rather than spelled out because a filename holding four floats is
 /// both unreadable and fragile — `-0` and `0` format differently, and a path
 /// with a minus sign in it has caught out every shell script ever written.
-pub fn key(page: &Page, params: &BakeParams) -> String {
+pub fn key(page: &Page, seed: u64) -> String {
     // The scale, in thousandths. See the module note: an `f32` that came from a
     // camera height will not compare equal to itself across two runs.
     let scale = (page.px_per_metre * 1000.0).round() as i64;
@@ -93,7 +92,7 @@ pub fn key(page: &Page, params: &BakeParams) -> String {
 
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for value in [
-        params.seed as i64,
+        seed as i64,
         origin_x,
         origin_y,
         page.width as i64,
@@ -108,8 +107,8 @@ pub fn key(page: &Page, params: &BakeParams) -> String {
 }
 
 /// Where a page would be stored.
-pub fn path_for(page: &Page, params: &BakeParams) -> PathBuf {
-    directory().join(format!("{}.raw", key(page, params)))
+pub fn path_for(page: &Page, seed: u64) -> PathBuf {
+    directory().join(format!("{}.raw", key(page, seed)))
 }
 
 /// A traced page, if one has been stored.
@@ -118,11 +117,11 @@ pub fn path_for(page: &Page, params: &BakeParams) -> PathBuf {
 /// error. A cache is an optimisation, and the correct response to a truncated or
 /// unreadable file is to draw the page rather than to fail — the caller has a
 /// renderer standing by, which is the whole reason this returns an `Option`.
-pub fn load(page: &Page, params: &BakeParams) -> Option<Vec<u8>> {
+pub fn load(page: &Page, seed: u64) -> Option<Vec<u8>> {
     if !traced_enabled() {
         return None;
     }
-    load_from(&directory(), page, params)
+    load_from(&directory(), page, seed)
 }
 
 /// [`load`], from a named directory.
@@ -132,8 +131,8 @@ pub fn load(page: &Page, params: &BakeParams) -> Option<Vec<u8>> {
 /// Threading it through is also simply better: a test that reached for an
 /// environment variable would be mutating global state that every other test in
 /// the process shares.
-pub fn load_from(directory: &Path, page: &Page, params: &BakeParams) -> Option<Vec<u8>> {
-    let path = directory.join(format!("{}.raw", key(page, params)));
+pub fn load_from(directory: &Path, page: &Page, seed: u64) -> Option<Vec<u8>> {
+    let path = directory.join(format!("{}.raw", key(page, seed)));
     let bytes = std::fs::read(&path).ok()?;
     if bytes.len() != expected_len(page) {
         // A page whose size changed since it was traced. The key covers the
@@ -146,17 +145,12 @@ pub fn load_from(directory: &Path, page: &Page, params: &BakeParams) -> Option<V
 }
 
 /// Store a traced page.
-pub fn store(page: &Page, params: &BakeParams, rgba: &[u8]) -> std::io::Result<PathBuf> {
-    store_in(&directory(), page, params, rgba)
+pub fn store(page: &Page, seed: u64, rgba: &[u8]) -> std::io::Result<PathBuf> {
+    store_in(&directory(), page, seed, rgba)
 }
 
 /// [`store`], into a named directory.
-pub fn store_in(
-    directory: &Path,
-    page: &Page,
-    params: &BakeParams,
-    rgba: &[u8],
-) -> std::io::Result<PathBuf> {
+pub fn store_in(directory: &Path, page: &Page, seed: u64, rgba: &[u8]) -> std::io::Result<PathBuf> {
     assert_eq!(
         rgba.len(),
         expected_len(page),
@@ -166,7 +160,7 @@ pub fn store_in(
         expected_len(page),
         rgba.len()
     );
-    let path = directory.join(format!("{}.raw", key(page, params)));
+    let path = directory.join(format!("{}.raw", key(page, seed)));
     std::fs::create_dir_all(directory)?;
     // Written beside and renamed, so a run interrupted halfway through a page
     // cannot leave a half-file that the loader would have to guess about.
@@ -201,48 +195,32 @@ mod tests {
         Page::new(Vec2::new(256.0, -512.0), 8, 8)
     }
 
+    const SEED: u64 = 0x5eed_1234;
+
     #[test]
     fn the_key_changes_with_everything_that_changes_the_picture() {
         let base = page();
-        let params = BakeParams::default();
-        let original = key(&base, &params);
+        let original = key(&base, SEED);
 
         let moved = Page::new(Vec2::new(257.0, -512.0), 8, 8);
-        assert_ne!(
-            original,
-            key(&moved, &params),
-            "origin does not reach the key"
-        );
+        assert_ne!(original, key(&moved, SEED), "origin does not reach the key");
 
         let bigger = Page::new(base.origin, 16, 8);
-        assert_ne!(
-            original,
-            key(&bigger, &params),
-            "size does not reach the key"
-        );
+        assert_ne!(original, key(&bigger, SEED), "size does not reach the key");
 
         let finer = Page::at_detail(base.origin, 8, 8, 0.5);
-        assert_ne!(
-            original,
-            key(&finer, &params),
-            "scale does not reach the key"
-        );
+        assert_ne!(original, key(&finer, SEED), "scale does not reach the key");
 
-        let reseeded = BakeParams {
-            seed: params.seed ^ 1,
-            ..params
-        };
         assert_ne!(
             original,
-            key(&base, &reseeded),
+            key(&base, SEED ^ 1),
             "seed does not reach the key"
         );
     }
 
     #[test]
     fn the_same_page_keys_the_same_way_twice() {
-        let params = BakeParams::default();
-        assert_eq!(key(&page(), &params), key(&page(), &params));
+        assert_eq!(key(&page(), SEED), key(&page(), SEED));
     }
 
     #[test]
@@ -251,12 +229,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
 
         let page = page();
-        let params = BakeParams::default();
         let bytes: Vec<u8> = (0..expected_len(&page)).map(|i| (i % 251) as u8).collect();
 
-        store_in(&directory, &page, &params, &bytes).expect("store");
+        store_in(&directory, &page, SEED, &bytes).expect("store");
         assert_eq!(
-            load_from(&directory, &page, &params).as_deref(),
+            load_from(&directory, &page, SEED).as_deref(),
             Some(bytes.as_slice())
         );
         assert_eq!(count_in(&directory), 1);
@@ -264,11 +241,7 @@ mod tests {
         // A different seed must miss rather than return this page. This is the
         // failure the key exists to prevent: a page of some other world sitting
         // in the middle of this one looks like a renderer bug, not a stale file.
-        let elsewhere = BakeParams {
-            seed: params.seed ^ 0xffff,
-            ..params
-        };
-        assert!(load_from(&directory, &page, &elsewhere).is_none());
+        assert!(load_from(&directory, &page, SEED ^ 0xffff).is_none());
 
         let _ = std::fs::remove_dir_all(&directory);
     }
@@ -279,13 +252,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
 
         let page = page();
-        let params = BakeParams::default();
         std::fs::create_dir_all(&directory).expect("mkdir");
-        let path = directory.join(format!("{}.raw", key(&page, &params)));
+        let path = directory.join(format!("{}.raw", key(&page, SEED)));
         std::fs::write(&path, [0u8; 4]).expect("write");
 
         assert!(
-            load_from(&directory, &page, &params).is_none(),
+            load_from(&directory, &page, SEED).is_none(),
             "a short file was served as a page"
         );
         assert!(

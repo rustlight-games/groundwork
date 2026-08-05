@@ -22,19 +22,16 @@
 //!
 //! ## Pinned, never random
 //!
-//! `./run` and `./render` pick a fresh world every time, and that is right for
-//! looking at pictures and wrong for measuring them. Every scenario here names
+//! `./render` picks a fresh world every time, and that is right for looking at
+//! pictures and wrong for measuring them. Every scenario here names
 //! its seed and its centre tile, and the rule is the one
 //! [`crate::scenarios::SCENARIOS`] obeys: **append only**.
 
 use glam::Vec3;
-use terrain_bake::bake::{BakeParams, VisibleGround, bake_padded_image};
-use terrain_bake::overlay;
-use terrain_bake::surface::RenderImage;
-use terrain_generators::iso;
-use terrain_generators::page::Page;
 use terrain_scene::frame::{IsoFrameOptions, ResolvedIsoFrame, resolve_render_sample};
 use terrain_scene::layout::{TileLayoutPreset, TileRole, WorldTileCoord};
+use terrain_scene::overlay;
+use terrain_scene::pixel::RenderImage;
 use terrain_scene::projection::Projection;
 
 /// One pinned nine-tile render.
@@ -69,28 +66,6 @@ impl IsoScenario {
         )
         .expect("a pinned scenario is well formed")
         .frame
-    }
-
-    /// Bake it through the cheap tier.
-    pub fn bake(self, params: &BakeParams) -> (ResolvedIsoFrame, RenderImage) {
-        let frame = self.frame();
-        let bounds = frame.visible_bounds();
-        let params = BakeParams {
-            seed: self.seed,
-            visible: Some(VisibleGround::new(
-                glam::Vec2::new(bounds.min.u_m as f32, bounds.min.v_m as f32),
-                glam::Vec2::new(bounds.max.u_m as f32, bounds.max.v_m as f32),
-            )),
-            ..params.clone()
-        };
-        let page = Page::at_detail(
-            glam::Vec2::new(frame.cache_origin[0], frame.cache_origin[1]),
-            frame.output_size[0] as usize,
-            frame.output_size[1] as usize,
-            frame.pixels_per_metre / iso::PX_PER_METRE,
-        );
-        let image = bake_padded_image(page, &params);
-        (frame, image)
     }
 }
 
@@ -301,6 +276,48 @@ fn sample(image: &RenderImage, at: [f32; 2], offset: [f32; 2]) -> Option<f32> {
 mod tests {
     use super::*;
 
+    /// A plate shaped like a real render but filled with independent noise.
+    ///
+    /// There is no renderer in this crate, so a unit test cannot ask "is the
+    /// seam invisible in an actual render" — that question is answered by
+    /// `terrain compile` and read off a real Cycles plate, per AGENTS.md
+    /// invariant 8. What a synthetic plate *can* prove is that the measurement
+    /// code — [`measure`], [`join_visibility`] — behaves correctly: coverage
+    /// matches the mask it was built from, and a field with no seam by
+    /// construction (independent per-pixel noise has no structure at a tile
+    /// boundary) measures as one.
+    ///
+    /// `subject_lift` raises the subject tile above its surroundings. Zero is
+    /// the uniform field most tests want; a non-zero value is what proves the
+    /// subject-weighted metrics actually read the subject rather than
+    /// reporting the layout figure twice.
+    fn synthetic_image(frame: &ResolvedIsoFrame, seed: u64, subject_lift: f32) -> RenderImage {
+        let (width, height) = (frame.output_size[0] as usize, frame.output_size[1] as usize);
+        let mask = overlay::layout_mask(frame);
+        let subject = overlay::subject_mask(frame);
+        let mut colour = Vec::with_capacity(width * height);
+        // Never zero: an all-zero state is the xorshift's one fixed point, and
+        // a fixture that silently produced a constant field would pass the
+        // tests below for the wrong reason.
+        let mut state = (seed ^ 0x9E37_79B9_7F4A_7C15) | 1;
+        for index in 0..width * height {
+            // A cheap xorshift, enough to give the field texture without
+            // pulling in a dependency for a test fixture.
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let value = ((state >> 40) as u32 & 0xFF) as f32 / 255.0;
+            let lift = subject_lift * subject[index];
+            colour.push(Vec3::splat(0.3 + value * 0.4 + lift));
+        }
+        RenderImage {
+            colour,
+            alpha: mask,
+            width,
+            height,
+        }
+    }
+
     #[test]
     fn every_iso_scenario_has_a_distinct_dotted_name() {
         let mut seen: Vec<&str> = Vec::new();
@@ -319,8 +336,8 @@ mod tests {
 
     #[test]
     fn every_iso_scenario_names_its_own_ground() {
-        // The measurement suite must never be random. `./run` picks a fresh
-        // world every time and that is right for looking at pictures; a
+        // The measurement suite must never be random. `./render` picks a
+        // fresh world every time and that is right for looking at pictures; a
         // benchmark that did it would have no history.
         for scenario in ISO_SCENARIOS {
             let frame = scenario.frame();
@@ -338,7 +355,8 @@ mod tests {
         // of the frame and entirely inside the layout, so a coverage below one
         // is a hole in the silhouette rather than a look.
         let scenario = iso_scenario("iso_nine.origin").expect("pinned");
-        let (frame, image) = scenario.bake(&BakeParams::default());
+        let frame = scenario.frame();
+        let image = synthetic_image(&frame, scenario.seed, 0.0);
         let report = measure(&frame, &image);
         assert!(
             report.subject_coverage > 0.999,
@@ -356,11 +374,13 @@ mod tests {
 
     #[test]
     fn the_internal_joins_are_invisible() {
-        // The property the whole design rests on: the tiles are a semantic
-        // division, never a generation boundary. One continuous scene means the
-        // step across a join is the step the grass makes anyway.
+        // What this proves without a renderer: the ratio-based measurement
+        // reports "no seam" for a field with no seam by construction. The claim
+        // that an *actual* render has no seam is proven separately, against
+        // `terrain compile` output — see AGENTS.md invariant 8.
         for scenario in ISO_SCENARIOS {
-            let (frame, image) = scenario.bake(&BakeParams::default());
+            let frame = scenario.frame();
+            let image = synthetic_image(&frame, scenario.seed, 0.0);
             let visibility = join_visibility(&frame, &image);
             assert!(
                 (0.5..1.5).contains(&visibility),
@@ -375,12 +395,13 @@ mod tests {
         // A metric over the whole frame is eight parts set dressing. The pair is
         // what says whether a change is about the subject or about everything.
         let scenario = iso_scenario("iso_nine.origin").expect("pinned");
-        let (frame, image) = scenario.bake(&BakeParams::default());
+        let frame = scenario.frame();
+        let image = synthetic_image(&frame, scenario.seed, 0.0);
         let report = measure(&frame, &image);
 
         assert!(report.detail > 0.0 && report.subject_detail > 0.0);
         assert!(report.luminance > 0.0 && report.subject_luminance > 0.0);
-        // The subject is the same meadow as its neighbours — deliberately, since
+        // The subject is the same field as its neighbours — deliberately, since
         // a context tile that differed systematically is what a neural renderer
         // would learn instead of grass. So the two must land close together.
         assert!(
@@ -394,6 +415,42 @@ mod tests {
             "subject detail {:.4} against layout {:.4}",
             report.subject_detail,
             report.detail
+        );
+    }
+
+    #[test]
+    fn the_subject_figure_reads_the_subject_and_not_the_layout() {
+        // The other half of the claim above, and the one a uniform field
+        // cannot make: `the_subject_is_measured_apart_from_its_surroundings`
+        // asserts the two numbers land *close*, which would also hold if
+        // `subject_luminance` accidentally reported the layout figure twice.
+        //
+        // So lift the subject tile deliberately and check the subject figure
+        // follows it further than the layout figure does. The subject is one
+        // ninth of the diamond, so a lift of L moves the layout mean by about
+        // L/9 and the subject mean by about L — an eightfold difference that
+        // no amount of noise can produce by accident.
+        let scenario = iso_scenario("iso_nine.origin").expect("pinned");
+        let frame = scenario.frame();
+        const LIFT: f32 = 0.2;
+
+        let flat = measure(&frame, &synthetic_image(&frame, scenario.seed, 0.0));
+        let lifted = measure(&frame, &synthetic_image(&frame, scenario.seed, LIFT));
+
+        let subject_moved = lifted.subject_luminance - flat.subject_luminance;
+        let layout_moved = lifted.luminance - flat.luminance;
+        assert!(
+            subject_moved > layout_moved * 4.0,
+            "lifting the subject moved the subject figure by {subject_moved:.4} \
+             and the layout figure by {layout_moved:.4} — the subject-weighted \
+             metric is not reading the subject"
+        );
+        // And the layout figure did move, since the subject is inside it. A
+        // subject mask that had drifted off the diamond entirely would leave
+        // this at zero.
+        assert!(
+            layout_moved > 0.0,
+            "the layout figure did not notice the subject at all"
         );
     }
 
@@ -415,14 +472,17 @@ mod tests {
         // have four hard boundaries through the middle of the frame. One
         // continuous scene means marks rooted in a neighbour lean across.
         use terrain_generators::field::WorldField;
+        use terrain_generators::iso;
+        use terrain_generators::page::Page;
         use terrain_generators::scene::GrassScene;
+        use terrain_generators::style::GrassParams;
         use terrain_scene::layout::TileRole;
 
         let scenario = iso_scenario("iso_nine.origin").expect("pinned");
         let frame = scenario.frame();
-        let params = BakeParams {
+        let params = GrassParams {
             seed: scenario.seed,
-            ..BakeParams::default()
+            ..GrassParams::default()
         };
         let page = Page::at_detail(
             glam::Vec2::new(frame.cache_origin[0], frame.cache_origin[1]),
@@ -431,7 +491,7 @@ mod tests {
             frame.pixels_per_metre / iso::PX_PER_METRE,
         );
         let field = WorldField::lit_by(params.seed, params.light);
-        let scene = GrassScene::build(page, &field, &params.grass());
+        let scene = GrassScene::build(page, &field, &params);
         let subject = frame.subject_polygon();
 
         let mut crossing = 0usize;
@@ -456,46 +516,13 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_replays_to_the_same_picture() {
-        // The end of the reproduction chain. Every other test checks that the
-        // *framing* comes back; this checks that the pixels do, which is the
-        // claim a replay command actually makes to somebody who found something
-        // wrong in a render and wants to look at it again.
-        //
-        // Small on purpose: two full bakes in a unit test is a slow suite, and
-        // determinism does not need resolution to fail.
-        let scenario = IsoScenario {
-            name: "iso_nine.replay",
-            seed: 0x5a17_e33b_0c9d_2f14,
-            centre_tile: WorldTileCoord::new(-713, 284),
-            tile_side_m: 2.0,
-            output_size: [160, 90],
-            fill: 0.90,
-        };
-        let (_, first) = scenario.bake(&BakeParams::default());
-        let (_, again) = scenario.bake(&BakeParams::default());
-        assert_eq!(first.colour, again.colour, "the colour moved");
-        assert_eq!(first.alpha, again.alpha, "the silhouette moved");
-
-        // And a different seed is a different picture rather than the same one
-        // relabelled.
-        let elsewhere = IsoScenario {
-            seed: scenario.seed ^ 1,
-            centre_tile: WorldTileCoord::new(-713, 285),
-            ..scenario
-        };
-        let (_, other) = elsewhere.bake(&BakeParams::default());
-        assert_ne!(first.colour, other.colour);
-    }
-
-    #[test]
     fn a_join_measurement_ignores_the_background() {
         // A control band that fell off the diamond would report the difference
         // between grass and nothing, which is enormous and meaningless.
         let scenario = iso_scenario("iso_nine.origin").expect("pinned");
-        let (_, mut image) = scenario.bake(&BakeParams::default());
-        image.alpha.fill(0.0);
         let frame = scenario.frame();
+        let mut image = synthetic_image(&frame, scenario.seed, 0.0);
+        image.alpha.fill(0.0);
         assert_eq!(
             join_visibility(&frame, &image),
             0.0,

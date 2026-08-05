@@ -114,8 +114,6 @@ pub enum BakeOutput {
     LayerDebug(LayerKey),
     /// Where one population's accepted candidates landed.
     PopulationDebug(PopulationKey),
-    /// The cheap rasteriser's picture.
-    CheapBeauty,
 }
 
 impl BakeOutput {
@@ -130,7 +128,6 @@ impl BakeOutput {
             Self::MaterialDebug(key) => format!("material.{key}"),
             Self::LayerDebug(key) => format!("layer.{key}"),
             Self::PopulationDebug(key) => format!("population.{key}"),
-            Self::CheapBeauty => "beauty".into(),
         }
     }
 }

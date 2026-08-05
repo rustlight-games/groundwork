@@ -9,7 +9,6 @@ description = "Shared benchmark fixtures, metrics, and reporting"
 terrain_core.workspace = true
 terrain_generators.workspace = true
 terrain_scene.workspace = true
-terrain_bake.workspace = true
 glam.workspace = true
 image.workspace = true
 rayon.workspace = true
@@ -18,13 +17,5 @@ ron.workspace = true
 thiserror.workspace = true
 
 [[example]]
-name = "grass_snapshot"
-path = "examples/grass_snapshot.rs"
-
-[[example]]
 name = "grass_critique"
 path = "examples/grass_critique.rs"
-
-[[example]]
-name = "grass_lab"
-path = "examples/grass_lab.rs"
