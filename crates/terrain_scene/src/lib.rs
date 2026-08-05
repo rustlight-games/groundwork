@@ -2,9 +2,7 @@
 //!
 //! ```text
 //! PreparedTerrain  ──sample──►  TerrainScene  ──┬──►  Cycles
-//!                                               ├──►  cheap rasteriser
-//!                                               ├──►  debug plates
-//!                                               └──►  dataset pairs
+//!                                               └──►  debug plates
 //! ```
 //!
 //! This is the boundary the whole framework is arranged around, and the reason
@@ -38,8 +36,11 @@
 //!   them is the subject. A composition request laid over continuous terrain,
 //!   never a generation boundary.
 //! - [`frame`] — fitting a layout into a frame, and saying which world it was.
-//!   One resolver, called by every renderer, so the cheap plate and the traced
+//!   One resolver, called by every renderer, so a debug plate and the traced
 //!   plate cannot disagree about scale, origin or which tile is the middle.
+//! - [`overlay`] — the tile grid and subject-mask sidecars drawn over a
+//!   finished plate. Annotation, not rendering: it never touches the beauty
+//!   pixels, only what frame they were taken from.
 //! - [`scene`] — the whole thing, and the builder that produces it.
 //!
 //! ## What may not live here
@@ -62,6 +63,8 @@ pub mod ground;
 pub mod instance;
 pub mod layout;
 pub mod mark;
+pub mod overlay;
+pub mod pixel;
 pub mod projection;
 pub mod scene;
 
@@ -83,5 +86,9 @@ pub use mark::{
     RibbonMark, SceneMark, SceneMaterialBinding, SceneMaterialIndex, StampMark, Stratum, TipShape,
     WidthProfile,
 };
+pub use overlay::{
+    Canvas, GridStyle, draw_caption, draw_tile_grid, layout_mask, mask_to_gray8, subject_mask,
+};
+pub use pixel::{RenderImage, blur, from_bytes_rgb, to_bytes, to_rgb8};
 pub use projection::{Projection, ScenePoint, ScreenPoint, ScreenRect};
 pub use scene::{SCENE_DIGEST_DOMAIN, SceneBuilder, SceneRequest, StampBinding, TerrainScene};

@@ -4,8 +4,8 @@
 //!
 //! This is the contract the whole framework is arranged around. A
 //! [`TerrainScene`] is built from a prepared terrain and then handed —
-//! unchanged, by reference — to the path tracer, the cheap rasteriser, the
-//! debug plate and the dataset exporter.
+//! unchanged, by reference — to the path tracer, the debug plate and the
+//! dataset exporter.
 //!
 //! Regenerating instead would nearly work. Placement is a pure function of world
 //! position, so two runs would agree. It is not the agreement that matters; it

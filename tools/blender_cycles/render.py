@@ -702,22 +702,36 @@ def ground_material():
     # on the canopy. That reasoning is right for a meadow floor and wrong for a
     # track, where the earth is the subject rather than the gap.
     #
-    # Measured off `docs/references/grass_to_mud_bumpy.jpg`: the mud there runs
-    # from linear 0.061 in its shadows to 0.195 at its brightest, and its channel
-    # ratios are steady at G/R 0.63, B/R 0.36. The floor ramps sit at G/R near
-    # one, which is why a whole track of them read as sand rather than as earth —
-    # the error was the green, not the brightness.
+    # Measured off `docs/references/grass_to_mud_bumpy.jpg`, eight stops from
+    # shadow to highlight, linear RGB. G/R and B/R hold steady across the range
+    # at roughly 0.63 and 0.36 — the floor ramps above sit at G/R near one,
+    # which is why a whole track of them read as sand rather than as earth; the
+    # error was the green, not the brightness. This is the authoritative
+    # measurement — see `docs/materials/dirt.md`.
     #
     # The `earth` attribute comes from the compiler, which realised the ragged
     # boundary through the same function that decided where the grass thinned. So
     # the colour changes exactly where the vegetation does rather than a
     # centimetre away from it.
+    EARTH = (
+        (0.0450, 0.0284, 0.0162),
+        (0.0580, 0.0365, 0.0209),
+        (0.0740, 0.0466, 0.0266),
+        (0.0940, 0.0592, 0.0338),
+        (0.1180, 0.0743, 0.0425),
+        (0.1460, 0.0920, 0.0526),
+        (0.1760, 0.1109, 0.0634),
+        (0.2100, 0.1323, 0.0756),
+    )
     bare = nodes.new("ShaderNodeValToRGB")
     bare.location = (-1350, -40)
-    bare.color_ramp.elements[0].position = 0.10
-    bare.color_ramp.elements[1].position = 0.90
-    bare.color_ramp.elements[0].color = (0.0500, 0.0315, 0.0180, 1.0)
-    bare.color_ramp.elements[1].color = (0.1550, 0.0977, 0.0558, 1.0)
+    ramp = bare.color_ramp
+    stops = len(EARTH)
+    for index, rgb in enumerate(EARTH):
+        position = 0.10 + (index / (stops - 1)) * 0.80
+        element = ramp.elements[0] if index == 0 else ramp.elements[1] if index == 1 else ramp.elements.new(position)
+        element.position = position
+        element.color = (*rgb, 1.0)
     links.new(patch.outputs["Fac"], bare.inputs["Fac"])
 
     exposure = nodes.new("ShaderNodeAttribute")

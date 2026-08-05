@@ -9,10 +9,10 @@
 #   TERRAIN_SIZE=3840x2160 ./render    bigger
 #   TERRAIN_TRACE_TILES=4 ./render     override Blender's memory split
 #
-# The slow half of the pair. `./run` draws the same nine tiles through the cheap
-# rasteriser in seconds; this integrates a hemisphere and takes minutes. Both
-# frame through the same resolver, so a seed rendered by each gives two
-# photographs of one meadow rather than two meadows that resemble each other.
+# The only renderer. This integrates a hemisphere and takes minutes; there is
+# no cheap tier to compare against — see CLAUDE.md, "Cycles is the only
+# renderer". For a fast look at the low-fidelity matrix itself, without a
+# picture, see `terrain inspect`.
 #
 # ## What a render is
 #
