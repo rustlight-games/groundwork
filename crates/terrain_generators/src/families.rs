@@ -1171,6 +1171,12 @@ impl TerrainRecipe for FieldStones {
         RecipeRenderClass::Secondary
     }
 
+    fn is_vegetation(&self) -> bool {
+        // Stone. It lies on bare ground by preference, so the vegetation gate
+        // would remove it from exactly the ground it belongs on.
+        false
+    }
+
     fn domain(&self) -> DomainKey {
         domain_key("rock.large")
     }
@@ -1354,12 +1360,39 @@ impl TerrainRecipe for DirtClods {
     }
 
     fn render_class(&self) -> RecipeRenderClass {
-        // Deferred, not deleted. The ground profile's aggregate relief band
-        // already carries clod-scale structure as displaced mesh; drawing this
-        // population beside it would count one physical signal twice. The
-        // declaration stays so the intent is not lost, and the compiler reports
-        // it rather than dropping it in silence.
-        RecipeRenderClass::Deferred
+        // ## Deferred for a year, and the argument was half right
+        //
+        // The reason for deferring it was double counting: the ground profile's
+        // aggregate relief band already carries clod-scale structure as
+        // displaced mesh, so drawing a clod population beside it would put one
+        // physical signal on the surface twice.
+        //
+        // That is true of *bound* aggregate and false of **loose** material,
+        // and they are not the same thing. A relief band is the soil's own
+        // crumb — part of the surface, moving with it, and it can only ever be
+        // a height field. What this places is the fragments lying on top: grit,
+        // broken clods, the odd pebble. They are separate bodies, and the
+        // difference is the one that matters here — a height field has no
+        // silhouette and casts no contact shadow, and sparse silhouettes with
+        // black contact points under them are most of what makes bare ground
+        // read as dense rather than as a painted plane.
+        //
+        // Measured, that gap is the whole of the remaining flatness: a plate of
+        // exposed soil came back with a p95/p05 luminance range of 1.7 against
+        // the grass beside it at 52, and the relief band was doing everything it
+        // could. Nothing that is only a height field closes that.
+        //
+        // The double counting is avoided by what the population *emits* rather
+        // than by refusing to draw it: fragment sizes come from the profile's
+        // own `GroundScatter`, which describes what is loose, and the relief
+        // bands keep describing what is not.
+        RecipeRenderClass::Secondary
+    }
+
+    fn is_vegetation(&self) -> bool {
+        // Stone. It lies on bare ground by preference, so the vegetation gate
+        // would remove it from exactly the ground it belongs on.
+        false
     }
 
     fn domain(&self) -> DomainKey {
@@ -1408,11 +1441,14 @@ impl TerrainRecipe for DirtClods {
         let base = read(context.parameters, "radius_m", 0.022) as f32;
         // Two populations in one: a few big clods and a lot of fine grit. A
         // single size reads as gravel, which is the wrong material.
-        let big = size > 0.72;
+        // A tenth of them are lumps and the rest is fine. The big multiplier
+        // used to reach three times the authored radius, which at a document's
+        // eighteen millimetres put five-centimetre cobbles on a meadow floor.
+        let big = size > 0.90;
         let radius = if big {
-            base * (1.4 + 1.6 * size)
+            base * (1.1 + 0.7 * size)
         } else {
-            base * (0.25 + 0.6 * size)
+            base * (0.18 + 0.5 * size)
         };
 
         // Loose material sorts: fines wash into the hollows and the coarse

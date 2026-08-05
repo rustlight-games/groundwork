@@ -191,7 +191,17 @@ pub fn lower(
             Lowering::Disk => "plant.flower_disk",
             Lowering::Petal => "plant.flower_petal",
             Lowering::Leaf => "plant.undergrowth_leaf",
-            Lowering::Stone => "surface.stone",
+            Lowering::Stone => {
+                // Broken soil is not granite. A clod is the ground it came out
+                // of, so it takes an earth shader at earth's albedo — the stone
+                // shader sits near a fifth against soil's four hundredths, and
+                // grit lowered through it rendered as a scatter of white eggs.
+                if key.starts_with("soil.") {
+                    "surface.soil_fragment"
+                } else {
+                    "surface.stone"
+                }
+            }
         };
         material_of.entry(key.to_string()).or_insert_with(|| {
             out.materials.push(MaterialBinding {

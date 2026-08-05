@@ -750,6 +750,9 @@ def appearance_builders(settings):
         "rock.fractured": lambda: stone_material(settings, [0.165, 0.162, 0.158]),
         "rock.flat": lambda: stone_material(settings, [0.195, 0.192, 0.184]),
         "rock.elongated": lambda: stone_material(settings, [0.172, 0.170, 0.166]),
+        # Broken soil, at soil's own reflectance. The stone shader is four
+        # times brighter and turns grit into a scatter of white eggs.
+        "surface.soil_fragment": lambda: stone_material(settings, [0.043, 0.035, 0.024]),
         "surface.shell_fragment": lambda: stone_material(settings, [0.42, 0.40, 0.35]),
         "surface.organic_fragment": lambda: stone_material(settings, [0.045, 0.033, 0.024]),
         # Every ground material shares one implementation. What a particular

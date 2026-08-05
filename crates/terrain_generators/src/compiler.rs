@@ -222,6 +222,9 @@ struct Claimant {
     recipe: RecipeKey,
     /// Who draws this. Only `Secondary` reaches the scene — see [`crate::tuned`].
     render_class: RecipeRenderClass,
+    /// Whether the document's vegetation channel applies. See
+    /// [`TerrainRecipe::is_vegetation`].
+    is_vegetation: bool,
     domain: DomainKey,
     affinity: Vec<(MaterialIndex, f32)>,
     abundance_channel: Option<ModifierIndex>,
@@ -346,6 +349,7 @@ pub fn compile_scene(
             owner: 0,
             recipe: population.recipe.clone(),
             render_class,
+            is_vegetation: recipe.is_vegetation(),
             domain,
             affinity: population.material_affinity.clone(),
             abundance_channel: population.abundance_channel,
@@ -647,7 +651,7 @@ pub fn compile_scene(
                     continue;
                 }
                 let affinity = claimant.affinity_for(&substrate)
-                    * if claimant.affinity.is_empty() {
+                    * if claimant.affinity.is_empty() || !claimant.is_vegetation {
                         1.0
                     } else {
                         support * vegetation

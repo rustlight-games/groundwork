@@ -147,6 +147,28 @@ pub trait TerrainRecipe: Send + Sync {
     /// [`crate::tuned`] for what that costs.
     fn render_class(&self) -> RecipeRenderClass;
 
+    /// Whether this recipe's content is *vegetation*.
+    ///
+    /// ## Why the compiler has to be told
+    ///
+    /// Every population that names its materials is scaled by the document's
+    /// `VegetationDensity` channel, and for a plant that is exactly right: an
+    /// author who thins the grass along a path means the flowers to thin with
+    /// it.
+    ///
+    /// For loose mineral debris it is precisely backwards. Grit lies on ground
+    /// that has *nothing* growing on it, so gating it on vegetation deletes it
+    /// from the only place it belongs. Measured: a comparison card whose bare
+    /// stripes run at a vegetation of 0.02 placed grit on its grass edges and
+    /// nowhere else, which is the opposite of the intent, and the population had
+    /// no way to say so.
+    ///
+    /// Defaulted to true because most recipes here grow something. A recipe that
+    /// scatters stone answers false.
+    fn is_vegetation(&self) -> bool {
+        true
+    }
+
     /// A version, mixed into every seed this recipe derives.
     fn version(&self) -> u32 {
         1

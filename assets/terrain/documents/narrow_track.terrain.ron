@@ -310,6 +310,21 @@
 
         populations: [
             (
+                key: "loose_grit",
+                recipe: "population.dirt_clods",
+                seed_stream: "grit",
+                material_affinity: [("dirt_compacted", 1.0), ("meadow_soil", 0.20)],
+                abundance_channel: Some("grit_abundance"),
+                parameters: [
+                    // Against the profiles' own `grit_per_m2`, which is 90 for
+                    // the track and 220 for the bar. A fragment is a centimetre
+                    // or two across, so this is a scatter the eye reads as
+                    // texture rather than as a field of rocks.
+                    ("density", Number(70.0)),
+                    ("radius_m", Number(0.008)),
+                ],
+            ),
+            (
                 // Densities are against the *tuned style's* own figures, not
                 // against the generic family's defaults.
                 //

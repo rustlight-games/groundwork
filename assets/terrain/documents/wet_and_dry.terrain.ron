@@ -90,6 +90,18 @@
 
         modifier_channels: [
             (
+                key: "grit_abundance",
+                display_name: "Loose grit",
+                range: (0.0, 2.0),
+                // Present by default on ground that is bare, because loose
+                // material is what bare ground *has*. A document suppresses it
+                // where something has washed or swept the surface clean.
+                default_value: 1.0,
+                composition: "Max",
+                unit: "Unitless",
+                role: None,
+            ),
+            (
                 key: "vegetation_density",
                 display_name: "Vegetation density",
                 range: (0.0, 1.5),
@@ -337,6 +349,21 @@
         ],
 
         populations: [
+            (
+                key: "loose_grit",
+                recipe: "population.dirt_clods",
+                seed_stream: "grit",
+                material_affinity: [("sand", 1.0), ("loam", 1.0), ("floor", 0.35)],
+                abundance_channel: Some("grit_abundance"),
+                parameters: [
+                    // Against the profiles' own `grit_per_m2`, which is 90 for
+                    // the track and 220 for the bar. A fragment is a centimetre
+                    // or two across, so this is a scatter the eye reads as
+                    // texture rather than as a field of rocks.
+                    ("density", Number(110.0)),
+                    ("radius_m", Number(0.007)),
+                ],
+            ),
             (
                 key: "meadow_tufts",
                 recipe: "population.grass_tuft",
