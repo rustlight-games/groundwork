@@ -32,6 +32,7 @@
 #![forbid(unsafe_code)]
 
 pub mod aov;
+pub mod bridge;
 pub mod cycles;
 pub mod export;
 pub mod package;

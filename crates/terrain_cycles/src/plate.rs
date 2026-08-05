@@ -283,11 +283,77 @@ pub struct Plate {
     pub height: usize,
     /// Blades actually traced, summed across tiles.
     pub blades: usize,
+    /// Placement groups — plants, not primitives — that reached a slice.
+    ///
+    /// Summed across slices, so a plant straddling a join is counted in both.
+    /// The alternative is a number that disagrees with the picture whenever the
+    /// plate is sliced, which is worse than one that is honestly a per-slice
+    /// total.
+    pub secondary_groups: usize,
+    /// Prototype instances lowered: heads, petals and stones.
+    pub secondary_instances: usize,
     pub plan: PlatePlan,
 }
 
 /// Channels in a plate's buffer.
 const CHANNELS: usize = 4;
+
+/// The overlap of two world rectangles, or an empty one at the first's corner.
+fn intersect(
+    a: terrain_core::coords::WorldRect,
+    b: terrain_core::coords::WorldRect,
+) -> terrain_core::coords::WorldRect {
+    let min =
+        terrain_core::coords::WorldPoint::new(a.min.u_m.max(b.min.u_m), a.min.v_m.max(b.min.v_m));
+    let max =
+        terrain_core::coords::WorldPoint::new(a.max.u_m.min(b.max.u_m), a.max.v_m.min(b.max.v_m));
+    if max.u_m <= min.u_m || max.v_m <= min.v_m {
+        // No overlap: an empty rectangle, so every group falls to halo or is
+        // omitted rather than all of them being classified camera-visible.
+        return terrain_core::coords::WorldRect::new(a.min, a.min);
+    }
+    terrain_core::coords::WorldRect::new(min, max)
+}
+
+/// The world rectangle a traced page can show, as an axis-aligned box.
+fn page_world_bounds(page: &Page) -> terrain_core::coords::WorldRect {
+    let corners = [
+        page.ground_at(Vec2::ZERO),
+        page.ground_at(Vec2::new(page.width as f32, 0.0)),
+        page.ground_at(Vec2::new(0.0, page.height as f32)),
+        page.ground_at(Vec2::new(page.width as f32, page.height as f32)),
+    ];
+    let low = corners
+        .iter()
+        .fold(Vec2::splat(f32::INFINITY), |a, c| a.min(*c));
+    let high = corners
+        .iter()
+        .fold(Vec2::splat(f32::NEG_INFINITY), |a, c| a.max(*c));
+    terrain_core::coords::WorldRect::new(
+        terrain_core::coords::WorldPoint::new(low.x as f64, low.y as f64),
+        terrain_core::coords::WorldPoint::new(high.x as f64, high.y as f64),
+    )
+}
+
+/// How far up-light a secondary object can be rooted and still shade a slice.
+///
+/// The same derivation the tuned blades use: an object of height `H` under a
+/// sun at elevation `e` throws its shadow `H/tan(e)`. A flower stands about a
+/// third of a metre, so at the thirty-five degrees the meadow is tuned under
+/// this is about half a metre — and at fifteen, where bare ground shows its
+/// relief, nearly one and a quarter.
+///
+/// Derived rather than written down, because a constant sized for one sun
+/// elevation silently under-guards the other, and the symptom is a stripe of
+/// missing shade at the edge of every slice.
+fn secondary_shadow_reach_m(params: &GrassParams) -> f64 {
+    /// The tallest thing the secondary vocabulary grows, world metres.
+    const SECONDARY_CEILING_M: f32 = 0.45;
+    let sun = terrain_generators::iso::image_to_world(params.light).normalize_or(glam::Vec3::Z);
+    // A sixteenth over, matching the tuned guard's convention: the band costs
+    // area and the area is worth less than the defect.
+    (SECONDARY_CEILING_M * terrain_generators::geometry::reach_per_height(sun) * 1.0625) as f64
+}
 
 impl Plate {
     /// Write the plate as a PNG.
@@ -393,12 +459,15 @@ pub fn trace(
     request: &PlateRequest,
     params: &GrassParams,
     field: &WorldField,
+    secondary: Option<&terrain_scene::scene::TerrainScene>,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<Plate, PlateError> {
     let plan = PlatePlan::resolve(request, params);
     let blender = cycles::blender_path();
     let mut canvas = vec![0u8; request.width * request.height * CHANNELS];
     let mut blades = 0usize;
+    let mut secondary_groups = 0usize;
+    let mut secondary_instances = 0usize;
 
     for row in 0..plan.tiles_across {
         for column in 0..plan.tiles_across {
@@ -433,8 +502,56 @@ pub fn trace(
                 trace_px_per_metre: plan.trace_px_per_metre,
                 ..request.settings.clone()
             };
-            let scene = CyclesScene::build(&grown, field, settings);
+            let mut scene = CyclesScene::build(&grown, field, settings);
             blades += scene.blades();
+
+            // The compiled scene, selected for this slice and lowered.
+            //
+            // Selected per slice and *never regenerated*: the compiler ran once
+            // over the whole plate, so a flower on a slice boundary is the same
+            // flower from both sides rather than two flowers that happen to
+            // agree.
+            if let Some(compiled) = secondary {
+                // The ground the *plate* is of, intersected with what this page
+                // can reach.
+                //
+                // Not the page's own world box, which was the first version and
+                // was wrong in a way the picture made obvious: a traced page is
+                // a rectangle of screen and its world footprint is the diamond's
+                // bounding box, several times the ground actually being
+                // rendered. Every flower in that surplus came through as
+                // camera-visible and stood in the black void beyond the tiles.
+                //
+                // A plant outside the visible ground still belongs in the scene
+                // — it shades inward — so it is halo rather than absent, and
+                // `visible_ground` is what decides which.
+                let page_box = page_world_bounds(&page);
+                let visible = match request.visible {
+                    None => page_box,
+                    Some((low, high)) => intersect(
+                        page_box,
+                        terrain_core::coords::WorldRect::new(
+                            terrain_core::coords::WorldPoint::new(low.x as f64, low.y as f64),
+                            terrain_core::coords::WorldPoint::new(high.x as f64, high.y as f64),
+                        ),
+                    ),
+                };
+                let (geometry, report) =
+                    crate::bridge::lower(compiled, visible, secondary_shadow_reach_m(params));
+                if !report.unsupported.is_empty() {
+                    // Printed rather than swallowed. A flower that silently did
+                    // not render looks exactly like a flower that was never
+                    // placed.
+                    for (appearance, count) in &report.unsupported {
+                        println!(
+                            "  [terrain_cycles] {count} mark(s) of `{appearance}` have no lowering"
+                        );
+                    }
+                }
+                secondary_groups += report.total_groups();
+                secondary_instances += report.instances;
+                scene.secondary = geometry;
+            }
 
             let vertices = scene.blades() * scene.ribs() * cycles::VERTICES_PER_RIB;
             if vertices > VERTEX_CEILING {
@@ -488,6 +605,8 @@ pub fn trace(
         width: request.width,
         height: request.height,
         blades,
+        secondary_groups,
+        secondary_instances,
         plan,
     })
 }

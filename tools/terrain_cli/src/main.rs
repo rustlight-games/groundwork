@@ -1022,7 +1022,7 @@ fn render(args: &RenderArgs) -> ExitCode {
         }
     };
 
-    let plate = match plate::trace(&request, &params, &field, &mut report) {
+    let plate = match plate::trace(&request, &params, &field, None, &mut report) {
         Ok(plate) => plate,
         Err(error) => {
             eprintln!("{error}");
@@ -1284,7 +1284,13 @@ fn compile(args: &CompileArgs) -> ExitCode {
             println!("  slice {}/{}", p.tile, p.tiles);
         }
     };
-    let plate = match plate::trace(&request, &params, &field, &mut progress) {
+    let plate = match plate::trace(
+        &request,
+        &params,
+        &field,
+        Some(&compiled.scene),
+        &mut progress,
+    ) {
         Ok(plate) => plate,
         Err(error) => {
             eprintln!("{error}");
@@ -1356,6 +1362,10 @@ fn compile(args: &CompileArgs) -> ExitCode {
         plate.blades,
         render_time.as_secs_f64(),
         compile_time.as_secs_f64()
+    );
+    println!(
+        "  drawn    {} secondary plant(s) as {} instance(s)",
+        plate.secondary_groups, plate.secondary_instances
     );
     println!("\nreplay:");
     println!(

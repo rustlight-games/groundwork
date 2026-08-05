@@ -586,7 +586,7 @@ impl TerrainRecipe for MeadowFlowers {
     }
 
     fn appearances(&self) -> Vec<&'static str> {
-        vec!["flower.stem", "flower.head"]
+        vec!["flower.stem", "flower.head", "flower.petal"]
     }
 
     fn target_density(&self, parameters: &ParameterObject) -> f64 {
@@ -615,9 +615,9 @@ impl TerrainRecipe for MeadowFlowers {
         output: &mut dyn RecipeOutput,
     ) {
         let seeds = &context.seeds;
-        let stem_length = read(context.parameters, "stem_length_m", 0.28) as f32
+        let stem_length = read(context.parameters, "stem_length_m", 0.24) as f32
             * (0.75 + 0.5 * candidate.latent(seeds, &stream("flower_length")));
-        let head_radius = read(context.parameters, "head_radius_m", 0.013) as f32
+        let head_radius = read(context.parameters, "head_radius_m", 0.011) as f32
             * (0.8 + 0.4 * candidate.latent(seeds, &stream("flower_head")));
         let azimuth =
             candidate.latent_range(seeds, &stream("flower_azimuth"), 0.0, std::f32::consts::TAU);
@@ -627,6 +627,8 @@ impl TerrainRecipe for MeadowFlowers {
             candidate.position.v_m,
             context.surface_z_m,
         ];
+        let variation = candidate.latent(seeds, &stream("flower_variation"));
+        let tint = candidate.latent_range(seeds, &stream("flower_tint"), -1.0, 1.0);
 
         output.emit(EmittedMark::Curve {
             root,
@@ -640,22 +642,93 @@ impl TerrainRecipe for MeadowFlowers {
                 moisture: 0.5,
                 exposure: 1.0,
                 tint: candidate.latent_range(seeds, &stream("flower_stem_tint"), -0.3, 0.3),
-                variation: candidate.latent(seeds, &stream("flower_variation")),
+                variation,
             },
             stratum: Stratum::Emergent,
             appearance: 0,
         });
 
-        // The head sits where the bent stem's tip actually is, rather than
-        // straight up: a head that ignored the bend would float beside its own
-        // stem at any noticeable lean.
-        let tip_offset = (stem_length * bend.sin()) as f64;
+        // The tip of the bent stem, in closed form.
+        //
+        // A stem is a circular arc of curvature `bend/length`, so its tip is at
+        // `(L/θ)(1 − cos θ)` along the lean and `(L/θ) sin θ` up. The small-angle
+        // limit is handled by the guard, because the divided form is `0/0` at
+        // zero bend and evaluating it at a tiny angle and hoping the
+        // cancellation is harmless is exactly the kind of thing that puts one
+        // flower head a metre away from its own stem.
+        let (lean_m, rise_m) = if bend.abs() < 1.0e-3 {
+            (0.0, stem_length)
+        } else {
+            let radius = stem_length / bend;
+            (radius * (1.0 - bend.cos()), radius * bend.sin())
+        };
+        let head = [
+            root[0] + (lean_m * azimuth.cos()) as f64,
+            root[1] + (lean_m * azimuth.sin()) as f64,
+            root[2] + rise_m as f64,
+        ];
+
+        // ## Petals, because a disk on a stick is not a flower
+        //
+        // A single ellipsoid head reads as a pin at any framing where the plant
+        // is more than a few pixels tall — which is every framing this project
+        // renders at. What makes a flower recognisable is its *silhouette*: a
+        // ring of separate blades with gaps between them, each catching the sun
+        // at its own angle and shadowing the disk underneath.
+        //
+        // Five to eight, from the candidate's own address rather than a draw, so
+        // adding a petal parameter later cannot shift any other decision.
+        let petals = 5 + (candidate.latent(seeds, &stream("petal_count")) * 4.0) as u16;
+        let petal_length =
+            head_radius * (1.5 + 0.9 * candidate.latent(seeds, &stream("petal_reach")));
+        let petal_width =
+            petal_length * (0.34 + 0.22 * candidate.latent(seeds, &stream("petal_width")));
+        let phase =
+            candidate.latent_range(seeds, &stream("petal_phase"), 0.0, std::f32::consts::TAU);
+
+        for index in 0..petals {
+            // Evenly spaced, then jittered — a perfectly regular whorl is as
+            // recognisable as a perfectly regular scatter, and for the same
+            // reason.
+            let jitter = candidate.latent_range(
+                seeds,
+                &stream(match index % 4 {
+                    0 => "petal_jitter_a",
+                    1 => "petal_jitter_b",
+                    2 => "petal_jitter_c",
+                    _ => "petal_jitter_d",
+                }),
+                -0.18,
+                0.18,
+            );
+            let angle = phase + std::f32::consts::TAU * index as f32 / petals as f32 + jitter;
+            // Set out from the disk so the petals ring it rather than growing
+            // out of its centre, and lifted a little so they sit on top of it.
+            let reach = head_radius * 0.55 + petal_length * 0.5;
+            output.emit(EmittedMark::Analytic {
+                centre: [
+                    head[0] + (reach * angle.cos()) as f64,
+                    head[1] + (reach * angle.sin()) as f64,
+                    head[2] + (head_radius * 0.18) as f64,
+                ],
+                // Long along its own radial direction, narrow across, and thin.
+                radius_m: [petal_length * 0.5, petal_width * 0.5],
+                height_m: petal_length * 0.10,
+                rotation_rad: angle,
+                attributes: MarkAttributes {
+                    maturity: 0.85,
+                    moisture: 0.4,
+                    exposure: 1.0,
+                    tint,
+                    variation,
+                },
+                appearance: 2,
+            });
+        }
+
+        // The disk last, so it sorts over the petal roots.
         output.emit(EmittedMark::Analytic {
-            centre: [
-                root[0] + tip_offset * azimuth.cos() as f64,
-                root[1] + tip_offset * azimuth.sin() as f64,
-                root[2] + (stem_length * bend.cos()) as f64,
-            ],
+            centre: head,
             radius_m: [head_radius, head_radius],
             height_m: head_radius * 0.55,
             rotation_rad: azimuth,
@@ -663,8 +736,8 @@ impl TerrainRecipe for MeadowFlowers {
                 maturity: 0.8,
                 moisture: 0.5,
                 exposure: 1.0,
-                tint: candidate.latent_range(seeds, &stream("flower_tint"), -1.0, 1.0),
-                variation: candidate.latent(seeds, &stream("flower_variation")),
+                tint,
+                variation,
             },
             appearance: 1,
         });
@@ -979,11 +1052,57 @@ mod tests {
     }
 
     #[test]
-    fn a_flower_is_a_stem_and_a_head() {
+    fn a_flower_is_a_stem_a_whorl_and_a_disk() {
+        // A disk on a stick is not a flower. What makes one recognisable at
+        // this framing is the *silhouette* — separate blades with gaps between
+        // them — so the petals are their own marks rather than a texture on the
+        // head.
         let emitted = emit_all(&MeadowFlowers);
-        assert_eq!(emitted.marks.len(), 2);
         assert!(matches!(emitted.marks[0], EmittedMark::Curve { .. }));
-        assert!(matches!(emitted.marks[1], EmittedMark::Analytic { .. }));
+        let petals = emitted.marks.len() - 2;
+        assert!(
+            (5..=8).contains(&petals),
+            "a flower grew {petals} petals, outside the declared five to eight"
+        );
+        // Every petal, then the disk last so it sorts over their roots.
+        for mark in &emitted.marks[1..] {
+            assert!(matches!(mark, EmittedMark::Analytic { .. }));
+        }
+        let EmittedMark::Analytic { appearance, .. } = emitted.marks[emitted.marks.len() - 1]
+        else {
+            panic!("the last mark is the disk");
+        };
+        assert_eq!(appearance, 1, "the disk is emitted last");
+    }
+
+    #[test]
+    fn every_petal_rings_the_disk_rather_than_growing_from_its_centre() {
+        // A whorl whose petals all start at the head's own centre reads as a
+        // star rather than as a flower: real petals attach around a
+        // receptacle, and the gap is most of what the eye reads.
+        let emitted = emit_all(&MeadowFlowers);
+        let EmittedMark::Analytic { centre: disk, .. } = emitted.marks[emitted.marks.len() - 1]
+        else {
+            panic!("the last mark is the disk");
+        };
+        let mut offsets = Vec::new();
+        for mark in &emitted.marks[1..emitted.marks.len() - 1] {
+            let EmittedMark::Analytic { centre, .. } = mark else {
+                panic!("a petal is analytic");
+            };
+            let d = ((centre[0] - disk[0]).powi(2) + (centre[1] - disk[1]).powi(2)).sqrt();
+            assert!(d > 0.0, "a petal sits on the disk's own centre");
+            offsets.push(d);
+        }
+        // And they ring it at a consistent radius rather than scattering.
+        let low = offsets.iter().cloned().fold(f64::INFINITY, f64::min);
+        let high = offsets.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        // A relative tolerance: the offsets are computed in `f32` and
+        // converted, so they agree to about seven digits rather than exactly.
+        assert!(
+            (high - low) < high * 1.0e-5,
+            "petals sit at {low}..{high}, which is not one ring"
+        );
     }
 
     #[test]

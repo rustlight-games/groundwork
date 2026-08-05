@@ -108,9 +108,21 @@
             (
                 key: "flower_abundance",
                 display_name: "Flower abundance",
-                range: (0.0, 1.0),
-                default_value: 0.25,
-                composition: "Max",
+                range: (0.0, 4.0),
+                // A full-strength meadow, which layers then raise or suppress.
+                default_value: 1.0,
+                // Multiply rather than Max, and the change matters.
+                //
+                // Max is right for a channel with several independent *causes*:
+                // the strongest one wins and two of them do not double it. It
+                // cannot express suppression at all, because nothing can lower a
+                // maximum — so a track through a rich meadow came out with
+                // daisies standing on bare compacted earth, and no layer could
+                // say otherwise.
+                //
+                // Multiply is what `vegetation_density` already uses, for the
+                // same reason: two suppressions compound rather than fighting.
+                composition: "Multiply",
                 unit: "Unitless",
             ),
             (
@@ -262,6 +274,29 @@
                 )),
             ),
             (
+                key: "path_flower_suppression",
+                // Flowers stop before the grass does.
+                //
+                // A separate layer from the vegetation suppression because they
+                // are separate channels and the flower population reads only
+                // one of them: without this, a track through a rich meadow came
+                // out with daisies standing on bare compacted earth, which is
+                // the one place a meadow flower does not grow.
+                //
+                // Wider than the grass band, and harder. Something walks here
+                // often enough to keep the ground bare; a flower needs a season
+                // undisturbed and grass needs a fortnight.
+                mask: Profile((
+                    source: "main_path",
+                    shape: SmoothBand((inner_m: 1.05, outer_m: 3.60)),
+                )),
+                operation: Modifier((
+                    channel: "flower_abundance",
+                    mode: "Multiply",
+                    value: 0.02,
+                )),
+            ),
+            (
                 key: "path_fringe_thatch",
                 mask: Profile((
                     source: "main_path",
@@ -295,8 +330,11 @@
                 )),
                 operation: Modifier((
                     channel: "flower_abundance",
-                    mode: "Max",
-                    value: 0.9,
+                    // Rich ground carries three and a half times the base
+                    // meadow's flowers, which at the population's declared two a
+                    // square metre is the seven the reference asks for.
+                    mode: "Multiply",
+                    value: 3.5,
                 )),
             ),
             (
@@ -381,7 +419,7 @@
                 material_affinity: [("meadow_soil", 1.0)],
                 abundance_channel: Some("flower_abundance"),
                 parameters: [
-                    ("density", Number(7.0)),
+                    ("density", Number(2.0)),
                     ("stem_length_m", Number(0.26)),
                     ("head_radius_m", Number(0.014)),
                 ],

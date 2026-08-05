@@ -103,7 +103,7 @@ fn main() {
         }
     };
 
-    let plate = match plate::trace(&request, &params, &field, &mut report) {
+    let plate = match plate::trace(&request, &params, &field, None, &mut report) {
         Ok(plate) => plate,
         Err(error) => {
             eprintln!("{error}");

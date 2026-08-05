@@ -129,6 +129,12 @@ pub enum PrototypeFamily {
     Superellipsoid,
     /// A shallow oblate disk. Flower receptacles.
     Disk,
+    /// A flattened lozenge. Petals.
+    ///
+    /// Lowered to a superellipsoid in the package — Blender has one builder for
+    /// both — but named separately here so the bridge can pick its exponents
+    /// and its tessellation without a magic key comparison.
+    Petal,
 }
 
 impl PrototypeFamily {
@@ -136,6 +142,9 @@ impl PrototypeFamily {
         match self {
             Self::Superellipsoid => "superellipsoid",
             Self::Disk => "disk",
+            // Built by the same Blender routine as a stone; the difference is
+            // entirely in the parameters the bridge chose.
+            Self::Petal => "superellipsoid",
         }
     }
 }
