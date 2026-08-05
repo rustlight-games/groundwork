@@ -146,6 +146,7 @@ mod tests {
             ),
             position: WorldPoint::new(0.5, 0.25),
             priority: 0.5,
+            footprint_radius_m: 0.0,
         }
     }
 

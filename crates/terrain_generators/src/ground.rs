@@ -627,6 +627,57 @@ impl GroundEvaluator {
         self.fields.surface_height(at) + self.displacement(world)
     }
 
+    /// The height the rendered *mesh* has here, rather than the analytic one.
+    ///
+    /// ## Why these are different, and why the difference floats a flower
+    ///
+    /// The ground mesh samples [`final_surface_z_m`](Self::final_surface_z_m) at
+    /// lattice vertices and draws flat triangles between them. Between two
+    /// vertices the mesh is the *chord*; the analytic surface is the curve. Over
+    /// a crest the curve is above the chord, by up to about half the band
+    /// amplitude — eight millimetres on the shipped loam, which is more than a
+    /// flower stem is thick.
+    ///
+    /// A stem rooted at the analytic height therefore stands a visible gap above
+    /// the mesh whenever it lands between vertices near a crest, and the gap is
+    /// worst exactly where the ground is most interesting. Nothing reports it:
+    /// from the placement side the root is on the ground, and from the mesh side
+    /// there is simply a stem nearby.
+    ///
+    /// So anything that *rests on* the ground registers to this instead. It
+    /// reproduces the mesh's own bilinear interpolation over the same
+    /// lattice — snap, sample four corners, blend — so a root registered to it
+    /// cannot float or sink however coarse the mesh gets.
+    ///
+    /// The mesh's own lattice spacing is derived from the profiles in play by
+    /// [`BandSplit::spacing_for`], and the exporter derives it the same way, so
+    /// the two agree without either having to be told.
+    pub fn mesh_surface_z_m(&self, world: Vec2, spacing_m: f32) -> f32 {
+        if !(spacing_m > 0.0) {
+            return self.final_surface_z_m(world);
+        }
+        // The same global anchoring the exporter uses: a lattice snapped to
+        // multiples of the spacing rather than to the window's own corner, so
+        // two windows over the same ground sample the same vertices.
+        let snap = |value: f32| (value / spacing_m).floor() * spacing_m;
+        let (u0, v0) = (snap(world.x), snap(world.y));
+        let (fu, fv) = (
+            ((world.x - u0) / spacing_m).clamp(0.0, 1.0),
+            ((world.y - v0) / spacing_m).clamp(0.0, 1.0),
+        );
+        let corner = |du: f32, dv: f32| {
+            self.final_surface_z_m(Vec2::new(u0 + du * spacing_m, v0 + dv * spacing_m))
+        };
+        let low = corner(0.0, 0.0) + (corner(1.0, 0.0) - corner(0.0, 0.0)) * fu;
+        let high = corner(0.0, 1.0) + (corner(1.0, 1.0) - corner(0.0, 1.0)) * fu;
+        low + (high - low) * fv
+    }
+
+    /// The lattice the ground mesh will be built on, from the soils in play.
+    pub fn mesh_spacing_m(&self) -> f32 {
+        self.split.spacing_m
+    }
+
     /// The field stack this evaluator reads.
     ///
     /// Exposed so a caller holding the evaluator does not need to carry the

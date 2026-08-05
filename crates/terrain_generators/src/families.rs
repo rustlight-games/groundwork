@@ -93,6 +93,40 @@ fn number(
     }
 }
 
+/// A parameter in `0..1`, reporting anything outside it.
+///
+/// Separate from [`number`] because that one refuses zero and negatives, which
+/// is right for a length and wrong for a hue: zero is red and zero saturation
+/// is white, and both are things an author legitimately asks for.
+fn unit_number(
+    parameters: &ParameterObject,
+    name: &str,
+    default: f64,
+    population: &PopulationKey,
+    diagnostics: &mut DiagnosticReport,
+) -> f64 {
+    match parameters.number(name) {
+        None => default,
+        Some(value) if value.is_finite() && (0.0..=1.0).contains(&value) => value,
+        Some(value) => {
+            diagnostics.error(
+                "invalid_parameter",
+                Location::at(format!("populations.{population}.parameters.{name}")),
+                format!("`{name}` is {value}; it must be finite and between zero and one"),
+            );
+            default
+        }
+    }
+}
+
+/// A `0..1` parameter, without diagnostics, for the emit path.
+fn read_unit(parameters: &ParameterObject, name: &str, default: f64) -> f32 {
+    match parameters.number(name) {
+        Some(value) if value.is_finite() && (0.0..=1.0).contains(&value) => value as f32,
+        _ => default as f32,
+    }
+}
+
 /// A parameter, without diagnostics, for the emit path.
 fn read(parameters: &ParameterObject, name: &str, default: f64) -> f64 {
     match parameters.number(name) {
@@ -153,8 +187,12 @@ impl TerrainRecipe for GrassTuft {
             // Tufts exclude each other: real ones compete for root space, and
             // pure jitter puts two anchors a millimetre apart often enough to
             // read as a doubled clump.
-            spacing: SpacingPolicy::Exclusion {
-                max_radius_m: 0.035,
+            // Centre distance, not footprint. A tuft's exclusion radius is
+            // about root competition rather than about how much ground the
+            // clump physically covers, and reading the old number as a
+            // footprint would have halved the spacing of every meadow.
+            spacing: SpacingPolicy::PriorityDistance {
+                minimum_centre_distance_m: 0.035,
             },
         }
     }
@@ -581,7 +619,9 @@ impl TerrainRecipe for MeadowFlowers {
             key: self.domain(),
             cell_m: 0.25,
             candidates_per_cell: 6,
-            spacing: SpacingPolicy::Exclusion { max_radius_m: 0.08 },
+            spacing: SpacingPolicy::PriorityDistance {
+                minimum_centre_distance_m: 0.08,
+            },
         }
     }
 
@@ -606,6 +646,24 @@ impl TerrainRecipe for MeadowFlowers {
         number(parameters, "density", 6.0, population, diagnostics);
         number(parameters, "stem_length_m", 0.28, population, diagnostics);
         number(parameters, "head_radius_m", 0.013, population, diagnostics);
+        // Colour. Not validated as positive-only, because a hue of zero is red
+        // and a saturation of zero is white, and both are things an author
+        // legitimately asks for.
+        unit_number(parameters, "petal_hue", 0.14, population, diagnostics);
+        unit_number(
+            parameters,
+            "petal_hue_spread",
+            0.05,
+            population,
+            diagnostics,
+        );
+        unit_number(
+            parameters,
+            "petal_saturation",
+            0.18,
+            population,
+            diagnostics,
+        );
     }
 
     fn emit(
@@ -628,7 +686,32 @@ impl TerrainRecipe for MeadowFlowers {
             context.surface_z_m,
         ];
         let variation = candidate.latent(seeds, &stream("flower_variation"));
-        let tint = candidate.latent_range(seeds, &stream("flower_tint"), -1.0, 1.0);
+
+        // ## The colour of the flowers is the document's to decide
+        //
+        // A meadow generator whose flowers are always white is a daisy
+        // generator. What an author wants to say is "buttercups here, knapweed
+        // over there", and the way to say it is a hue and a spread — a species
+        // has a colour and a population of one species has a *narrow band* of
+        // it, which is what the spread is for. Zero spread gives a bed of
+        // identical blooms, which is what a cultivated planting looks like.
+        //
+        // Carried on the petal mark's `tint` and `variation` because a
+        // `MarkAttributes` has one scalar tint and a colour needs two numbers.
+        // For `flower.petal` and only for it, `tint` *is* the hue and
+        // `variation` *is* the saturation; the bridge knows that and turns them
+        // back into linear RGB. Documented here rather than inferred, because a
+        // channel that means one thing under one appearance and another under
+        // the next is exactly the sort of thing that gets rewired by accident.
+        let base_hue = read_unit(context.parameters, "petal_hue", 0.14);
+        let spread = read_unit(context.parameters, "petal_hue_spread", 0.05);
+        let saturation = read_unit(context.parameters, "petal_saturation", 0.18);
+        let hue = (base_hue
+            + spread * candidate.latent_range(seeds, &stream("petal_hue_drift"), -1.0, 1.0))
+        .rem_euclid(1.0);
+        // Mapped into the attribute's own `-1..1`, so nothing downstream has to
+        // know the range changed.
+        let tint = hue * 2.0 - 1.0;
 
         output.emit(EmittedMark::Curve {
             root,
@@ -719,8 +802,9 @@ impl TerrainRecipe for MeadowFlowers {
                     maturity: 0.85,
                     moisture: 0.4,
                     exposure: 1.0,
+                    // Hue and saturation. See the note above.
                     tint,
-                    variation,
+                    variation: saturation,
                 },
                 appearance: 2,
             });
@@ -769,9 +853,24 @@ impl TerrainRecipe for FieldStones {
             key: self.domain(),
             cell_m: 0.5,
             candidates_per_cell: 4,
-            // Strict exclusion. Two stones interpenetrating is the one artefact
-            // in this family that is unmistakable.
-            spacing: SpacingPolicy::Exclusion { max_radius_m: 0.22 },
+            // Physical footprints, because a stone's exclusion radius *is* its
+            // footprint — two stones interpenetrating is the one artefact in
+            // this family that is unmistakable, and the rule that prevents it is
+            // "their disks do not overlap" rather than "their centres are far
+            // apart".
+            //
+            // Variable, so a big stone keeps more room than a small one. Sharing
+            // one radius makes a field of stones read as a lattice of equal
+            // cells with different-sized objects rattling around in them.
+            spacing: SpacingPolicy::PriorityFootprints {
+                radius: crate::domain::CandidateRadiusPolicy::Uniform {
+                    min_m: 0.035,
+                    max_m: 0.115,
+                },
+                // A centimetre of soil between them. Stones that touch read as
+                // one broken stone rather than as two.
+                clearance_m: 0.01,
+            },
         }
     }
 
@@ -973,6 +1072,7 @@ mod tests {
             id: CandidateId::new(PopulationHash::from_bits(0x1234), CellCoord::new(1, 2), 3),
             position: WorldPoint::new(0.1, 0.2),
             priority: 0.5,
+            footprint_radius_m: 0.0,
         }
     }
 

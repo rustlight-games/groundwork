@@ -580,10 +580,15 @@ pub fn compile_scene(
                 seeds: seeds.for_recipe(recipe.version()),
                 parameters: &claimant.parameters,
                 substrate,
-                // The surface the render actually has, relief included. See
-                // `GroundEvaluator::final_surface_z_m`.
-                surface_z_m: (fields.surface_height(candidate.position)
-                    + ground_sample.displacement_m) as f64,
+                // The surface the *mesh* has, not the analytic one.
+                //
+                // Between two mesh vertices the rendered ground is the chord and
+                // the analytic surface is the curve, so a root registered to the
+                // latter stands a visible gap above the former near a crest —
+                // see `GroundEvaluator::mesh_surface_z_m`.
+                surface_z_m: ground
+                    .mesh_surface_z_m(vec2(candidate.position), ground.mesh_spacing_m())
+                    as f64,
                 root_seed,
             };
             // One placement group per accepted, owned candidate. Everything the

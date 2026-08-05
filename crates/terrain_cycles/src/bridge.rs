@@ -147,7 +147,27 @@ pub fn lower(
             WorldPoint::new(bounds.min.u_m, bounds.min.v_m),
             WorldPoint::new(bounds.max.u_m, bounds.max.v_m),
         );
-        let visibility = if overlaps(footprint, visible) {
+        // Camera visibility is decided by the plant's *root*, not by its bound.
+        //
+        // The bound is a box around everything the plant grew, so a flower
+        // rooted just outside the rendered ground still overlaps it — it leans
+        // in — and the bound test called it camera-visible. What that produced
+        // was a ring of flowers standing on nothing beyond the edge of the
+        // plate, because the ground mesh ends exactly at the layout and its
+        // edge *is* the picture's silhouette.
+        //
+        // The tuned blades have always used the root for the same decision, so
+        // this is also what makes a flower and the grass beside it agree about
+        // which of them is in the picture.
+        //
+        // The bound still decides *halo* membership: a plant whose geometry can
+        // reach the frame casts into it even when its root cannot.
+        let root = scene
+            .anchors
+            .get(anchor.index())
+            .map(|placement| WorldPoint::new(placement.root.u_m, placement.root.v_m));
+        let rooted_inside = root.is_some_and(|at| visible.contains(at));
+        let visibility = if rooted_inside {
             report.groups_camera += 1;
             Visibility::Camera
         } else if overlaps(footprint, caster) {
@@ -236,7 +256,7 @@ pub fn lower(
                             petal.radius_m[1].max(1.0e-4),
                             petal.height_m.max(1.0e-5),
                         ],
-                        tint: petal_tint(petal.attributes.tint),
+                        tint: petal_tint(petal.attributes.tint, petal.attributes.variation),
                         variation: petal.attributes.variation,
                     });
                     report.instances += 1;
@@ -360,18 +380,32 @@ fn yaw_quaternion(yaw_rad: f32) -> [f32; 4] {
     [0.0, 0.0, half.sin(), half.cos()]
 }
 
-/// A petal's tint: warmer and paler than a stone's.
+/// A petal's colour, from the hue and saturation the document authored.
 ///
-/// Separate from `tint_from` because they are doing different jobs. A stone's
-/// tint stops a field of clones; a petal's carries the *species* variation a
-/// meadow has — white, cream, and the occasional yellow — so it moves further
-/// and in a different direction.
-fn petal_tint(value: f32) -> [f32; 3] {
-    let t = value.clamp(-1.0, 1.0);
+/// ## The two channels mean something specific here
+///
+/// A `MarkAttributes` carries one scalar tint and a colour needs two numbers,
+/// so for `flower.petal` — and only for it — `tint` is the hue mapped into
+/// `-1..1` and `variation` is the saturation. `MeadowFlowers::emit` is the other
+/// half of that agreement and says so in the same words.
+///
+/// Full saturation would be a poster rather than a meadow: even a buttercup is
+/// mostly white light with a strong cast, so the saturation is applied as a
+/// *pull away from white* rather than as an HSV value. That also means a
+/// document that says nothing gets near-white petals, which is what a daisy is.
+fn petal_tint(hue_attribute: f32, saturation: f32) -> [f32; 3] {
+    let hue = (hue_attribute.clamp(-1.0, 1.0) + 1.0) * 0.5;
+    let saturation = saturation.clamp(0.0, 1.0);
+    // A fully saturated wheel, then blended toward white by the saturation.
+    let wheel = |offset: f32| {
+        let t = (hue + offset).rem_euclid(1.0) * 6.0;
+        (2.0 - (t - 3.0).abs()).clamp(0.0, 1.0)
+    };
+    let pure = [wheel(0.0), wheel(2.0 / 3.0), wheel(1.0 / 3.0)];
     [
-        1.0,
-        (1.0 - 0.10 * t.max(0.0)).max(0.6),
-        (1.0 - 0.45 * t.max(0.0)).max(0.25),
+        1.0 + (pure[0] - 1.0) * saturation,
+        1.0 + (pure[1] - 1.0) * saturation,
+        1.0 + (pure[2] - 1.0) * saturation,
     ]
 }
 

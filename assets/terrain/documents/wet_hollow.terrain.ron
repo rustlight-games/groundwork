@@ -270,6 +270,12 @@
                     ("density", Number(0.9)),
                     ("stem_length_m", Number(0.27)),
                     ("head_radius_m", Number(0.015)),
+                    // Ragged robin and marsh orchid: the pinks that take wet
+                    // ground. A wide band, because a marsh carries several
+                    // species where a hay meadow carries one.
+                    ("petal_hue", Number(0.92)),
+                    ("petal_hue_spread", Number(0.09)),
+                    ("petal_saturation", Number(0.55)),
                 ],
             ),
             (

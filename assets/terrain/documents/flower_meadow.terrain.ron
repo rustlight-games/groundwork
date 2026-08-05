@@ -257,6 +257,12 @@
                     ("density", Number(2.2)),
                     ("stem_length_m", Number(0.27)),
                     ("head_radius_m", Number(0.015)),
+                    // Buttercups. A hay meadow in June is yellow before it is
+                    // anything else, and the spread is wide enough to carry the
+                    // paler ones without becoming a second species.
+                    ("petal_hue", Number(0.145)),
+                    ("petal_hue_spread", Number(0.02)),
+                    ("petal_saturation", Number(0.72)),
                 ],
             ),
             (

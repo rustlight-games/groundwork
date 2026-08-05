@@ -422,6 +422,11 @@
                     ("density", Number(2.0)),
                     ("stem_length_m", Number(0.26)),
                     ("head_radius_m", Number(0.014)),
+                    // Ox-eye daisies: near-white with the faintest warm cast,
+                    // and a narrow band of it because one species is one colour.
+                    ("petal_hue", Number(0.13)),
+                    ("petal_hue_spread", Number(0.03)),
+                    ("petal_saturation", Number(0.10)),
                 ],
             ),
             (

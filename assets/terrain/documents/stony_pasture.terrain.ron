@@ -252,6 +252,10 @@
                     ("density", Number(0.5)),
                     ("stem_length_m", Number(0.16)),
                     ("head_radius_m", Number(0.010)),
+                    // What survives grazing: small, pale, and almost colourless.
+                    ("petal_hue", Number(0.16)),
+                    ("petal_hue_spread", Number(0.06)),
+                    ("petal_saturation", Number(0.08)),
                 ],
             ),
             (

@@ -3,54 +3,54 @@
 // A row that moves without a phase behind it is a regression.
 
 [meadow_path]
-scene = bf53dc012a07782ac7d8b844fbb18521
-candidates = 12966 generated, 500 accepted, 0 unowned
-marks = 4153, placements = 500, prototypes = 0, interactions = 0
-  field_stones = secondary, 13 marks
+scene = bd626b3cc7caea70501c14eea65788e4
+candidates = 13748 generated, 564 accepted, 0 unowned
+marks = 4580, placements = 564, prototypes = 0, interactions = 0
+  field_stones = secondary, 27 marks
   meadow_fine_grass = tuned(fine), 0 marks
-  meadow_flowers = secondary, 4140 marks
+  meadow_flowers = secondary, 4553 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
   path_clods = deferred, 0 marks
 
 [narrow_track]
-scene = 3388cc84ac2639a61759111040ee12a2
-candidates = 4115 generated, 207 accepted, 0 unowned
-marks = 1704, placements = 207, prototypes = 0, interactions = 0
+scene = eb855ef77a16fe1f6f3a0ae701b916cf
+candidates = 4329 generated, 238 accepted, 0 unowned
+marks = 1977, placements = 238, prototypes = 0, interactions = 0
   field_stones = secondary, 3 marks
   meadow_fine_grass = tuned(fine), 0 marks
-  meadow_flowers = secondary, 1701 marks
+  meadow_flowers = secondary, 1974 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
   track_grit_scatter = deferred, 0 marks
 
 [flower_meadow]
-scene = 0296c3d095fe8200668200c927cd6fe8
-candidates = 1209 generated, 38 accepted, 0 unowned
+scene = 039644dcb69652eb429fb8b363a6fe3d
+candidates = 1314 generated, 38 accepted, 0 unowned
 marks = 330, placements = 38, prototypes = 0, interactions = 0
-  field_stones = secondary, 0 marks
+  field_stones = secondary, 1 marks
   meadow_fine_grass = tuned(fine), 0 marks
-  meadow_flowers = secondary, 330 marks
+  meadow_flowers = secondary, 329 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
 
 [stony_pasture]
-scene = 97aac7ab0dfc2e13e907dd39ab3c78f3
-candidates = 1020 generated, 14 accepted, 0 unowned
-marks = 32, placements = 14, prototypes = 0, interactions = 0
-  field_stones = secondary, 11 marks
+scene = 2b9262f8e6f1e6ff375478df1a76de29
+candidates = 1105 generated, 20 accepted, 0 unowned
+marks = 59, placements = 20, prototypes = 0, interactions = 0
+  field_stones = secondary, 14 marks
   meadow_fine_grass = tuned(fine), 0 marks
-  meadow_flowers = secondary, 21 marks
+  meadow_flowers = secondary, 45 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
 
 [wet_hollow]
-scene = 4ebe9b3f6cf35b0909d2aac6539a4a9c
-candidates = 1267 generated, 12 accepted, 0 unowned
-marks = 106, placements = 12, prototypes = 0, interactions = 0
+scene = ac4635f2d7404edd5dd86cbb2ee7def0
+candidates = 1352 generated, 17 accepted, 0 unowned
+marks = 146, placements = 17, prototypes = 0, interactions = 0
   field_stones = secondary, 0 marks
   meadow_fine_grass = tuned(fine), 0 marks
-  meadow_flowers = secondary, 106 marks
+  meadow_flowers = secondary, 146 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
 

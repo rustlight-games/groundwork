@@ -130,12 +130,53 @@ fn the_profile_relief_is_not_uniformly_zero() {
 }
 
 #[test]
-fn every_secondary_root_sits_on_the_final_surface() {
+fn the_mesh_surface_differs_from_the_analytic_one_by_enough_to_matter() {
+    // Guards the test below from being a tautology. If the mesh's chord and the
+    // analytic curve agreed everywhere, registering roots to one rather than
+    // the other would be a change with no effect — and the gap this fixes is
+    // precisely that they do not agree between vertices.
+    let terrain = documents::prepare(&documents::shipped("meadow_path")).expect("meadow_path");
+    let compiled = compile_scene(
+        &terrain,
+        &meadow::baseline_request(),
+        &terrain_generators::family_registry(),
+        &SceneCompileOptions::default(),
+    )
+    .expect("meadow_path compiles");
+
+    let spacing = compiled.ground.mesh_spacing_m();
+    let worst = probes()
+        .into_iter()
+        .map(|at| {
+            let flat = Vec2::new(at.u_m as f32, at.v_m as f32);
+            (compiled.ground.final_surface_z_m(flat)
+                - compiled.ground.mesh_surface_z_m(flat, spacing))
+            .abs()
+        })
+        .fold(0.0f32, f32::max);
+    assert!(
+        worst > 1.0e-4,
+        "the mesh and the analytic surface differ by only {worst} m, so rooting \
+         against one rather than the other proves nothing"
+    );
+}
+
+#[test]
+fn every_secondary_root_sits_on_the_mesh_the_renderer_draws() {
     // The acceptance criterion itself: nothing the compiler emitted is rooted
-    // at a height the rendered ground does not have. Checked against the mark
-    // roots the scene actually holds rather than against a recomputed
-    // placement, so a recipe that ignored `surface_z_m` and used the matrix
-    // directly would still be caught.
+    // at a height the rendered ground does not have.
+    //
+    // Against the *mesh*, not the analytic surface. Between two lattice
+    // vertices the rendered ground is the chord and the analytic surface is the
+    // curve; over a crest the curve is above the chord by up to about half a
+    // band amplitude, which is more than a stem is thick. A flower registered
+    // to the curve therefore stands a visible gap above the ground it is
+    // supposed to be growing out of, worst exactly where the ground is most
+    // interesting.
+    //
+    // Checked against the mark roots the scene actually holds rather than
+    // against a recomputed placement, so a recipe that ignored `surface_z_m`
+    // and used the matrix directly would still be caught.
     for name in COMPILABLE {
         let terrain = documents::prepare(&documents::shipped(name))
             .unwrap_or_else(|error| panic!("{name}: {error}"));
@@ -159,9 +200,10 @@ fn every_secondary_root_sits_on_the_final_surface() {
                 continue;
             };
             let root = curve.root;
-            let expected = compiled
-                .ground
-                .final_surface_z_m(Vec2::new(root.u_m as f32, root.v_m as f32));
+            let expected = compiled.ground.mesh_surface_z_m(
+                Vec2::new(root.u_m as f32, root.v_m as f32),
+                compiled.ground.mesh_spacing_m(),
+            );
             assert!(
                 (root.z_m as f32 - expected).abs() < 1.0e-4,
                 "{name}: a stem is rooted at {} where the rendered ground is at {expected}",

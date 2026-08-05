@@ -68,9 +68,25 @@ use terrain_core::seed::{CandidateId, PopulationHash, RandomAddress, SeedContext
 /// Separate from any recipe's version: a change here moves every candidate in
 /// every domain, and a change to a recipe moves only what that recipe drew.
 /// Conflating them would make a grass tweak invalidate the stones.
-pub const DOMAIN_ALGORITHM_VERSION: u32 = 1;
+pub const DOMAIN_ALGORITHM_VERSION: u32 = 2;
 
 /// How a domain spaces its content.
+///
+/// ## Two exclusion policies, and why they are not one
+///
+/// The old `Exclusion { max_radius_m }` was documented as a per-candidate
+/// footprint radius and implemented as a fixed centre-to-centre distance. Those
+/// are different quantities: two objects of radius `r` do not overlap when their
+/// centres are `2r` apart, so reading the old number as a footprint radius would
+/// have silently *halved* the spacing of every domain that used it.
+///
+/// So there are two policies. `PriorityDistance` preserves the old meaning
+/// exactly, and everything that already used it keeps it. `PriorityFootprints`
+/// is the new one: each candidate carries its own physical radius and a pair
+/// conflicts when their disks overlap after clearance. Stones use it, because a
+/// stone's exclusion radius *is* its footprint; grass does not, because a tuft's
+/// exclusion radius is about root competition rather than about the clump's
+/// physical extent.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum SpacingPolicy {
@@ -79,19 +95,94 @@ pub enum SpacingPolicy {
     /// What high-density filler wants. Grit and fine grass have no business
     /// excluding each other, and the thinning pass is the expensive part.
     Jittered,
-    /// Candidates exclude each other within a radius.
+    /// No two survivors closer than a fixed centre-to-centre distance.
+    PriorityDistance { minimum_centre_distance_m: f64 },
+    /// No two survivors whose physical footprints overlap after clearance.
     ///
-    /// The radius is per candidate — a big stone keeps more room than a small
-    /// one — and this is the *bound* on it, which is what sizes the halo.
-    Exclusion { max_radius_m: f64 },
+    /// `‖xᵢ − xⱼ‖ < rᵢ + rⱼ + c`. A **sum** of radii, because the radii are
+    /// occupied object disks rather than desired sample spacings — the variable
+    /// radius literature also offers max, min, prior-point and current-point
+    /// rules, and the sum is the one with a sphere-packing meaning.
+    ///
+    /// Symmetric, so permuting the generation order cannot change whether a pair
+    /// conflicts.
+    PriorityFootprints {
+        radius: CandidateRadiusPolicy,
+        clearance_m: f64,
+    },
+}
+
+/// How big a candidate's own footprint is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum CandidateRadiusPolicy {
+    Fixed {
+        radius_m: f64,
+    },
+    /// Drawn from the candidate's own address, in a named stream.
+    ///
+    /// Addressed rather than drawn sequentially, for the reason everything else
+    /// here is: a candidate's radius has to be the same whichever window
+    /// computed it, or two neighbouring plates thin their shared boundary
+    /// differently.
+    Uniform {
+        min_m: f64,
+        max_m: f64,
+    },
+}
+
+impl CandidateRadiusPolicy {
+    /// The largest radius this policy can produce.
+    ///
+    /// What the halo is sized from, so it has to be a genuine bound rather than
+    /// a typical value.
+    pub fn maximum_m(&self) -> f64 {
+        match self {
+            Self::Fixed { radius_m } => radius_m.max(0.0),
+            Self::Uniform { min_m, max_m } => min_m.max(*max_m).max(0.0),
+        }
+    }
+
+    /// One candidate's radius, from its own address.
+    pub fn radius_for(&self, candidate_id: CandidateId, seeds: &SeedContext) -> f64 {
+        match self {
+            Self::Fixed { radius_m } => radius_m.max(0.0),
+            Self::Uniform { min_m, max_m } => {
+                let low = min_m.min(*max_m).max(0.0);
+                let high = min_m.max(*max_m).max(0.0);
+                let unit = seeds.unit(&RandomAddress::new(candidate_id, &stream("footprint")));
+                low + (high - low) * unit
+            }
+        }
+    }
 }
 
 impl SpacingPolicy {
     /// How far outside a region the thinning pass has to look.
+    ///
+    /// The proof this has to satisfy: for a candidate `i` inside the requested
+    /// bounds, every candidate that *can* conflict with it lies within
+    /// `rᵢ + Rmax + c`, which is at most `2·Rmax + c`. Expanding the working
+    /// area by that means every window containing `i` compares it against the
+    /// same complete conflict set and reaches the same decision.
     pub fn conflict_reach_m(&self) -> f64 {
         match self {
             Self::Jittered => 0.0,
-            Self::Exclusion { max_radius_m } => max_radius_m.max(0.0),
+            Self::PriorityDistance {
+                minimum_centre_distance_m,
+            } => minimum_centre_distance_m.max(0.0),
+            Self::PriorityFootprints {
+                radius,
+                clearance_m,
+            } => 2.0 * radius.maximum_m() + clearance_m.max(0.0),
+        }
+    }
+
+    /// The largest footprint a candidate in this domain can carry.
+    pub fn maximum_radius_m(&self) -> f64 {
+        match self {
+            Self::Jittered | Self::PriorityDistance { .. } => 0.0,
+            Self::PriorityFootprints { radius, .. } => radius.maximum_m(),
         }
     }
 }
@@ -159,9 +250,44 @@ pub struct DomainCandidate {
     /// whichever region computed it — without which two neighbouring plates
     /// would thin differently along their join.
     pub priority: f32,
+    /// How much ground this candidate physically occupies, metres.
+    ///
+    /// Belongs to the *shared domain* rather than to whichever recipe ends up
+    /// owning it, and that ordering is load-bearing: acceptance happens before
+    /// ownership, so every claimant sharing a lattice has to agree about how
+    /// much room each candidate takes. Zero under the policies that space by
+    /// centre distance rather than by footprint.
+    pub footprint_radius_m: f64,
 }
 
 impl DomainCandidate {
+    /// The strict total order two candidates are compared in.
+    ///
+    /// Priority first, then the complete candidate address. Rank alone is not
+    /// enough — different cells share ranks, so two candidates in adjacent cells
+    /// with equal priority would compare equal and both survive or both die
+    /// depending on which was walked first. Exact 32-bit priority collisions are
+    /// rare; determinism contracts are not probabilistic.
+    ///
+    /// The field order is pinned by [`DOMAIN_ALGORITHM_VERSION`].
+    fn priority_key(&self) -> (u32, u64, i64, i64, u16) {
+        (
+            // Canonical bits: `-0.0` and `0.0` must not order differently, and a
+            // NaN priority must not make the order intransitive.
+            if self.priority.is_nan() {
+                0
+            } else if self.priority == 0.0 {
+                0.0f32.to_bits()
+            } else {
+                self.priority.to_bits()
+            },
+            self.id.population.bits(),
+            self.id.cell.y,
+            self.id.cell.x,
+            self.id.rank,
+        )
+    }
+
     /// A named random value in `0..1` belonging to this candidate.
     ///
     /// Every latent attribute a recipe wants — azimuth, scale, maturity, hue
@@ -218,7 +344,7 @@ pub fn generate(request: &DomainRequest<'_>) -> Vec<DomainCandidate> {
     let reach = definition.spacing.conflict_reach_m();
     // Judged against the same neighbours whichever window asked, so a candidate
     // on the edge of one plate and in the middle of the next survives or dies
-    // identically.
+    // identically. See `SpacingPolicy::conflict_reach_m` for the bound.
     let working = request.bounds.expanded(reach);
     let all = lay_out(definition, working, &request.seeds);
 
@@ -227,10 +353,31 @@ pub fn generate(request: &DomainRequest<'_>) -> Vec<DomainCandidate> {
             .into_iter()
             .filter(|candidate| request.bounds.contains(candidate.position))
             .collect(),
-        SpacingPolicy::Exclusion { max_radius_m } => {
-            thin(all, definition, request.bounds, max_radius_m)
+        SpacingPolicy::PriorityDistance {
+            minimum_centre_distance_m,
+        } => thin(all, request.bounds, |a, b| {
+            let limit = minimum_centre_distance_m;
+            squared_distance(a, b) < limit * limit
+        }),
+        SpacingPolicy::PriorityFootprints {
+            radius,
+            clearance_m,
+        } => {
+            let bucket = radius.maximum_m().max(1.0e-6);
+            let clearance = clearance_m.max(0.0);
+            thin_bucketed(all, request.bounds, bucket, clearance, |a, b| {
+                let limit = a.footprint_radius_m + b.footprint_radius_m + clearance;
+                squared_distance(a, b) < limit * limit
+            })
         }
     }
+}
+
+/// Squared centre-to-centre distance between two candidates.
+fn squared_distance(a: &DomainCandidate, b: &DomainCandidate) -> f64 {
+    let du = b.position.u_m - a.position.u_m;
+    let dv = b.position.v_m - a.position.v_m;
+    du * du + dv * dv
 }
 
 /// Every candidate the lattice offers over a rectangle, unthinned.
@@ -244,6 +391,10 @@ fn lay_out(
     let jitter_u = stream("candidate_u");
     let jitter_v = stream("candidate_v");
     let priority = stream("priority");
+    let radius_policy = match definition.spacing {
+        SpacingPolicy::PriorityFootprints { radius, .. } => Some(radius),
+        _ => None,
+    };
 
     let mut out = Vec::new();
     for cell in grid.cells_over(bounds) {
@@ -259,6 +410,9 @@ fn lay_out(
                     rect.min.v_m + v * rect.height_m(),
                 ),
                 priority: seeds.unit(&RandomAddress::new(id, &priority)) as f32,
+                footprint_radius_m: radius_policy
+                    .map(|policy| policy.radius_for(id, seeds))
+                    .unwrap_or(0.0),
             });
         }
     }
@@ -267,25 +421,46 @@ fn lay_out(
 
 /// Drop every candidate that a higher-priority neighbour excludes.
 ///
-/// Non-recursive and therefore order-independent — see the module note.
+/// Non-recursive: a candidate is compared against every *raw proposal* in its
+/// conflict neighbourhood, not against the ones that survived. A recursive rule
+/// packs slightly better and needs a dependency traversal whose boundary can
+/// extend unpredictably toward the window edge, which is exactly what a finite
+/// halo cannot guarantee. Thinning slightly harder is the cheaper mistake by a
+/// wide margin.
 fn thin(
     all: Vec<DomainCandidate>,
-    definition: &CandidateDomainDef,
     keep: WorldRect,
-    max_radius_m: f64,
+    conflicts: impl Fn(&DomainCandidate, &DomainCandidate) -> bool,
 ) -> Vec<DomainCandidate> {
-    if max_radius_m <= 0.0 {
-        return all
-            .into_iter()
-            .filter(|candidate| keep.contains(candidate.position))
-            .collect();
-    }
+    all.iter()
+        .filter(|candidate| keep.contains(candidate.position))
+        .filter(|candidate| {
+            !all.iter().any(|rival| {
+                !std::ptr::eq(*candidate, rival)
+                    && rival.priority_key() > candidate.priority_key()
+                    && conflicts(candidate, rival)
+            })
+        })
+        .copied()
+        .collect()
+}
 
-    // A coarse bucket grid over the working area, so the neighbour query is a
-    // handful of buckets rather than a scan of everything. Bucketed at the
-    // exclusion radius, so a conflict is always within one bucket of the
-    // candidate's own.
-    let buckets = CellGrid::new(max_radius_m);
+/// The same rule, with a bucket index so the neighbour query is bounded.
+///
+/// The bucket side is the largest footprint, so a candidate of radius `rᵢ` has
+/// to inspect `⌈(rᵢ + Rmax + c)/b⌉` buckets in every direction. For a
+/// fixed-radius domain with no clearance that is two, giving a five-by-five
+/// neighbourhood — where the old fixed-distance rule needed three-by-three,
+/// because it treated its one number as the whole centre-to-centre inhibition
+/// distance rather than as a physical radius.
+fn thin_bucketed(
+    all: Vec<DomainCandidate>,
+    keep: WorldRect,
+    bucket_m: f64,
+    clearance_m: f64,
+    conflicts: impl Fn(&DomainCandidate, &DomainCandidate) -> bool,
+) -> Vec<DomainCandidate> {
+    let buckets = CellGrid::new(bucket_m);
     let mut index: std::collections::BTreeMap<CellCoord, Vec<usize>> =
         std::collections::BTreeMap::new();
     for (slot, candidate) in all.iter().enumerate() {
@@ -295,16 +470,22 @@ fn thin(
             .push(slot);
     }
 
-    let radius_squared = max_radius_m * max_radius_m;
+    let max_radius = all
+        .iter()
+        .map(|c| c.footprint_radius_m)
+        .fold(0.0f64, f64::max);
+
     let mut kept = Vec::new();
     for (slot, candidate) in all.iter().enumerate() {
         if !keep.contains(candidate.position) {
             continue;
         }
+        let search = candidate.footprint_radius_m + max_radius + clearance_m;
+        let cells = ((search / bucket_m).ceil() as i64).max(1);
         let home = buckets.cell_at(candidate.position);
         let mut excluded = false;
-        'search: for dy in -1..=1 {
-            for dx in -1..=1 {
+        'search: for dy in -cells..=cells {
+            for dx in -cells..=cells {
                 let Some(neighbours) = index.get(&home.offset(dx, dy)) else {
                     continue;
                 };
@@ -313,18 +494,10 @@ fn thin(
                         continue;
                     }
                     let rival = &all[*other];
-                    // Strictly greater, with the identity breaking an exact tie,
-                    // so that of two candidates with equal priority exactly one
-                    // survives rather than both or neither.
-                    let outranks = rival.priority > candidate.priority
-                        || (rival.priority == candidate.priority
-                            && rival.id.rank > candidate.id.rank);
-                    if !outranks {
+                    if rival.priority_key() <= candidate.priority_key() {
                         continue;
                     }
-                    let du = rival.position.u_m - candidate.position.u_m;
-                    let dv = rival.position.v_m - candidate.position.v_m;
-                    if du * du + dv * dv < radius_squared {
+                    if conflicts(candidate, rival) {
                         excluded = true;
                         break 'search;
                     }
@@ -335,7 +508,6 @@ fn thin(
             kept.push(*candidate);
         }
     }
-    let _ = definition;
     kept
 }
 
@@ -453,8 +625,8 @@ mod tests {
         let d = domain(
             0.1,
             4,
-            SpacingPolicy::Exclusion {
-                max_radius_m: radius,
+            SpacingPolicy::PriorityDistance {
+                minimum_centre_distance_m: radius,
             },
         );
         let kept = generate(&DomainRequest {
@@ -479,7 +651,13 @@ mod tests {
         // The reason the test is non-recursive and the working area is grown.
         // A candidate near the edge of one window is in the middle of another,
         // and it must live or die the same way in both.
-        let d = domain(0.1, 4, SpacingPolicy::Exclusion { max_radius_m: 0.15 });
+        let d = domain(
+            0.1,
+            4,
+            SpacingPolicy::PriorityDistance {
+                minimum_centre_distance_m: 0.15,
+            },
+        );
         let seeds = seeds();
 
         let whole = generate(&DomainRequest {
@@ -510,7 +688,13 @@ mod tests {
 
     #[test]
     fn generating_twice_gives_the_same_candidates() {
-        let d = domain(0.15, 6, SpacingPolicy::Exclusion { max_radius_m: 0.1 });
+        let d = domain(
+            0.15,
+            6,
+            SpacingPolicy::PriorityDistance {
+                minimum_centre_distance_m: 0.1,
+            },
+        );
         let request = || DomainRequest {
             definition: &d,
             bounds: rect((-1.0, -1.0), (1.0, 1.0)),
@@ -559,5 +743,209 @@ mod tests {
         d.cell_m = 0.2;
         d.candidates_per_cell = 0;
         assert!(!d.is_well_formed());
+    }
+}
+
+#[cfg(test)]
+mod footprint_tests {
+    use super::*;
+    use terrain_core::seed::RootSeed;
+
+    fn seeds() -> SeedContext {
+        SeedContext::new(
+            RootSeed::new(0x5a17_e33b_0c9d_2f14),
+            DOMAIN_ALGORITHM_VERSION,
+        )
+    }
+
+    fn rect(min: (f64, f64), max: (f64, f64)) -> WorldRect {
+        WorldRect::new(WorldPoint::new(min.0, min.1), WorldPoint::new(max.0, max.1))
+    }
+
+    fn stones(min_m: f64, max_m: f64, clearance_m: f64) -> CandidateDomainDef {
+        CandidateDomainDef {
+            key: DomainKey::new("rock.large").expect("valid"),
+            cell_m: 0.5,
+            candidates_per_cell: 4,
+            spacing: SpacingPolicy::PriorityFootprints {
+                radius: CandidateRadiusPolicy::Uniform { min_m, max_m },
+                clearance_m,
+            },
+        }
+    }
+
+    #[test]
+    fn no_two_survivors_overlap_their_own_footprints() {
+        // The rule, checked against the survivors rather than against the
+        // algorithm. Two stones interpenetrating is the one artefact in this
+        // family that is unmistakable.
+        let definition = stones(0.03, 0.12, 0.01);
+        let kept = generate(&DomainRequest {
+            definition: &definition,
+            bounds: rect((0.0, 0.0), (6.0, 6.0)),
+            seeds: seeds(),
+        });
+        assert!(kept.len() > 20, "only {} survivors", kept.len());
+        for (index, a) in kept.iter().enumerate() {
+            for b in &kept[index + 1..] {
+                let limit = a.footprint_radius_m + b.footprint_radius_m + 0.01;
+                let distance = a.position.distance(b.position);
+                assert!(
+                    distance >= limit - 1.0e-9,
+                    "two stones of {:.3} and {:.3} m sit {distance:.3} m apart",
+                    a.footprint_radius_m,
+                    b.footprint_radius_m
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_variable_radius_domain_produces_a_range_of_sizes() {
+        // Guards the test above from being vacuous: if every radius came out
+        // the same, the sum rule would reduce to a fixed distance and the
+        // variable half would be untested.
+        let definition = stones(0.03, 0.12, 0.0);
+        let kept = generate(&DomainRequest {
+            definition: &definition,
+            bounds: rect((0.0, 0.0), (6.0, 6.0)),
+            seeds: seeds(),
+        });
+        let low = kept
+            .iter()
+            .map(|c| c.footprint_radius_m)
+            .fold(f64::INFINITY, f64::min);
+        let high = kept
+            .iter()
+            .map(|c| c.footprint_radius_m)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(high - low > 0.05, "radii span only {low}..{high}");
+        assert!(low >= 0.03 - 1.0e-9 && high <= 0.12 + 1.0e-9);
+    }
+
+    #[test]
+    fn the_bucketed_search_agrees_with_brute_force() {
+        // The strongest defence against a missed bucket-range case, which is
+        // the one bug in this algorithm that produces a *nearly* correct
+        // result: a few overlapping pairs in a field of thousands.
+        let definition = stones(0.03, 0.12, 0.01);
+        let bounds = rect((0.0, 0.0), (3.0, 3.0));
+        let bucketed = generate(&DomainRequest {
+            definition: &definition,
+            bounds,
+            seeds: seeds(),
+        });
+
+        // The same rule, evaluated against every pair.
+        let all = lay_out(
+            &definition,
+            bounds.expanded(definition.spacing.conflict_reach_m()),
+            &seeds(),
+        );
+        let brute = thin(all, bounds, |a, b| {
+            let limit = a.footprint_radius_m + b.footprint_radius_m + 0.01;
+            squared_distance(a, b) < limit * limit
+        });
+
+        let ids = |set: &[DomainCandidate]| {
+            let mut out: Vec<_> = set.iter().map(|c| c.id).collect();
+            out.sort();
+            out
+        };
+        assert_eq!(ids(&bucketed), ids(&brute));
+    }
+
+    #[test]
+    fn footprint_thinning_agrees_across_a_join() {
+        // The seam property, for the variable-radius rule. A candidate near the
+        // edge of one window is in the middle of another and must live or die
+        // the same way in both.
+        let definition = stones(0.03, 0.12, 0.01);
+        let seeds = seeds();
+        let whole = generate(&DomainRequest {
+            definition: &definition,
+            bounds: rect((0.0, 0.0), (4.0, 2.0)),
+            seeds,
+        });
+        let left = generate(&DomainRequest {
+            definition: &definition,
+            bounds: rect((0.0, 0.0), (2.0, 2.0)),
+            seeds,
+        });
+        let right = generate(&DomainRequest {
+            definition: &definition,
+            bounds: rect((2.0, 0.0), (4.0, 2.0)),
+            seeds,
+        });
+
+        let mut halves: Vec<_> = left.iter().chain(right.iter()).map(|c| c.id).collect();
+        halves.sort();
+        let mut together: Vec<_> = whole.iter().map(|c| c.id).collect();
+        together.sort();
+        assert_eq!(together, halves);
+    }
+
+    #[test]
+    fn a_candidates_radius_is_the_same_whichever_window_computed_it() {
+        // Addressed rather than drawn. If a radius depended on traversal, two
+        // neighbouring plates would thin their shared boundary differently and
+        // the join would show.
+        let definition = stones(0.03, 0.12, 0.0);
+        let seeds = seeds();
+        let left = generate(&DomainRequest {
+            definition: &definition,
+            bounds: rect((0.0, 0.0), (2.0, 2.0)),
+            seeds,
+        });
+        let wide = generate(&DomainRequest {
+            definition: &definition,
+            bounds: rect((-2.0, -2.0), (4.0, 4.0)),
+            seeds,
+        });
+        for candidate in &left {
+            let twin = wide
+                .iter()
+                .find(|other| other.id == candidate.id)
+                .expect("a survivor of the small window survives the large one");
+            assert_eq!(
+                twin.footprint_radius_m.to_bits(),
+                candidate.footprint_radius_m.to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn the_priority_key_is_a_strict_total_order() {
+        // Rank alone is not enough: different cells share ranks, so two
+        // candidates in adjacent cells with equal priority would compare equal
+        // and both survive or both die depending on which was walked first.
+        let definition = stones(0.05, 0.05, 0.0);
+        let all = lay_out(&definition, rect((0.0, 0.0), (2.0, 2.0)), &seeds());
+        let mut keys: Vec<_> = all.iter().map(|c| c.priority_key()).collect();
+        keys.sort();
+        let count = keys.len();
+        keys.dedup();
+        assert_eq!(keys.len(), count, "two candidates share a priority key");
+    }
+
+    #[test]
+    fn a_clearance_pushes_survivors_further_apart() {
+        let bounds = rect((0.0, 0.0), (4.0, 4.0));
+        let close = generate(&DomainRequest {
+            definition: &stones(0.05, 0.05, 0.0),
+            bounds,
+            seeds: seeds(),
+        });
+        let spaced = generate(&DomainRequest {
+            definition: &stones(0.05, 0.05, 0.08),
+            bounds,
+            seeds: seeds(),
+        });
+        assert!(
+            spaced.len() < close.len(),
+            "a clearance of 8 cm kept {} where none kept {}",
+            spaced.len(),
+            close.len()
+        );
     }
 }
