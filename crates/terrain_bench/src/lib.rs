@@ -36,7 +36,6 @@ pub mod fingerprint;
 pub mod fixtures;
 pub mod generic;
 pub mod iso;
-pub mod lab;
 pub mod metrics;
 pub mod report;
 pub mod scenarios;

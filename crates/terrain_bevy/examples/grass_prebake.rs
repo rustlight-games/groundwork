@@ -1,4 +1,4 @@
-//! Trace the pages the game will ask for, so `./run` shows the good grass.
+//! Trace the pages the game will ask for, so `terrain_preview` shows traced grass.
 //!
 //! ```sh
 //! cargo run --release -p terrain_bevy --example grass_prebake
@@ -12,20 +12,21 @@
 //!
 //! This walks the same page grid [`terrain_bevy::plugin`] streams, traces each one,
 //! and stores it where [`terrain_bevy::cache`] will find it. Ground that has not
-//! been traced falls back to the rasteriser, so the game always runs — the
-//! picture just improves as the cache fills.
+//! been traced is ground the game does not draw — see `crate::cache`, "Cycles
+//! is the only renderer" — so the picture improves as the cache fills rather
+//! than falling back to anything cheaper.
 //!
 //! Pages already in the cache are skipped, so an interrupted run resumes.
 
 use glam::IVec2;
 
-use terrain_bake::bake::BakeParams;
 use terrain_bevy::cache;
 use terrain_bevy::plugin::PAGE_PIXELS;
 use terrain_cycles::cycles::{self, RenderSettings};
 use terrain_generators::field::WorldField;
 use terrain_generators::page::Page;
 use terrain_generators::scene::GrassScene;
+use terrain_generators::style::GrassParams;
 
 fn main() {
     let options = Options::parse();
@@ -35,7 +36,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    let mut params = BakeParams {
+    let mut params = GrassParams {
         seed: options.seed,
         ..Default::default()
     };
@@ -95,7 +96,8 @@ fn main() {
                 options.supersample as f32,
             );
 
-            if !options.force && cache::load_from(&cache::directory(), &page, &params).is_some() {
+            if !options.force && cache::load_from(&cache::directory(), &page, params.seed).is_some()
+            {
                 skipped += 1;
                 continue;
             }
@@ -104,7 +106,7 @@ fn main() {
                 samples: options.samples,
                 ..Default::default()
             };
-            let grown = GrassScene::build(fine, &field, &params.grass());
+            let grown = GrassScene::build(fine, &field, &params);
             let scene = cycles::CyclesScene::build(&grown, &field, settings);
             let png = scratch.join("page.png");
             let _ = std::fs::remove_file(&png);
@@ -137,7 +139,7 @@ fn main() {
             match to_rgba(&png, PAGE_PIXELS * options.supersample)
                 .map(|bytes| downsample(&bytes, PAGE_PIXELS, options.supersample))
             {
-                Some(bytes) => match cache::store(&page, &params, &bytes) {
+                Some(bytes) => match cache::store(&page, params.seed, &bytes) {
                     Ok(_) => traced += 1,
                     Err(error) => {
                         eprintln!("  {coordinate}: cannot store: {error}");
@@ -167,9 +169,9 @@ fn main() {
     if failed > 0 {
         std::process::exit(1);
     }
-    println!("\nTERRAIN_GRASS_TRACED=1 ./run   to see them.");
-    println!("Pages outside the traced region fall back to the rasteriser, which");
-    println!("is a different picture — trace a radius that covers the view.");
+    println!("\nTERRAIN_GRASS_TRACED=1 cargo run -p terrain_preview   to see them.");
+    println!("Pages outside the traced region are not drawn at all — trace a");
+    println!("radius that covers the view.");
 }
 
 /// Box-filter a traced page down to the size the game stores.
@@ -246,7 +248,7 @@ impl Options {
             // one, which is the point where the canopy stops averaging itself
             // away. Four is visibly better still and costs nearly twice as much.
             supersample: 3,
-            seed: BakeParams::default().seed,
+            seed: GrassParams::default().seed,
             samples: 192,
             density: 8.0,
             length: 1.6,

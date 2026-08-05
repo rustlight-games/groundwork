@@ -274,8 +274,8 @@ impl Bed<'_> {
 /// walks on every page — so a metre added here is paid for a few hundred
 /// thousand times.
 ///
-/// [`the baker's tests::the_canopy_bound_is_never_beaten`] sweeps the
-/// vocabulary against it rather than trusting this paragraph.
+/// [`tests::the_canopy_bound_is_never_beaten`] sweeps the vocabulary against
+/// it rather than trusting this paragraph.
 pub const CANOPY_METRES: f32 = 1.20;
 
 /// Walk a jittered grid over the page's world footprint, placing one thing per
@@ -1852,6 +1852,83 @@ fn leaf_cluster(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::quality::GrassRenderQuality;
+    use crate::scene::GrassScene;
+
+    #[test]
+    fn the_canopy_bound_is_never_beaten() {
+        // The shadow guard band is sized from `CANOPY_METRES`, so a mark that
+        // stands taller than it can cast onto a page from outside the band —
+        // and the symptom is not a clipped shadow, it is a missing one, on the
+        // pages whose casters happened to fall outside.
+        //
+        // Swept over real pages rather than reasoned about, because the bound is
+        // the product of four independent multipliers and any one of them can be
+        // raised without the others being looked at.
+        let mut tallest = 0.0f32;
+        for (index, origin) in crate::fixtures::PLACES.iter().enumerate() {
+            let params = GrassParams {
+                seed: 0x5eed_1234u64.wrapping_add(index as u64 * 0x9e37_79b9),
+                quality: GrassRenderQuality::Reference,
+                ..GrassParams::default()
+            };
+            let page = Page::new(*origin, 192, 192);
+            let field = WorldField::lit_by(params.seed, params.light);
+            let scene = GrassScene::build(page, &field, &params);
+            tallest = tallest.max(scene.canopy_ceiling());
+        }
+        assert!(
+            tallest <= CANOPY_METRES,
+            "the field grows {tallest:.3} m of canopy against a {CANOPY_METRES} m \
+             bound the shadow guard band is sized from"
+        );
+        // And not so far over that the band is costing area for nothing: every
+        // extra metre of reach widens the rectangle every scatter pass walks.
+        assert!(
+            tallest > CANOPY_METRES * 0.55,
+            "the canopy bound is {CANOPY_METRES} m for a field that reaches \
+             {tallest:.3} m, which is guard band nobody needs"
+        );
+    }
+
+    #[test]
+    fn the_shadow_guard_covers_every_caster_that_can_reach_a_page() {
+        // Measured against the sun rather than against a constant, and swept
+        // down to the lowest elevation the renderer claims to support. Getting
+        // this wrong at 35° and right at 55° is exactly the shape of the bug
+        // this exists to prevent.
+        let field = WorldField::lit_by(1, GrassParams::default().light);
+        for degrees in [35.0f32, 45.0, 55.0] {
+            let elevation = degrees.to_radians();
+            let params = GrassParams {
+                quality: GrassRenderQuality::Reference,
+                light: crate::sun::Key {
+                    azimuth: 0.0,
+                    elevation,
+                }
+                .direction(),
+                ..GrassParams::default()
+            };
+            for detail in [1.0f32, 0.5, 0.25] {
+                let page = Page::at_detail(Vec2::new(-64.0, -64.0), 128, 128, detail);
+                let bed = Bed {
+                    page: &page,
+                    field: &field,
+                    params: &params,
+                };
+                let (low, high) = footprint(&page, bed.caster_reach());
+                // Where the page itself is, without any band at all.
+                let (bare_low, bare_high) = footprint(&page, -1.0e6);
+                let needed = CANOPY_METRES / elevation.tan();
+                let margin = (bare_low - low).min(high - bare_high);
+                assert!(
+                    margin.x >= needed && margin.y >= needed,
+                    "at {degrees}° detail {detail} the band gives {margin:?} m \
+                     where a caster reaches {needed:.3} m"
+                );
+            }
+        }
+    }
 
     #[test]
     fn a_crown_stays_inside_the_guard_band() {

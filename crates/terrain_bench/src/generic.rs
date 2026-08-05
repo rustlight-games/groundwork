@@ -273,14 +273,14 @@ pub fn request_for_page(page: &Page) -> SceneRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use terrain_bake::bake::BakeParams;
     use terrain_generators::field::WorldField;
+    use terrain_generators::style::GrassParams;
 
-    fn grown() -> (GrassScene, WorldField, BakeParams) {
-        let params = BakeParams::default();
+    fn grown() -> (GrassScene, WorldField, GrassParams) {
+        let params = GrassParams::default();
         let field = WorldField::lit_by(params.seed, params.light);
         let page = Page::new(Vec2::new(-64.0, -64.0), 64, 64);
-        let scene = GrassScene::build(page, &field, &params.grass());
+        let scene = GrassScene::build(page, &field, &params);
         (scene, field, params)
     }
 
@@ -337,11 +337,10 @@ mod tests {
         let other = GrassScene::build(
             grass.page,
             &other_field,
-            &BakeParams {
+            &GrassParams {
                 seed: params.seed ^ 1,
                 ..params
-            }
-            .grass(),
+            },
         );
         assert_ne!(
             scene_from_grass(&grass, digest()).fingerprint(),

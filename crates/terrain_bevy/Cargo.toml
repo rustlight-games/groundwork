@@ -9,7 +9,6 @@ description = "The Bevy integration: page cache, material, and the plugin that d
 [dependencies]
 terrain_core.workspace = true
 terrain_generators.workspace = true
-terrain_bake.workspace = true
 bevy.workspace = true
 
 [dev-dependencies]

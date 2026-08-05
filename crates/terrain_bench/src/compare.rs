@@ -49,8 +49,7 @@
 
 use glam::Vec3;
 
-use terrain_bake::palette;
-use terrain_bake::surface::blur;
+use terrain_scene::{blur, to_bytes};
 
 /// Radius of the local window structural similarity is computed over.
 ///
@@ -156,13 +155,13 @@ impl Similarity {
 /// Round a plate through the 8-bit encoding it is stored in.
 ///
 /// The comparison is only meaningful in one space, and this is it: what a page
-/// actually holds after `palette::to_bytes`. Everything measured below runs on
-/// the output of this function on both sides.
+/// actually holds after [`to_bytes`]. Everything measured below runs on the
+/// output of this function on both sides.
 pub fn quantise(colours: &[Vec3]) -> Vec<Vec3> {
     colours
         .iter()
         .map(|c| {
-            let bytes = palette::to_bytes(*c);
+            let bytes = to_bytes(*c);
             Vec3::new(bytes[0] as f32, bytes[1] as f32, bytes[2] as f32) / 255.0
         })
         .collect()
@@ -259,9 +258,9 @@ pub fn compare(candidate: &[Vec3], baseline: &[Vec3], width: usize, height: usiz
 /// Mean structural similarity over two luminance images.
 ///
 /// The standard formulation, with the local statistics taken through
-/// [`terrain_bake::surface::blur`] rather than a Gaussian. The window shape moves the
-/// third decimal and nothing else; using the blur already in the crate means
-/// the comparison has no machinery of its own to go wrong.
+/// [`terrain_scene::blur`] rather than a Gaussian. The window shape moves the
+/// third decimal and nothing else; using the blur already shared with the
+/// overlay code means the comparison has no machinery of its own to go wrong.
 pub fn ssim(candidate: &[f32], baseline: &[f32], width: usize, height: usize) -> f32 {
     if width == 0 || height == 0 {
         return 1.0;

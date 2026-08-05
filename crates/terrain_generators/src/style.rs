@@ -1,17 +1,14 @@
 //! What the generator is told, and nothing about how it is drawn.
 //!
-//! Two structs, and the boundary between them is what lets the generator be a
-//! separate crate from the rasteriser.
-//!
 //! [`GrassParams`] is the *entire* determinant of a meadow: which world, how
 //! hard to work, where the sun is, and what the grass is made of. Nothing else
 //! reaches placement. So a scene is a pure function of one small value, and two
-//! renderers handed the same one are looking at the same field.
+//! renderers handed the same one are looking at the same field — the same
+//! guarantee that used to be a crate boundary against the rasteriser, and is
+//! now a boundary against Cycles alone.
 //!
 //! [`GrassStyle`] is the fourth of those — the population counts and the
-//! morphology. Its counterpart, `PreviewRasterStyle`, stayed with the baker,
-//! because twenty-three of the original forty parameters decide only the
-//! picture. See the baker's `PreviewRasterStyle`.
+//! morphology.
 
 use glam::Vec3;
 
@@ -23,19 +20,19 @@ use crate::quality::GrassRenderQuality;
 /// Four things: which world, how hard to work, where the sun is, and what the
 /// meadow is made of.
 ///
-/// It exists so that a crate boundary can. While placement took a whole
-/// [`BakeParams`], every module that decided where a blade goes depended on the
-/// baker — so the generator could not be separated from the rasteriser without
-/// separating a struct first. Now the dependency points one way: the baker knows
-/// about the generator's parameters, and the generator has never heard of the
-/// baker's.
+/// It exists so that a crate boundary can. Placement used to take a whole
+/// `BakeParams`, so every module that decided where a blade goes depended on
+/// the rasteriser — the generator could not be separated from it without
+/// separating a struct first. The rasteriser is gone now, but the boundary
+/// stayed: `terrain_generators` still knows nothing about how a renderer
+/// draws.
 ///
 /// The sun is here, and it is the one field worth justifying. A meadow should
 /// not depend on the light, and almost none of it does — but the mound field
-/// shades its own domes analytically and needs to know which way the sun is, so
-/// the light reaches placement through this. That coupling is real, is the
-/// reason `light` is not simply part of [`PreviewRasterStyle`], and deserves its
-/// own measured change rather than being unpicked during a migration.
+/// shades its own domes analytically and needs to know which way the sun is,
+/// so the light reaches placement through this. That coupling is real and
+/// deserves its own measured change rather than being unpicked during a
+/// migration.
 #[derive(Clone, Copy, Debug)]
 pub struct GrassParams {
     pub seed: u64,
