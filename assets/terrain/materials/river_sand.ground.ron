@@ -99,7 +99,7 @@
                 // single largest figure in the shipped set, against loam's
                 // 0.45, and it is why a wet bar looks poured rather than
                 // heaped.
-                saturation_flattening: 0.78,
+                saturation_flattening: 0.58,
                 film_ior: 1.333,
             ),
             // Wide, and wider than loam's, which is the opposite of what the

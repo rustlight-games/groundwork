@@ -29,6 +29,7 @@ arrives reflected.
 """
 
 import json
+import math
 import os
 import sys
 import time
@@ -1299,6 +1300,20 @@ WET_BITE = 0.35
 # nothing — see the note in `soil_branch`. What lives below it is roughness.
 GRAIN_FLOOR_M = 0.011
 
+# Where the bright patch of sky sits, in degrees, and how tight and bright.
+#
+# The bearing is the camera's azimuth plus half a turn — the direction a
+# horizontal mirror would have to reflect to reach the lens. See `build_world`
+# for why the key light is not moved there instead.
+#
+# The tightness is the exponent on a cosine, so 40 gives a patch about fifteen
+# degrees across: small enough that its diffuse contribution is negligible and
+# a dry surface cannot find it, wide enough that a wet one does not have to be
+# exactly level to catch it.
+SKY_PATCH_BEARING_DEG = 225.0
+SKY_PATCH_TIGHTNESS = 220.0
+SKY_PATCH_STRENGTH = 0.85
+
 CAVITY_OCCLUSION = 0.80
 
 # Where the cavity signal starts and finishes counting.
@@ -2148,7 +2163,70 @@ def build_world(sky):
     links.new(coordinate.outputs["Generated"], mapping.inputs["Vector"])
     links.new(mapping.outputs["Vector"], gradient.inputs["Vector"])
     links.new(gradient.outputs["Fac"], ramp.inputs["Fac"])
-    links.new(ramp.outputs["Color"], background.inputs["Color"])
+    # ## A bright patch of sky where a wet surface can see it
+    #
+    # For a wet highlight to reach this camera off horizontal ground, the light
+    # has to sit near the camera's azimuth plus half a turn — about 225° — and
+    # the key sits at 125° because that is where the grass was tuned. Moving the
+    # key was tried and reverted: it put a broad specular wash over the whole
+    # plate and turned `meadow_path`'s track into wet concrete.
+    #
+    # This is the other way round. A small, bright region of *sky* at the
+    # reflection bearing contributes almost nothing diffuse, because its solid
+    # angle is tiny — but a wet film at a roughness of two tenths reflects it
+    # sharply, so the sheen appears exactly on the surfaces that are wet and
+    # nowhere else. It is infinite, so it is identical across every trace slice,
+    # which a second lamp would not be.
+    #
+    # It is a fixed-camera art-direction decision and worth naming as one: a
+    # real sky does have bright and dark quarters, but this one is placed where
+    # it is because of where the camera is.
+    patch_vector = nodes.new("ShaderNodeTexCoord")
+    patch_vector.location = (-1200, -400)
+    separate = nodes.new("ShaderNodeSeparateXYZ")
+    separate.location = (-1000, -400)
+    links.new(patch_vector.outputs["Generated"], separate.inputs["Vector"])
+
+    # Direction on the ground plane, and height above it.
+    bearing = nodes.new("ShaderNodeMath")
+    bearing.operation = "ARCTAN2"
+    bearing.location = (-820, -400)
+    links.new(separate.outputs["Y"], bearing.inputs[0])
+    links.new(separate.outputs["X"], bearing.inputs[1])
+
+    # How near the reflection bearing this direction is, as a cosine so it wraps
+    # without a branch.
+    offset = nodes.new("ShaderNodeMath")
+    offset.operation = "SUBTRACT"
+    offset.location = (-660, -400)
+    links.new(bearing.outputs["Value"], offset.inputs[0])
+    offset.inputs[1].default_value = math.radians(SKY_PATCH_BEARING_DEG)
+
+    aligned = nodes.new("ShaderNodeMath")
+    aligned.operation = "COSINE"
+    aligned.location = (-520, -400)
+    links.new(offset.outputs["Value"], aligned.inputs[0])
+
+    tightness = nodes.new("ShaderNodeMath")
+    tightness.operation = "POWER"
+    tightness.location = (-380, -400)
+    links.new(aligned.outputs["Value"], tightness.inputs[0])
+    tightness.inputs[1].default_value = SKY_PATCH_TIGHTNESS
+    tightness.use_clamp = True
+
+    patch = nodes.new("ShaderNodeMix")
+    patch.data_type = "RGBA"
+    patch.location = (-220, 0)
+    links.new(ramp.outputs["Color"], live(patch.inputs, "A"))
+    live(patch.inputs, "B").default_value = (
+        SKY_PATCH_STRENGTH,
+        SKY_PATCH_STRENGTH,
+        SKY_PATCH_STRENGTH * 0.92,
+        1.0,
+    )
+    links.new(tightness.outputs["Value"], live(patch.inputs, "Factor"))
+
+    links.new(live(patch.outputs, "Result"), background.inputs["Color"])
     links.new(background.outputs["Background"], output.inputs["Surface"])
 
 

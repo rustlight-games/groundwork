@@ -94,7 +94,7 @@
                 // loses its edges and the surface reads as poured rather than
                 // crumbled. A third was not visible against the mound field's
                 // own relief.
-                saturation_flattening: 0.70,
+                saturation_flattening: 0.48,
             ),
             roughness_dry: (0.78, 0.98),
             ior: 1.50,

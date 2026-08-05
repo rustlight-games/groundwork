@@ -73,7 +73,7 @@
                 // hide the sheen.
                 wet_mid: (0.0118, 0.0106, 0.0092),
                 roughness_wet: 0.24,
-                saturation_flattening: 0.62,
+                saturation_flattening: 0.42,
             ),
             roughness_dry: (0.82, 0.96),
             ior: 1.48,
