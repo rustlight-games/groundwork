@@ -144,6 +144,8 @@ pub struct CyclesScene {
     pub ground: Vec<f32>,
     /// Bare-earth share per ground sample, `0..1`.
     pub earth: Vec<f32>,
+    /// How wet the ground is per sample, `0..1`.
+    pub wetness: Vec<f32>,
     pub ground_rows: usize,
     pub ground_columns: usize,
     /// World-space AABB the ground grid spans.
@@ -429,7 +431,7 @@ impl CyclesScene {
         points.append(&mut halo_points);
         attributes.append(&mut halo_attributes);
 
-        let (footprint, ground, earth, rows, columns) =
+        let (footprint, ground, earth, wetness, rows, columns) =
             sample_ground(&page, field, settings.visible_ground);
         let camera = Camera::for_page(&page, scene.canopy_ceiling());
 
@@ -439,6 +441,7 @@ impl CyclesScene {
             attributes,
             ground,
             earth,
+            wetness,
             ground_rows: rows,
             ground_columns: columns,
             footprint,
@@ -469,6 +472,7 @@ impl CyclesScene {
         )?;
         write_f32(&directory.join("ground.bin"), self.ground.iter())?;
         write_f32(&directory.join("earth.bin"), self.earth.iter())?;
+        write_f32(&directory.join("wetness.bin"), self.wetness.iter())?;
 
         let header = directory.join("scene.json");
         std::fs::write(&header, self.header_json())?;
@@ -525,6 +529,7 @@ impl CyclesScene {
   "ground": {{
     "path": "ground.bin",
     "earth": "earth.bin",
+    "wetness": "wetness.bin",
     "rows": {},
     "columns": {},
     "low": [{:.6}, {:.6}],
@@ -701,7 +706,7 @@ fn sample_ground(
     page: &Page,
     field: &WorldField,
     visible: Option<(Vec2, Vec2)>,
-) -> ((Vec2, Vec2), Vec<f32>, Vec<f32>, usize, usize) {
+) -> ((Vec2, Vec2), Vec<f32>, Vec<f32>, Vec<f32>, usize, usize) {
     let (low, high) = match visible {
         // The ground ends exactly at the layout, because that edge *is* the
         // picture's silhouette. A margin here would put a rim of unowned ground
@@ -754,6 +759,11 @@ fn sample_ground(
     // shade a track as earth and a meadow floor as meadow floor rather than
     // painting every substrate the same colour.
     let mut earth = Vec::with_capacity(rows * columns);
+    // How wet it is. Carried separately from the earth share because they are
+    // independent: a track can be bone dry and a meadow floor can be sodden, and
+    // wet ground is emphatically not dry ground turned down — it darkens toward
+    // its own square, warms, and goes glossy.
+    let mut wetness = Vec::with_capacity(rows * columns);
     for row in 0..rows {
         for column in 0..columns {
             let blender = Vec2::new(
@@ -768,9 +778,10 @@ fn sample_ground(
             // so a laboratory meadow's ground is the surface it always was.
             heights.push(field.sample(world).height * GROUND_RELIEF + field.earth_relief(world));
             earth.push(field.earth_share(world));
+            wetness.push(field.earth_wetness(world));
         }
     }
-    ((low, high), heights, earth, rows, columns)
+    ((low, high), heights, earth, wetness, rows, columns)
 }
 
 fn write_f32<'a>(path: &Path, values: impl Iterator<Item = &'a f32>) -> io::Result<()> {

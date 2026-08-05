@@ -245,12 +245,15 @@ def build_ground(scene_dir, spec):
     # between them, because the boundary is a *blend*: the compiler already
     # decided the ragged edge, and splitting the mesh at it would quantise that
     # edge to the triangle grid and undo the work.
-    earth_path = spec.get("earth")
-    if earth_path:
-        earth = np.fromfile(os.path.join(scene_dir, earth_path), dtype=np.float32)
-        if earth.size == rows * columns:
-            layer = mesh.attributes.new(name="earth", type="FLOAT", domain="POINT")
-            layer.data.foreach_set("value", earth.tolist())
+    for name in ("earth", "wetness"):
+        path = spec.get(name)
+        if not path:
+            continue
+        values = np.fromfile(os.path.join(scene_dir, path), dtype=np.float32)
+        if values.size != rows * columns:
+            continue
+        layer = mesh.attributes.new(name=name, type="FLOAT", domain="POINT")
+        layer.data.foreach_set("value", values.tolist())
 
     obj = bpy.data.objects.new("ground", mesh)
     bpy.context.collection.objects.link(obj)
@@ -735,7 +738,59 @@ def ground_material():
     links.new(live(grained.outputs, "Result"), live(surfaced.inputs, "A"))
     links.new(live(bare.outputs, "Color"), live(surfaced.inputs, "B"))
     links.new(exposed.outputs["Result"], live(surfaced.inputs, "Factor"))
-    links.new(live(surfaced.outputs, "Result"), principled.inputs["Base Color"])
+    # ## Wet ground is not dry ground turned down
+    #
+    # Water fills the pores, so the air-soil boundary that scattered light
+    # diffusely becomes a water-soil boundary: internal scattering falls,
+    # absorption rises, and the outer surface becomes a smooth water-air
+    # interface. Three things follow, and doing only the first is what makes wet
+    # ground read as ground in shadow instead of wet ground.
+    #
+    #   albedo      darkens toward its own square
+    #   hue         warms — the film absorbs blue and green harder than red
+    #   roughness   collapses, from about 0.75 damp to 0.20 saturated
+    #
+    # Production shaders do not use subsurface scattering for mud; it is a rough
+    # dark dielectric under a glossy coat. So there is no SSS here either.
+    damp_attr = nodes.new("ShaderNodeAttribute")
+    damp_attr.location = (-1600, -560)
+    damp_attr.attribute_name = "wetness"
+
+    # Only earth gets wet in this sense. A sodden meadow floor is hidden under
+    # the canopy anyway, and darkening it would only deepen shadows that are
+    # already deep.
+    wet = nodes.new("ShaderNodeMath")
+    wet.operation = "MULTIPLY"
+    wet.location = (-1350, -560)
+    links.new(damp_attr.outputs["Fac"], wet.inputs[0])
+    links.new(exposed.outputs["Result"], wet.inputs[1])
+
+    squared = nodes.new("ShaderNodeMix")
+    squared.data_type = "RGBA"
+    squared.blend_type = "MULTIPLY"
+    squared.location = (-480, 60)
+    live(squared.inputs, "Factor").default_value = 1.0
+    links.new(live(surfaced.outputs, "Result"), live(squared.inputs, "A"))
+    links.new(live(surfaced.outputs, "Result"), live(squared.inputs, "B"))
+
+    # Squaring outright is right for standing water and too strong for damp
+    # earth, so the square is lifted back toward the dry value and mixed in by
+    # how wet the ground actually is.
+    lifted = nodes.new("ShaderNodeMix")
+    lifted.data_type = "RGBA"
+    lifted.blend_type = "MULTIPLY"
+    lifted.location = (-360, 60)
+    live(lifted.inputs, "Factor").default_value = 1.0
+    links.new(live(squared.outputs, "Result"), live(lifted.inputs, "A"))
+    live(lifted.inputs, "B").default_value = (4.2, 3.9, 3.4, 1.0)
+
+    wetted = nodes.new("ShaderNodeMix")
+    wetted.data_type = "RGBA"
+    wetted.location = (-240, 160)
+    links.new(live(surfaced.outputs, "Result"), live(wetted.inputs, "A"))
+    links.new(live(lifted.outputs, "Result"), live(wetted.inputs, "B"))
+    links.new(wet.outputs["Value"], live(wetted.inputs, "Factor"))
+    links.new(live(wetted.outputs, "Result"), principled.inputs["Base Color"])
 
     # The bump. Two scales, because soil has both clods and grit, and a single
     # frequency reads as sandpaper.
@@ -770,7 +825,18 @@ def ground_material():
     rough.inputs["To Min"].default_value = 0.78
     rough.inputs["To Max"].default_value = 0.98
     links.new(patch.outputs["Fac"], rough.inputs["Value"])
-    links.new(rough.outputs["Result"], principled.inputs["Roughness"])
+
+    # Water fills the micro-cavities before it does anything else, so the first
+    # thing wetness does is flatten the microstructure — which is a roughness
+    # change, not a colour one. This is most of why wet ground reads as wet: the
+    # sheen arrives before the darkening is even noticeable.
+    wet_rough = nodes.new("ShaderNodeMix")
+    wet_rough.data_type = "FLOAT"
+    wet_rough.location = (-420, -420)
+    links.new(rough.outputs["Result"], live(wet_rough.inputs, "A"))
+    live(wet_rough.inputs, "B").default_value = 0.20
+    links.new(wet.outputs["Value"], live(wet_rough.inputs, "Factor"))
+    links.new(live(wet_rough.outputs, "Result"), principled.inputs["Roughness"])
 
     links.new(principled.outputs["BSDF"], output.inputs["Surface"])
     return material

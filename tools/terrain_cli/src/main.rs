@@ -1671,14 +1671,3 @@ fn vegetated_materials(
         .map(|(index, _)| terrain_core::MaterialIndex(index as u16))
         .collect()
 }
-
-/// The ground a resolved frame's plate is *about*.
-fn framing_visible(
-    frame: &terrain_scene::ResolvedIsoFrame,
-) -> Option<terrain_bake::bake::VisibleGround> {
-    let bounds = frame.layout.visible_bounds();
-    Some(terrain_bake::bake::VisibleGround::new(
-        terrain_bake::bake::vec2(bounds.min.u_m as f32, bounds.min.v_m as f32),
-        terrain_bake::bake::vec2(bounds.max.u_m as f32, bounds.max.v_m as f32),
-    ))
-}

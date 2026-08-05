@@ -1,0 +1,361 @@
+// A narrow footpath, meadow on both sides.
+//
+// The transition test that `meadow_path` cannot do. That document puts one
+// boundary across the plate with grass on one side and earth on the other, which
+// proves the blend works and says nothing about what happens when two boundaries
+// come close together.
+//
+// Here the whole track is under a metre wide, so the two edges are near enough
+// to interfere:
+//
+//   - the **suppression bands overlap**. Vegetation is thinned from both sides
+//     at once in the middle, and because the channel composes by `Multiply` the
+//     two suppressions compound rather than fighting. A channel that composed by
+//     `Min` or `Replace` would let the second band undo the first and the middle
+//     of the track would grow grass.
+//   - the **realised boundary has nowhere to wander**. The transition solver
+//     moves a contour by roughly amplitude over gradient, so a tight band gets a
+//     crisp edge from the same raggedness setting that gives a wide band big
+//     interpenetrating islands. This is the crisp case; `meadow_path` is the
+//     other one. Same numbers, and the difference is authored entirely in the
+//     band widths below.
+//   - **the earth never reaches its loose state**. Compaction covers the whole
+//     width of a path this narrow, so the clod relief stays low and the track
+//     reads as packed rather than churned — which is what a footpath is.
+//
+// If the middle of this track grows grass, or if its density is visibly higher
+// than the meadow beside it, the shared candidate field is not being shared.
+(
+    format: "terrain-document",
+    format_version: 1,
+    document: (
+        coordinate_system: "PlanarMetres",
+        root_seed: "3c81f0d92ba64e57",
+
+        metadata: (
+            name: "Narrow track",
+            description: "A footpath under a metre wide, with meadow on both sides.",
+        ),
+
+        materials: [
+            (
+                key: "meadow_soil",
+                display_name: "Meadow Soil",
+                appearance: "surface.meadow_soil",
+            ),
+            (
+                key: "dirt_compacted",
+                display_name: "Compacted Dirt",
+                appearance: "surface.dirt_compacted",
+            ),
+        ],
+
+        modifier_channels: [
+            (
+                key: "vegetation_density",
+                display_name: "Vegetation density",
+                range: (0.0, 1.5),
+                default_value: 1.0,
+                // Multiply, and on a track this narrow that choice is
+                // load-bearing rather than a preference — see the note above.
+                composition: "Multiply",
+                unit: "Unitless",
+            ),
+            (
+                key: "tuft_density",
+                display_name: "Grass tuft density",
+                range: (0.0, 1.5),
+                default_value: 1.0,
+                composition: "Multiply",
+                unit: "Unitless",
+            ),
+            (
+                key: "fine_density",
+                display_name: "Fine grass density",
+                range: (0.0, 1.5),
+                default_value: 1.0,
+                composition: "Multiply",
+                unit: "Unitless",
+            ),
+            (
+                key: "thatch_density",
+                display_name: "Thatch density",
+                range: (0.0, 1.5),
+                default_value: 0.4,
+                composition: "Max",
+                unit: "Unitless",
+            ),
+            (
+                key: "flower_abundance",
+                display_name: "Flower abundance",
+                range: (0.0, 1.0),
+                default_value: 0.3,
+                composition: "Max",
+                unit: "Unitless",
+            ),
+            (
+                key: "stone_abundance",
+                display_name: "Stone abundance",
+                range: (0.0, 1.0),
+                default_value: 0.12,
+                composition: "Max",
+                unit: "Unitless",
+            ),
+            (
+                key: "grit_abundance",
+                display_name: "Loose material",
+                range: (0.0, 1.0),
+                default_value: 0.0,
+                composition: "Max",
+                unit: "Unitless",
+            ),
+            (
+                key: "soil_compaction",
+                display_name: "Soil compaction",
+                range: (0.0, 1.0),
+                default_value: 0.1,
+                composition: "Max",
+                unit: "Unitless",
+            ),
+            (
+                key: "soil_moisture",
+                display_name: "Soil moisture",
+                range: (0.0, 1.0),
+                default_value: 0.45,
+                composition: "Max",
+                unit: "Unitless",
+            ),
+        ],
+
+        sources: [
+            (
+                key: "everywhere",
+                source: Constant((value: 1.0)),
+            ),
+            (
+                key: "track",
+                source: SplineDistance((
+                    asset: "features/narrow_track.spline.ron",
+                    // Much tighter than the wide path's six metres. The bound
+                    // sizes the spatial index as well as the value, and nothing
+                    // here reads the spline past a metre and a half.
+                    max_distance_m: 2.5,
+                )),
+            ),
+            (
+                key: "meadow_richness",
+                source: Noise((
+                    kind: "Perlin",
+                    frequency_per_m: 0.35,
+                    octaves: 3,
+                    lacunarity: 2.0,
+                    gain: 0.5,
+                    stream: "meadow",
+                )),
+            ),
+            (
+                key: "damp_hollows",
+                source: Noise((
+                    kind: "Perlin",
+                    frequency_per_m: 0.6,
+                    octaves: 2,
+                    lacunarity: 2.0,
+                    gain: 0.5,
+                    stream: "damp",
+                )),
+            ),
+        ],
+
+        layers: [
+            (
+                key: "base_meadow",
+                mask: Source("everywhere"),
+                operation: Material((
+                    material: "meadow_soil",
+                    mode: "Replace",
+                    amount: 1.0,
+                )),
+            ),
+            (
+                key: "track_material",
+                // 36 cm of bare core, and the ground is meadow again 62 cm from
+                // the centreline. Under a metre wide all told.
+                mask: Profile((
+                    source: "track",
+                    shape: SmoothBand((inner_m: 0.18, outer_m: 0.62)),
+                )),
+                operation: Material((
+                    material: "dirt_compacted",
+                    mode: "Replace",
+                    amount: 1.0,
+                )),
+            ),
+            (
+                key: "track_depression",
+                mask: Profile((
+                    source: "track",
+                    shape: SmoothBand((inner_m: 0.16, outer_m: 0.58)),
+                )),
+                // Shallower than the wide path's six centimetres. A footpath is
+                // worn, not rutted.
+                operation: Microrelief((mode: "Add", metres: -0.035)),
+            ),
+            (
+                key: "track_compaction",
+                mask: Profile((
+                    source: "track",
+                    shape: SmoothBand((inner_m: 0.20, outer_m: 0.60)),
+                )),
+                operation: Modifier((
+                    channel: "soil_compaction",
+                    mode: "Max",
+                    value: 0.92,
+                )),
+            ),
+            (
+                key: "track_vegetation_suppression",
+                mask: Profile((
+                    source: "track",
+                    // Wider than the material band by 26 cm, the same
+                    // relationship the wide path uses. Grass thins before the
+                    // ground stops being grass at every scale.
+                    shape: SmoothBand((inner_m: 0.20, outer_m: 0.88)),
+                )),
+                operation: Modifier((
+                    channel: "vegetation_density",
+                    mode: "Multiply",
+                    value: 0.05,
+                )),
+            ),
+            (
+                key: "track_fringe_thatch",
+                mask: Profile((
+                    source: "track",
+                    shape: SmoothBand((inner_m: 0.62, outer_m: 1.10)),
+                )),
+                operation: Modifier((
+                    channel: "thatch_density",
+                    mode: "Max",
+                    value: 1.1,
+                )),
+            ),
+            (
+                key: "track_grit",
+                mask: Profile((
+                    source: "track",
+                    shape: SmoothBand((inner_m: 0.15, outer_m: 0.70)),
+                )),
+                operation: Modifier((
+                    channel: "grit_abundance",
+                    mode: "Max",
+                    value: 1.0,
+                )),
+            ),
+            (
+                key: "rich_meadow",
+                mask: Profile((
+                    source: "meadow_richness",
+                    shape: Ramp((low: 0.05, high: 0.65)),
+                )),
+                operation: Modifier((
+                    channel: "flower_abundance",
+                    mode: "Max",
+                    value: 0.9,
+                )),
+            ),
+            (
+                key: "damp_ground",
+                mask: Profile((
+                    source: "damp_hollows",
+                    shape: Ramp((low: 0.1, high: 0.7)),
+                )),
+                operation: Modifier((
+                    channel: "soil_moisture",
+                    mode: "Max",
+                    value: 0.9,
+                )),
+            ),
+        ],
+
+        populations: [
+            (
+                key: "meadow_tufts",
+                recipe: "population.grass_tuft",
+                seed_stream: "grass",
+                material_affinity: [
+                    ("meadow_soil", 1.0),
+                    ("dirt_compacted", 0.15),
+                ],
+                abundance_channel: Some("tuft_density"),
+                parameters: [
+                    ("density", Number(240.0)),
+                    ("length_m", Number(0.19)),
+                    ("width_m", Number(0.0035)),
+                    ("blades", Number(7.0)),
+                ],
+            ),
+            (
+                key: "meadow_fine_grass",
+                recipe: "population.grass_fine",
+                seed_stream: "fine",
+                material_affinity: [
+                    ("meadow_soil", 1.0),
+                    ("dirt_compacted", 0.08),
+                ],
+                abundance_channel: Some("fine_density"),
+                parameters: [
+                    ("density", Number(1100.0)),
+                    ("length_m", Number(0.085)),
+                ],
+            ),
+            (
+                key: "meadow_thatch",
+                recipe: "population.ground_thatch",
+                seed_stream: "thatch",
+                material_affinity: [
+                    ("meadow_soil", 1.0),
+                    ("dirt_compacted", 0.5),
+                ],
+                abundance_channel: Some("thatch_density"),
+                parameters: [
+                    ("density", Number(320.0)),
+                    ("length_m", Number(0.065)),
+                ],
+            ),
+            (
+                key: "meadow_flowers",
+                recipe: "population.meadow_flowers",
+                seed_stream: "flowers",
+                material_affinity: [("meadow_soil", 1.0)],
+                abundance_channel: Some("flower_abundance"),
+                parameters: [
+                    ("density", Number(8.0)),
+                    ("stem_length_m", Number(0.26)),
+                    ("head_radius_m", Number(0.014)),
+                ],
+            ),
+            (
+                key: "field_stones",
+                recipe: "population.field_stones",
+                seed_stream: "stones",
+                material_affinity: [],
+                abundance_channel: Some("stone_abundance"),
+                parameters: [
+                    ("density", Number(0.8)),
+                    ("radius_m", Number(0.05)),
+                ],
+            ),
+            (
+                key: "track_grit_scatter",
+                recipe: "population.dirt_clods",
+                seed_stream: "grit",
+                material_affinity: [("dirt_compacted", 1.0)],
+                abundance_channel: Some("grit_abundance"),
+                parameters: [
+                    ("density", Number(300.0)),
+                    ("radius_m", Number(0.018)),
+                ],
+            ),
+        ],
+    ),
+)

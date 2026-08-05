@@ -1,0 +1,27 @@
+# A narrow footpath, running roughly west to east through the world origin.
+#
+# One `u v` pair per line, in metres. See `main_path.spline.ron` for why this is
+# a line-based format rather than RON.
+#
+# The wander is the content. A track laid out on a straight line reads as a
+# ruled edge however ragged the material boundary on top of it is, because the
+# eye finds the straightness at a scale above anything the transition solver
+# works at. Half a metre of drift over ten is enough to remove that without the
+# path ever looking lost.
+#
+# It passes through the origin so that a plate centred on tile 0,0 gets the
+# track across its middle with meadow on both sides.
+
+-40   -1.2
+-30   -0.6
+-20    0.3
+-12    0.5
+ -6    0.1
+ -3   -0.25
+  0   -0.1
+  3    0.35
+  6    0.5
+ 12    0.15
+ 20   -0.5
+ 30   -0.3
+ 40    0.6
