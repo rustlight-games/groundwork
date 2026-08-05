@@ -254,6 +254,36 @@ const EXPOSURE_REACH_M: f64 = 1.5;
 /// How many directions the horizon scan takes.
 const EXPOSURE_DIRECTIONS: usize = 8;
 
+/// The scan directions, as exact unit offsets.
+///
+/// Written down rather than generated from `cos` and `sin`, so the four cardinal
+/// rays are exactly axis-aligned instead of a fraction of an ulp off — which is
+/// what let one of a pair of opposite rays round differently from the other. The
+/// diagonals cannot be written exactly, and being symmetric they cannot bias one
+/// direction against its opposite.
+const EXPOSURE_RAYS: [(f64, f64); EXPOSURE_DIRECTIONS] = [
+    (1.0, 0.0),
+    (
+        std::f64::consts::FRAC_1_SQRT_2,
+        std::f64::consts::FRAC_1_SQRT_2,
+    ),
+    (0.0, 1.0),
+    (
+        -std::f64::consts::FRAC_1_SQRT_2,
+        std::f64::consts::FRAC_1_SQRT_2,
+    ),
+    (-1.0, 0.0),
+    (
+        -std::f64::consts::FRAC_1_SQRT_2,
+        -std::f64::consts::FRAC_1_SQRT_2,
+    ),
+    (0.0, -1.0),
+    (
+        std::f64::consts::FRAC_1_SQRT_2,
+        -std::f64::consts::FRAC_1_SQRT_2,
+    ),
+];
+
 /// How many steps along each direction.
 const EXPOSURE_STEPS: usize = 12;
 
@@ -309,20 +339,33 @@ pub fn derive_fields(stack: &mut TerrainFieldStack, request: DerivedFieldRequest
     };
 
     if request.surface {
+        // NOT unit length. The plane stores the two horizontal components of a
+        // three-component unit normal, and renormalising those two to length one
+        // is the same as asserting the ground is vertical: on a one-in-four ramp
+        // the stored pair is (-0.243, 0) with 0.970 implied upward, and a 2D
+        // renormalisation returns (-1, 0). Every slope would read as a cliff.
+        // See `TerrainFieldStack::ground_normal`, which reconstructs the third.
         let mut normal = VectorPlane::filled(
             &grid,
             FieldDescriptor::scalar("ground_normal", FieldUnit::Unitless),
-            true,
+            false,
         );
         let mut slope = ScalarPlane::filled(
             &grid,
             0.0,
             FieldDescriptor::scalar("slope", FieldUnit::PerMetre),
         );
+        // Nearest, because an aspect is a wrapped angle: +179 and -179 degrees
+        // both point nearly west and average to zero, which points east. A
+        // consumer wanting a smoothly interpolated direction reads the normal
+        // or the flow direction, which are vectors and have no branch cut.
         let mut aspect = ScalarPlane::filled(
             &grid,
             0.0,
-            FieldDescriptor::scalar("aspect", FieldUnit::Radians),
+            FieldDescriptor {
+                filter: crate::field::FieldFilter::Nearest,
+                ..FieldDescriptor::scalar("aspect", FieldUnit::Radians)
+            },
         );
         for row in 0..down {
             for column in 0..across {
@@ -382,15 +425,19 @@ pub fn derive_fields(stack: &mut TerrainFieldStack, request: DerivedFieldRequest
                 (0..across).map(move |column| {
                     let origin = height_at(column, row);
                     let mut blocked = 0.0f32;
-                    for direction in 0..EXPOSURE_DIRECTIONS {
-                        let angle =
-                            std::f64::consts::TAU * direction as f64 / EXPOSURE_DIRECTIONS as f64;
-                        let (du, dv) = (angle.cos(), angle.sin());
+                    for (du, dv) in EXPOSURE_RAYS {
                         let mut highest = 0.0f32;
                         for step in 1..=EXPOSURE_STEPS {
                             let distance = step as f64 * step_m;
-                            let cu = column as f64 + du * distance / grid.spacing_m;
-                            let cv = row as f64 + dv * distance / grid.spacing_m;
+                            // Rounded, not truncated. A nominally vertical ray
+                            // built from `cos` lands at 9.999999999999995
+                            // rather than 10, and truncation drops it a cell —
+                            // for one of a pair of opposite rays but not the
+                            // other, which tilts the whole field in a direction
+                            // nobody chose. Exact offsets and rounding remove
+                            // both halves of that.
+                            let cu = (column as f64 + du * distance / grid.spacing_m).round();
+                            let cv = (row as f64 + dv * distance / grid.spacing_m).round();
                             if cu < 0.0 || cv < 0.0 {
                                 break;
                             }
@@ -431,6 +478,42 @@ pub fn derive_fields(stack: &mut TerrainFieldStack, request: DerivedFieldRequest
     }
 }
 
+/// How many cells upslope a point gathers water from.
+///
+/// The number that makes this field window-independent, and it is a *semantic*
+/// choice rather than a tuning knob. Textbook flow accumulation gathers the
+/// whole upslope catchment, which has unbounded support: a cell's value depends
+/// on ground arbitrarily far uphill, so two windows that reach different
+/// distances up the same ramp compute different answers for the same point and
+/// no halo is large enough to fix it.
+///
+/// What the renderer actually wants is surface-scale wetness — does water
+/// collect *here*, in this hollow, beside this rut — and that question has a
+/// bounded answer. Twenty-four cells at a two-centimetre spacing is about half a
+/// metre of upslope gathering, which is the scale of the darker channels in
+/// `docs/references/grass_to_mud_transition.jpg` where the last grass survives.
+///
+/// A caller wanting agreement across a join must include [`flow_reach_m`] in its
+/// halo.
+pub const FLOW_REACH_CELLS: usize = 24;
+
+/// How far outside a region the flow solver reaches, in metres.
+pub fn flow_reach_m(spacing_m: f64) -> f64 {
+    FLOW_REACH_CELLS as f64 * spacing_m
+}
+
+/// The eight neighbours, as exact integer offsets.
+const NEIGHBOURS: [(i64, i64); 8] = [
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+];
+
 /// Flow accumulation and direction over the structural surface.
 ///
 /// Multiple-flow-direction rather than steepest-descent: a D8 solver routes all
@@ -438,92 +521,113 @@ pub fn derive_fields(stack: &mut TerrainFieldStack, request: DerivedFieldRequest
 /// ground produces hard channels along the lattice axes — an artefact that reads
 /// as a grid in anything the field is used to sort.
 ///
-/// Deterministic under threads because the order is stated: descending height,
-/// with the sample index breaking exact ties. On terrain that is mostly flat
-/// exact ties are the common case rather than the rare one, so the tie-break is
-/// load-bearing rather than defensive.
+/// **Bounded, and solved by rounds rather than by cascade.** Each round every
+/// cell passes what it is currently carrying to its lower neighbours, all at
+/// once, reading the previous round and writing the next. After `n` rounds a
+/// cell has gathered from at most `n` cells upslope, which is what makes the
+/// answer independent of how far the window happened to extend. The earlier
+/// implementation sorted by height and cascaded in one pass — mathematically
+/// tidier, unboundedly non-local, and therefore unable to agree across a join.
+///
+/// Jacobi rather than in-place, so the result does not depend on the order cells
+/// are visited and a threaded implementation would produce the same numbers.
 fn solve_flow(surface: &[f32], grid: &FieldGridSpec) -> (ScalarPlane, VectorPlane) {
     let across = grid.samples_across();
     let down = grid.samples_down();
     let count = grid.sample_count();
     let cell_area = (grid.spacing_m * grid.spacing_m) as f32;
 
-    let mut order: Vec<usize> = (0..count).collect();
-    order.sort_by(|a, b| {
-        surface[*b]
-            .partial_cmp(&surface[*a])
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.cmp(b))
-    });
-
+    // Every cell starts holding its own area, and has already contributed it.
     let mut accumulation = vec![cell_area; count];
+    let mut carrying = vec![cell_area; count];
+    let mut arriving = vec![0.0f32; count];
     let mut flow_u = vec![0.0f32; count];
     let mut flow_v = vec![0.0f32; count];
 
-    // The eight neighbours, with their distances in cells.
-    const NEIGHBOURS: [(i64, i64); 8] = [
-        (-1, -1),
-        (0, -1),
-        (1, -1),
-        (-1, 0),
-        (1, 0),
-        (-1, 1),
-        (0, 1),
-        (1, 1),
-    ];
-
-    let mut weights = [0.0f32; 8];
-    for &index in &order {
+    // Downhill fractions, computed once: the surface does not change between
+    // rounds, so neither do they.
+    let mut fractions = vec![[0.0f32; 8]; count];
+    for index in 0..count {
         let column = (index % across) as i64;
         let row = (index / across) as i64;
         let height = surface[index];
+        if !height.is_finite() {
+            continue;
+        }
+        let mut weights = [0.0f32; 8];
         let mut total = 0.0f32;
         for (slot, (dx, dy)) in NEIGHBOURS.iter().enumerate() {
-            let nx = column + dx;
-            let ny = row + dy;
-            weights[slot] = 0.0;
+            let (nx, ny) = (column + dx, row + dy);
             if nx < 0 || ny < 0 || nx >= across as i64 || ny >= down as i64 {
                 continue;
             }
             let neighbour = ny as usize * across + nx as usize;
             let drop = height - surface[neighbour];
-            if drop <= 0.0 {
+            // Positive and finite, stated directly. `!(drop <= 0.0)` would let a
+            // NaN through, and one NaN height poisons the whole plane.
+            if !(drop > 0.0) {
                 continue;
             }
-            // Distance-corrected, so a diagonal is not treated as though it
-            // were a cell away. Without the correction the field develops a
-            // bias toward the diagonals that shows as a forty-five degree
-            // grain.
+            // Distance-corrected, so a diagonal is not treated as though it were
+            // a cell away. Without the correction the field develops a bias
+            // toward the diagonals that shows as a forty-five degree grain.
             let distance = if *dx != 0 && *dy != 0 {
                 std::f32::consts::SQRT_2
             } else {
                 1.0
             };
             let weight = (drop / distance).powf(1.1);
+            if !(weight > 0.0) {
+                continue;
+            }
             weights[slot] = weight;
             total += weight;
         }
-        if total <= 0.0 {
+        if !(total > 0.0) {
             continue;
         }
-        let share = accumulation[index];
         for (slot, (dx, dy)) in NEIGHBOURS.iter().enumerate() {
             if weights[slot] <= 0.0 {
                 continue;
             }
             let fraction = weights[slot] / total;
-            let neighbour = (row + dy) as usize * across + (column + dx) as usize;
-            accumulation[neighbour] += share * fraction;
+            fractions[index][slot] = fraction;
+            // Accumulated on the donor, which is the cell whose outgoing
+            // direction this describes.
             let length = ((dx * dx + dy * dy) as f32).sqrt();
             flow_u[index] += fraction * *dx as f32 / length;
             flow_v[index] += fraction * *dy as f32 / length;
         }
     }
 
+    for _ in 0..FLOW_REACH_CELLS {
+        arriving.iter_mut().for_each(|value| *value = 0.0);
+        for index in 0..count {
+            let share = carrying[index];
+            if share <= 0.0 {
+                continue;
+            }
+            let column = (index % across) as i64;
+            let row = (index / across) as i64;
+            for (slot, (dx, dy)) in NEIGHBOURS.iter().enumerate() {
+                let fraction = fractions[index][slot];
+                if fraction <= 0.0 {
+                    continue;
+                }
+                let neighbour = (row + dy) as usize * across + (column + dx) as usize;
+                arriving[neighbour] += share * fraction;
+            }
+        }
+        std::mem::swap(&mut carrying, &mut arriving);
+        for (total, gained) in accumulation.iter_mut().zip(carrying.iter()) {
+            *total += *gained;
+        }
+    }
+
     (
         ScalarPlane {
             values: accumulation,
-            descriptor: FieldDescriptor::scalar("flow_accumulation", FieldUnit::Unitless)
+            descriptor: FieldDescriptor::scalar("flow_accumulation", FieldUnit::SquareMetres)
                 // Accumulated area runs to the size of the region, so a tenth of
                 // a square millimetre of digest resolution is meaningless here.
                 .with_steps(100.0),
@@ -691,6 +795,103 @@ mod tests {
         // And the normal leans away from the rise.
         let normal = stack.derived.normal.as_ref().expect("normal");
         assert!(normal.u[index] < 0.0, "normal should lean down-slope");
+    }
+
+    #[test]
+    fn a_sampled_normal_keeps_its_magnitude_on_a_ramp() {
+        // The plane stores two of three components. Renormalising that pair to
+        // unit length asserts the ground is vertical: on this one-in-four ramp
+        // the stored pair is about (-0.243, 0) and a 2D renormalisation returns
+        // (-1, 0), so every gentle slope reads as a cliff.
+        let grid = grid(2.0, 0.25);
+        let mut stack = stack_with_surface(grid, |u, _| (u * 0.25) as f32);
+        derive_fields(&mut stack, DerivedFieldRequest::PLACEMENT);
+
+        let at = WorldPoint::new(1.0, 1.0);
+        let normal = stack.ground_normal(at);
+        let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+        assert!(
+            (length - 1.0).abs() < 1.0e-4,
+            "the reconstructed normal is not unit length: {length}"
+        );
+        // A one-in-four slope leans a little off vertical, not a lot.
+        assert!(
+            normal[2] > 0.9,
+            "the ground should still be nearly flat, up was {}",
+            normal[2]
+        );
+        assert!(
+            normal[0] < 0.0 && normal[0] > -0.4,
+            "the horizontal lean is wrong: {}",
+            normal[0]
+        );
+    }
+
+    #[test]
+    fn flow_agrees_across_a_join_away_from_the_edges() {
+        // The finding that flow was window-dependent. Textbook accumulation
+        // gathers the whole upslope catchment, so a window reaching further up
+        // a ramp computes a larger value for the same point and no halo fixes
+        // it. Bounded rounds make the support finite, and this is the property
+        // that buys.
+        let spacing = 0.05;
+        let surface = |u: f64, _v: f64| (1.0 - u * 0.3) as f32;
+
+        let build = |min: f64, max: f64| {
+            let g = FieldGridSpec::covering(
+                WorldRect::new(WorldPoint::new(min, 0.0), WorldPoint::new(max, 1.0)),
+                spacing,
+            );
+            let mut stack = stack_with_surface(g, surface);
+            derive_fields(&mut stack, DerivedFieldRequest::ALL);
+            stack
+        };
+
+        // One window reaches a long way further up the ramp than the other.
+        let short = build(0.0, 3.0);
+        let long = build(-4.0, 3.0);
+
+        // Compare well inside both, by more than the solver's own reach.
+        let margin = flow_reach_m(spacing) + spacing * 2.0;
+        let mut compared = 0usize;
+        let mut u = margin;
+        while u < 3.0 - margin {
+            let at = WorldPoint::new(u, 0.5);
+            let a = short
+                .derived
+                .flow_accumulation
+                .as_ref()
+                .expect("flow")
+                .sample(&short.grid, at);
+            let b = long
+                .derived
+                .flow_accumulation
+                .as_ref()
+                .expect("flow")
+                .sample(&long.grid, at);
+            assert_eq!(a, b, "flow disagrees at {u}: {a} vs {b}");
+            compared += 1;
+            u += spacing;
+        }
+        assert!(compared > 5, "the comparison covered too little ground");
+    }
+
+    #[test]
+    fn a_non_finite_surface_does_not_poison_the_flow_plane() {
+        // A NaN height makes every comparison false, so a `!(drop <= 0)` guard
+        // treats it as a valid downhill neighbour and the NaN spreads through
+        // the whole plane.
+        let grid = grid(1.0, 0.25);
+        let mut stack = stack_with_surface(grid, |_, _| 0.0);
+        stack.elevation_m.values[grid.sample_count() / 2] = f32::NAN;
+        derive_fields(&mut stack, DerivedFieldRequest::ALL);
+
+        let flow = stack.derived.flow_accumulation.as_ref().expect("flow");
+        let poisoned = flow.values.iter().filter(|v| !v.is_finite()).count();
+        assert_eq!(
+            poisoned, 0,
+            "{poisoned} flow samples went non-finite from one bad height"
+        );
     }
 
     #[test]

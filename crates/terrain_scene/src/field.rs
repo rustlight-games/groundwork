@@ -93,6 +93,8 @@ pub enum FieldUnit {
     Radians,
     /// A gradient: change per metre travelled.
     PerMetre,
+    /// An area, in square metres. What flow accumulation gathers.
+    SquareMetres,
     /// An identity. Never interpolated.
     Categorical,
 }
@@ -105,6 +107,7 @@ impl FieldUnit {
             Self::Metres => "metres",
             Self::Radians => "radians",
             Self::PerMetre => "per_metre",
+            Self::SquareMetres => "square_metres",
             Self::Categorical => "categorical",
         }
     }
@@ -198,11 +201,24 @@ impl FieldDescriptor {
 
     /// Whether this descriptor's filter is legal for its unit.
     ///
-    /// The one combination that is always a bug: a categorical plane read
-    /// bilinearly. Reported rather than silently corrected, because the fix
-    /// depends on which of the two the author meant.
+    /// Two combinations are always a bug, and both are silent:
+    ///
+    /// - a **categorical** plane read bilinearly, because the average of
+    ///   material 2 and material 4 is not material 3;
+    /// - a **wrapped angle** read bilinearly, because `+179` and `-179` degrees
+    ///   both point nearly west and average to zero, which points east. An
+    ///   aspect field interpolated across its own branch cut sends water up the
+    ///   hill for one texel in every wrap.
+    ///
+    /// Reported rather than silently corrected, because the fix depends on
+    /// which of the two the author meant — a direction that needs interpolating
+    /// belongs in a [`VectorPlane`], where there is no branch cut to cross.
     pub fn filter_is_legal(&self) -> bool {
-        !(self.unit == FieldUnit::Categorical && self.filter == FieldFilter::Bilinear)
+        !matches!(
+            (self.unit, self.filter),
+            (FieldUnit::Categorical, FieldFilter::Bilinear)
+                | (FieldUnit::Radians, FieldFilter::Bilinear)
+        )
     }
 }
 
@@ -270,6 +286,14 @@ pub struct FieldGridSpec {
 /// the address space.
 pub const MIN_SPACING_M: f64 = 0.0005;
 
+/// The largest lattice index magnitude a grid may address.
+///
+/// Two thirds of the way to the point where consecutive `i64` values stop being
+/// distinguishable as `f64` (2^53). Beyond it, samples 0 and 1 would round to
+/// the same world position and the grid would silently stop being a lattice, so
+/// the limit is enforced rather than documented.
+pub const LATTICE_INDEX_LIMIT: f64 = 1.0e15;
+
 /// The most samples one plane may hold.
 ///
 /// Sixteen million, which is a 4096-square grid — far beyond the resolutions in
@@ -299,15 +323,19 @@ impl FieldGridSpec {
             lattice_index_below(bounds.min.u_m, spacing_m),
             lattice_index_below(bounds.min.v_m, spacing_m),
         ];
-        let origin = WorldPoint::new(
-            origin_index[0] as f64 * spacing_m,
-            origin_index[1] as f64 * spacing_m,
-        );
-        // Ceil, then one more cell if the rectangle's far edge lands exactly on
-        // a lattice point, so that `bounds.max` is always *inside* the grid
-        // rather than on its open boundary.
-        let columns = span_cells(bounds.max.u_m - origin.u_m, spacing_m);
-        let rows = span_cells(bounds.max.v_m - origin.v_m, spacing_m);
+        // Spanned in *index* space rather than by dividing a float extent.
+        // `bounds.max - origin` is not exact — for a rectangle from -0.2 to
+        // -3 x 0.05 it comes out a hair under one cell, so a float span drops
+        // the cell that should contain the far edge. Two floored indices and a
+        // subtraction cannot.
+        let far = [
+            lattice_index_below(bounds.max.u_m, spacing_m),
+            lattice_index_below(bounds.max.v_m, spacing_m),
+        ];
+        // One past the cell the far edge falls in, so `bounds.max` is strictly
+        // inside the grid rather than on its open boundary.
+        let columns = cells_between(origin_index[0], far[0]);
+        let rows = cells_between(origin_index[1], far[1]);
         Self {
             origin_index,
             spacing_m,
@@ -361,6 +389,15 @@ impl FieldGridSpec {
             && self.spacing_m >= MIN_SPACING_M
             && self.origin().is_finite()
             && self.sample_count() <= MAX_SAMPLES_PER_PLANE
+            && self.origin_index.iter().all(|index| {
+                (*index as f64).abs() <= LATTICE_INDEX_LIMIT
+            })
+            // Far from the origin, consecutive indices round to the same `f64`
+            // and the grid quietly stops being a lattice: two samples at one
+            // world position, interpolating over a zero-width cell. Checked
+            // rather than assumed, because nothing else downstream would notice.
+            && self.sample_position(0, 0) != self.sample_position(1, 0)
+            && self.sample_position(0, 0) != self.sample_position(0, 1)
     }
 
     /// Where a world point falls in sample coordinates, clamped to the grid.
@@ -382,15 +419,10 @@ impl FieldGridSpec {
     fn locate(&self, at: WorldPoint) -> ([u32; 2], [f32; 2]) {
         let axis = |value: f64, origin_index: i64, cells: u32| -> (u32, f32) {
             let cells = cells.max(1);
-            if !value.is_finite() {
+            let Some((index, fraction)) = lattice_split(value, self.spacing_m) else {
                 return (0, 0.0);
-            }
-            let global = value / self.spacing_m;
-            let floor = global.floor();
-            if !floor.is_finite() {
-                return (0, 0.0);
-            }
-            let local = floor as i64 - origin_index;
+            };
+            let local = index.saturating_sub(origin_index);
             if local < 0 {
                 return (0, 0.0);
             }
@@ -400,14 +432,23 @@ impl FieldGridSpec {
                 // the end.
                 return (cells - 1, 1.0);
             }
-            (local as u32, (global - floor) as f32)
+            (local as u32, fraction as f32)
         };
         let (cu, tu) = axis(at.u_m, self.origin_index[0], self.columns);
         let (cv, tv) = axis(at.v_m, self.origin_index[1], self.rows);
         ([cu, cv], [tu, tv])
     }
 
-    /// Whether a point lies inside the grid's own rectangle.
+    /// Whether a point lies inside the grid's closed sample domain.
+    ///
+    /// **Closed on both ends, deliberately unlike [`WorldRect::contains`]**,
+    /// which is half-open. The two answer different questions: a rectangle is
+    /// half-open so that tiling a region produces no overlaps and no gaps, but a
+    /// lattice genuinely *has* a sample on its far edge, and a read there should
+    /// return that sample rather than a border value. Calling the difference out
+    /// here because two meanings of "inside the grid" is otherwise the kind of
+    /// thing that is discovered from a picture.
+    #[allow(rustdoc::broken_intra_doc_links)]
     fn contains(&self, at: WorldPoint) -> bool {
         let bounds = self.bounds();
         at.u_m >= bounds.min.u_m
@@ -417,37 +458,60 @@ impl FieldGridSpec {
     }
 }
 
-/// The index of the largest lattice point at or below `value`.
+/// Split a coordinate into its lattice cell and the fraction across it.
 ///
-/// Floors mathematically rather than toward zero, so the lattice does not
-/// develop a double-width cell straddling the world origin — the same reason
-/// [`terrain_core::coords`] fixes the convention once.
-fn lattice_index_below(value: f64, step: f64) -> i64 {
-    let ratio = value / step;
-    if !ratio.is_finite() {
-        return 0;
+/// The subtlety this exists for: **division does not invert multiplication.**
+/// The canonical position of lattice index 3 at a spacing of 0.05 is
+/// `0.15000000000000002`, and dividing that back by 0.05 gives
+/// `3.0000000000000004` rather than 3. Flooring the quotient is therefore
+/// correct almost everywhere and wrong exactly on the lattice lines — where it
+/// matters most, because that is where two windows meet.
+///
+/// The consequence was not theoretical. One window ending at index 3 clamped
+/// the point to its last cell and returned sample 3 exactly; a longer window
+/// read it as cell 3 at a fraction of `4.4e-16` and returned a blend of samples
+/// 3 and 4. Two overlapping stacks disagreed at their shared edge — the one
+/// place the whole design exists to make agree.
+///
+/// So a point is tested against the *canonical* position of its nearest index
+/// before the quotient is trusted. Returns `None` for a coordinate that has no
+/// meaningful lattice position at all.
+fn lattice_split(value: f64, step: f64) -> Option<(i64, f64)> {
+    if !value.is_finite() || !(step > 0.0) {
+        return None;
     }
-    ratio.floor().clamp(i64::MIN as f64, i64::MAX as f64) as i64
+    let global = value / step;
+    if !global.is_finite() {
+        return None;
+    }
+    let nearest = global.round();
+    if nearest.abs() <= LATTICE_INDEX_LIMIT && nearest * step == value {
+        // Exactly on a lattice line, whatever the quotient says.
+        return Some((nearest as i64, 0.0));
+    }
+    let floor = global.floor();
+    if floor.abs() > LATTICE_INDEX_LIMIT {
+        return None;
+    }
+    Some((floor as i64, global - floor))
 }
 
-/// How many cells of `step` are needed to span `extent`, at least one.
+/// The index of the largest lattice point at or below `value`.
+fn lattice_index_below(value: f64, step: f64) -> i64 {
+    lattice_split(value, step)
+        .map(|(index, _)| index)
+        .unwrap_or(0)
+}
+
+/// Cells needed to reach one past the cell `far` falls in.
 ///
-/// Strictly greater than, so that a rectangle whose far edge lands exactly on a
-/// lattice point still gets a cell beyond it. A grid whose maximum corner is its
-/// own last sample is fine for reading, but the half-open rectangle convention
-/// means `bounds.contains(bounds.max)` is false, and a caller iterating cells
-/// would silently drop the final row.
-fn span_cells(extent: f64, step: f64) -> u32 {
-    if !extent.is_finite() || extent <= 0.0 {
-        return 1;
-    }
-    let cells = (extent / step).ceil();
-    let cells = if cells * step <= extent {
-        cells + 1.0
-    } else {
-        cells
-    };
-    cells.clamp(1.0, u32::MAX as f64) as u32
+/// Integer throughout, so a rectangle whose far edge lands exactly on a lattice
+/// point still gets the cell beyond it and `bounds.max` is strictly inside the
+/// grid rather than on its open boundary.
+fn cells_between(origin: i64, far: i64) -> u32 {
+    far.saturating_sub(origin)
+        .saturating_add(1)
+        .clamp(1, u32::MAX as i64) as u32
 }
 
 impl Digestible for FieldGridSpec {
@@ -570,16 +634,25 @@ impl VectorPlane {
     /// Read both components, renormalised if the plane says so.
     pub fn sample_unit(&self, grid: &FieldGridSpec, at: WorldPoint) -> [f32; 2] {
         let (cell, t) = grid.locate(at);
+        let (c, r) = (cell[0], cell[1]);
         let read = |values: &[f32]| -> f32 {
-            let (c, r) = (cell[0], cell[1]);
             let get = |column: u32, row: u32| -> f32 {
                 let column = column.min(grid.columns);
                 let row = row.min(grid.rows);
                 values.get(grid.index(column, row)).copied().unwrap_or(0.0)
             };
-            let low = get(c, r) + (get(c + 1, r) - get(c, r)) * t[0];
-            let high = get(c, r + 1) + (get(c + 1, r + 1) - get(c, r + 1)) * t[0];
-            low + (high - low) * t[1]
+            match self.descriptor.filter {
+                // Honoured rather than assumed. A vector plane may carry
+                // something that must not be averaged — a per-sample choice of
+                // frame, say — and silently blending it would produce a
+                // direction that is nobody's.
+                FieldFilter::Nearest => get(c + u32::from(t[0] >= 0.5), r + u32::from(t[1] >= 0.5)),
+                FieldFilter::Bilinear => {
+                    let low = get(c, r) + (get(c + 1, r) - get(c, r)) * t[0];
+                    let high = get(c, r + 1) + (get(c + 1, r + 1) - get(c, r + 1)) * t[0];
+                    low + (high - low) * t[1]
+                }
+            }
         };
         let mut out = [read(&self.u), read(&self.v)];
         if self.unit_length {
@@ -593,7 +666,13 @@ impl VectorPlane {
     }
 
     pub fn is_well_formed(&self, grid: &FieldGridSpec) -> bool {
-        self.u.len() == grid.sample_count()
+        // A scalar border value cannot say what a two-component field reads as
+        // outside itself, so a vector plane may not declare one. Clamping is the
+        // only border it supports, and saying so is better than quietly
+        // ignoring what an author wrote.
+        matches!(self.descriptor.border, FieldBorder::Clamp)
+            && self.descriptor.filter_is_legal()
+            && self.u.len() == grid.sample_count()
             && self.v.len() == grid.sample_count()
             && self
                 .u
@@ -930,6 +1009,39 @@ impl TerrainFieldStack {
                     && cover.compaction.is_well_formed(&self.grid)
                     && cover.wetness.is_well_formed(&self.grid)
             })
+            // Derived planes are checked too. They are the ones a consumer is
+            // most likely to read without thinking, and a truncated flow
+            // direction would otherwise pass validation and be sampled as zeros.
+            && self
+                .derived
+                .scalar_planes()
+                .iter()
+                .all(|(_, plane)| plane.is_well_formed(&self.grid))
+            && self
+                .derived
+                .vector_planes()
+                .iter()
+                .all(|(_, plane)| plane.is_well_formed(&self.grid))
+    }
+
+    /// The ground normal at a world point, as a three-component unit vector.
+    ///
+    /// The stored plane holds only the two horizontal components; the vertical
+    /// one is reconstructed here because a height field's normal always points
+    /// up, so its sign is never in question and storing it would be a third of
+    /// the memory for no information.
+    ///
+    /// Reconstructed rather than renormalised in two dimensions, which is the
+    /// mistake this replaced: scaling the horizontal pair to unit length asserts
+    /// the ground is vertical, so every gentle slope read as a cliff.
+    pub fn ground_normal(&self, at: WorldPoint) -> [f32; 3] {
+        let Some(plane) = self.derived.normal.as_ref() else {
+            return [0.0, 0.0, 1.0];
+        };
+        let horizontal = plane.sample_unit(&self.grid, at);
+        let flat = horizontal[0] * horizontal[0] + horizontal[1] * horizontal[1];
+        let up = (1.0 - flat).max(0.0).sqrt();
+        [horizontal[0], horizontal[1], up]
     }
 
     /// The largest deviation from one across all substrate sums.
@@ -1100,6 +1212,120 @@ mod tests {
         };
         let value = ids.sample(&grid, mid);
         assert!(value == 0.0 || value == 10.0, "categorical read blended");
+    }
+
+    #[test]
+    fn a_point_on_a_lattice_line_reads_its_own_sample_from_any_window() {
+        // The counterexample that broke the guarantee. Lattice index 3 at a
+        // spacing of 0.05 sits at 0.15000000000000002, and dividing that back
+        // gives 3.0000000000000004 — so a naive floor put the point a hair into
+        // cell 3 in a long grid and clamped it to cell 2 in a short one. With
+        // samples of 0 and 1 either side, the two windows returned 0 and
+        // 4.4e-16 for the same world point.
+        let spacing = 0.05;
+        let short = FieldGridSpec {
+            origin_index: [0, 0],
+            spacing_m: spacing,
+            columns: 3,
+            rows: 1,
+        };
+        let long = FieldGridSpec {
+            origin_index: [0, 0],
+            spacing_m: spacing,
+            columns: 6,
+            rows: 1,
+        };
+        let plane_for = |grid: &FieldGridSpec| ScalarPlane {
+            // Zero up to sample 3, then one, so any leak past the line shows.
+            values: (0..grid.sample_count())
+                .map(|index| {
+                    let column = index % grid.samples_across();
+                    if column <= 3 { 0.0 } else { 1.0 }
+                })
+                .collect(),
+            descriptor: FieldDescriptor::scalar("step", FieldUnit::Unitless),
+        };
+
+        let at = WorldPoint::new(3.0 * spacing, 0.0);
+        let a = plane_for(&short).sample(&short, at);
+        let b = plane_for(&long).sample(&long, at);
+        assert_eq!(a, 0.0, "the short window did not return its own sample");
+        assert_eq!(b, 0.0, "the long window leaked past the lattice line");
+        assert_eq!(a, b, "two windows disagreed on a shared lattice point");
+    }
+
+    #[test]
+    fn a_grid_contains_a_far_edge_that_lands_on_a_lattice_line() {
+        // The other half of the same arithmetic. From -0.2 to exactly -3 x 0.05,
+        // the float extent comes out a hair under one cell, so a span computed
+        // by division dropped the cell holding the far edge — and the snapped
+        // origin index came out one too low for the same reason.
+        let spacing = 0.05;
+        let bounds = rect((-0.2, -0.2), (-3.0 * spacing, -3.0 * spacing));
+        let grid = FieldGridSpec::covering(bounds, spacing);
+        let covered = grid.bounds();
+        assert!(
+            covered.min.u_m <= bounds.min.u_m,
+            "origin {} is above the requested minimum {}",
+            covered.min.u_m,
+            bounds.min.u_m
+        );
+        assert!(
+            covered.max.u_m > bounds.max.u_m,
+            "grid maximum {} does not strictly contain {}",
+            covered.max.u_m,
+            bounds.max.u_m
+        );
+        assert!(covered.contains(bounds.max));
+    }
+
+    #[test]
+    fn a_lattice_too_far_from_the_origin_to_resolve_is_refused() {
+        // Past 2^53 consecutive indices round to one `f64`, so two samples land
+        // on the same world point and the cell between them has no width.
+        let grid = FieldGridSpec {
+            origin_index: [1 << 60, 0],
+            spacing_m: 0.05,
+            columns: 4,
+            rows: 4,
+        };
+        assert!(!grid.is_well_formed());
+    }
+
+    #[test]
+    fn a_vector_plane_honours_the_filter_it_declares() {
+        let grid = FieldGridSpec {
+            origin_index: [0, 0],
+            spacing_m: 1.0,
+            columns: 1,
+            rows: 1,
+        };
+        // Two orthogonal directions. Averaged they rotate to something that is
+        // neither; read as nearest they stay one of the two.
+        let build = |filter: FieldFilter| VectorPlane {
+            u: vec![1.0, 0.0, 1.0, 0.0],
+            v: vec![0.0, 1.0, 0.0, 1.0],
+            descriptor: FieldDescriptor {
+                filter,
+                ..FieldDescriptor::scalar("dir", FieldUnit::Unitless)
+            },
+            unit_length: true,
+        };
+        let at = WorldPoint::new(0.25, 0.0);
+        let nearest = build(FieldFilter::Nearest).sample_unit(&grid, at);
+        assert_eq!(nearest, [1.0, 0.0], "a nearest plane was blended anyway");
+        let bilinear = build(FieldFilter::Bilinear).sample_unit(&grid, at);
+        assert!(bilinear[1] > 0.0, "a bilinear plane should blend");
+    }
+
+    #[test]
+    fn a_wrapped_angle_may_not_be_read_bilinearly() {
+        // +179 and -179 degrees both point nearly west; averaged they point
+        // east. A plane of angles has to say it is read nearest.
+        let mut descriptor = FieldDescriptor::scalar("aspect", FieldUnit::Radians);
+        assert!(!descriptor.filter_is_legal());
+        descriptor.filter = FieldFilter::Nearest;
+        assert!(descriptor.filter_is_legal());
     }
 
     #[test]

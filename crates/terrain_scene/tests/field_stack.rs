@@ -190,8 +190,13 @@ fn two_regions_of_one_document_agree_exactly_where_they_overlap() {
                 b.surface_height(at),
                 "surface disagrees at {u}, {v}"
             );
-            for plane in &a.substrates {
-                let mine = plane.weights.sample(&a.grid, at);
+            // Over the *union* of both windows' materials, not just A's. The
+            // prune drops planes that are all zero in a region, so a material
+            // present only in B would go unchecked if the walk were one-sided —
+            // and "B has a substrate A never heard of" is exactly the
+            // disagreement worth catching.
+            for plane in a.substrates.iter().chain(b.substrates.iter()) {
+                let mine = a.substrate_weight(plane.material, at);
                 let theirs = b.substrate_weight(plane.material, at);
                 assert!(
                     (mine - theirs).abs() < 1.0e-6,
