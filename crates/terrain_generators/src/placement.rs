@@ -367,7 +367,14 @@ fn scatter(
             // shoots coming through it is somewhere the grass is thin, and the
             // second one is what ground looks like.
             let coverage = 1.0 - smoothstep(0.04, 0.88, bareness(ground.bare)) * 0.80;
-            if !draw.chance((ground.density * coverage * weight(&ground)).min(1.0)) {
+            // What the document asks of *this pass* here.
+            //
+            // A pure field query and a multiplication before the existing
+            // acceptance draw, so no `Draw` sequence shifts: every plant in the
+            // pass keeps the random values it already had, and turning one pass
+            // down does not redraw the others.
+            let semantic = bed.field.population_factor(pass, root);
+            if !draw.chance((ground.density * coverage * weight(&ground) * semantic).min(1.0)) {
                 continue;
             }
             // Stamped over the range this call added rather than threaded into

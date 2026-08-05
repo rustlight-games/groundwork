@@ -211,3 +211,206 @@ mod tests {
         assert_eq!(RecipeRenderClass::Deferred.tuned_pass(), None);
     }
 }
+
+/// One tuned pass, as a document can control it.
+///
+/// ## Why a spatial evaluator rather than a scalar
+///
+/// A tuned pass needs to be turned up in one part of a meadow and down in
+/// another — that is what a modifier channel is *for*. A single number per pass
+/// could only scale the whole plate, which is a global exposure control wearing
+/// a population's name.
+///
+/// So a control is three spatial terms multiplied together: how readily this
+/// pass takes the substrate under it, what its abundance channel says here, and
+/// how the density the document asked for compares to what the style already
+/// does. All three are one at a point the document says nothing about, which is
+/// what keeps an unmodified meadow exactly as tuned.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TunedPopulationControl {
+    pub population: String,
+    pub pass: TunedPass,
+    /// How readily this pass takes each material, by index.
+    pub material_affinity: Vec<(terrain_core::ids::MaterialIndex, f32)>,
+    pub abundance_channel: Option<terrain_core::ids::ModifierIndex>,
+    /// What the document asked for, per square metre.
+    pub target_density_per_m2: f64,
+    /// What the tuned style already does, per square metre.
+    ///
+    /// The denominator. A document asking for exactly this gets a factor of
+    /// one and the picture does not move.
+    pub reference_density_per_m2: f64,
+}
+
+impl TunedPopulationControl {
+    /// How much the density request scales this pass.
+    pub fn density_factor(&self) -> f32 {
+        if self.reference_density_per_m2 <= 0.0 {
+            return 1.0;
+        }
+        (self.target_density_per_m2 / self.reference_density_per_m2).max(0.0) as f32
+    }
+
+    /// How readily this pass takes an already-realised substrate.
+    ///
+    /// An empty affinity table means "anywhere", which is what a pass a
+    /// document has not opinionated about should do.
+    pub fn affinity_for(&self, substrate: &crate::transition::RealisedSubstrate) -> f32 {
+        if self.material_affinity.is_empty() {
+            return 1.0;
+        }
+        self.material_affinity
+            .iter()
+            .map(|(material, weight)| substrate.weight_of(*material) * weight)
+            .sum::<f32>()
+            .max(0.0)
+    }
+}
+
+/// Every tuned pass a document controls.
+///
+/// Keyed by pass, and at most one control each — the tuned generator has one
+/// pass identity, so two populations claiming it would leave the density
+/// semantics ambiguous. The compiler reports that rather than picking.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TunedPopulationSet {
+    controls: std::collections::BTreeMap<TunedPass, TunedPopulationControl>,
+}
+
+impl TunedPopulationSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a control, returning the population that already claimed its pass.
+    pub fn insert(&mut self, control: TunedPopulationControl) -> Option<String> {
+        let existing = self
+            .controls
+            .get(&control.pass)
+            .map(|held| held.population.clone());
+        if existing.is_none() {
+            self.controls.insert(control.pass, control);
+        }
+        existing
+    }
+
+    pub fn get(&self, pass: TunedPass) -> Option<&TunedPopulationControl> {
+        self.controls.get(&pass)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.controls.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.controls.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&TunedPass, &TunedPopulationControl)> {
+        self.controls.iter()
+    }
+}
+
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+    use terrain_core::ids::MaterialIndex;
+
+    fn control(pass: TunedPass, density: f64) -> TunedPopulationControl {
+        TunedPopulationControl {
+            population: format!("p_{pass}"),
+            pass,
+            material_affinity: Vec::new(),
+            abundance_channel: None,
+            target_density_per_m2: density,
+            reference_density_per_m2: pass.reference_density_per_m2(),
+        }
+    }
+
+    #[test]
+    fn asking_for_exactly_what_the_style_does_changes_nothing() {
+        // The property that lets a document name a tuned pass without moving
+        // the picture. If this were not one, adding a population declaration to
+        // an existing document would retune the whole meadow.
+        for pass in TunedPass::ALL {
+            let at_reference = control(pass, pass.reference_density_per_m2());
+            assert!(
+                (at_reference.density_factor() - 1.0).abs() < 1.0e-6,
+                "{pass}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_density_factor_is_monotone_and_never_negative() {
+        let pass = TunedPass::Tuft;
+        let half = control(pass, pass.reference_density_per_m2() * 0.5);
+        let double = control(pass, pass.reference_density_per_m2() * 2.0);
+        assert!(half.density_factor() < 1.0);
+        assert!(double.density_factor() > 1.0);
+        // A negative density is nonsense an author can write, and zero rather
+        // than a negative multiplier is the honest reading of it.
+        let negative = control(pass, -5.0);
+        assert_eq!(negative.density_factor(), 0.0);
+    }
+
+    #[test]
+    fn an_empty_affinity_table_means_anywhere() {
+        let control = control(TunedPass::Fine, 100.0);
+        let substrate = crate::transition::RealisedSubstrate::pure(MaterialIndex(3));
+        assert_eq!(control.affinity_for(&substrate), 1.0);
+    }
+
+    #[test]
+    fn an_affinity_table_is_a_veto_on_ground_it_does_not_name() {
+        let mut control = control(TunedPass::Fine, 100.0);
+        control.material_affinity = vec![(MaterialIndex(0), 1.0)];
+        assert_eq!(
+            control.affinity_for(&crate::transition::RealisedSubstrate::pure(MaterialIndex(
+                0
+            ))),
+            1.0
+        );
+        assert_eq!(
+            control.affinity_for(&crate::transition::RealisedSubstrate::pure(MaterialIndex(
+                1
+            ))),
+            0.0
+        );
+    }
+
+    #[test]
+    fn one_population_per_pass_and_the_first_one_keeps_it() {
+        // The compiler reports the collision; this is the structure that makes
+        // it detectable. First rather than last, so three claimants all report
+        // against the same original.
+        let mut set = TunedPopulationSet::new();
+        assert_eq!(set.insert(control(TunedPass::Tuft, 50.0)), None);
+        let clash = set.insert(TunedPopulationControl {
+            population: "second".into(),
+            ..control(TunedPass::Tuft, 90.0)
+        });
+        assert_eq!(clash.as_deref(), Some("p_tuft"));
+        assert_eq!(set.len(), 1);
+        assert_eq!(
+            set.get(TunedPass::Tuft).map(|c| c.target_density_per_m2),
+            Some(50.0)
+        );
+    }
+
+    #[test]
+    fn the_set_iterates_in_planting_order_rather_than_insertion_order() {
+        // A `BTreeMap` keyed by pass, so a report reads mat, canopy, tufts,
+        // leaves whichever order the document declared them in — and a
+        // fingerprint over it does not depend on that order either.
+        let mut set = TunedPopulationSet::new();
+        for pass in [TunedPass::Broadleaf, TunedPass::Thatch, TunedPass::Tuft] {
+            set.insert(control(pass, 10.0));
+        }
+        let order: Vec<TunedPass> = set.iter().map(|(pass, _)| *pass).collect();
+        assert_eq!(
+            order,
+            vec![TunedPass::Thatch, TunedPass::Tuft, TunedPass::Broadleaf]
+        );
+    }
+}

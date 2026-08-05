@@ -151,6 +151,12 @@ pub struct SceneCompilation {
     /// actually emitted is in the picture, and only what is in the picture
     /// should push grass about.
     pub interactions: Arc<crate::interaction::InteractionField>,
+    /// What the document says about each tuned pass.
+    ///
+    /// Compiled from the same population declarations the secondary scene came
+    /// from, so a document that turns its tufts down and its thatch up is doing
+    /// one thing rather than two unrelated ones.
+    pub tuned: Arc<crate::tuned::TunedPopulationSet>,
     pub report: SceneCompileReport,
 }
 
@@ -665,6 +671,28 @@ pub fn compile_scene(
         }
     }
 
+    // The tuned controls, from the same claimants.
+    //
+    // Compiled directly rather than by generating the tuned populations'
+    // candidate domains: a `Tuned` population is *controlling* an existing pass,
+    // not scattering anything, and generating `vegetation.fine`'s several
+    // million candidates to arrive at three numbers would be the most expensive
+    // way imaginable to read a document.
+    let mut tuned = crate::tuned::TunedPopulationSet::new();
+    for claimant in &claimants {
+        let Some(pass) = claimant.render_class.tuned_pass() else {
+            continue;
+        };
+        tuned.insert(crate::tuned::TunedPopulationControl {
+            population: claimant.key.clone(),
+            pass,
+            material_affinity: claimant.affinity.clone(),
+            abundance_channel: claimant.abundance_channel,
+            target_density_per_m2: claimant.density_per_m2,
+            reference_density_per_m2: pass.reference_density_per_m2(),
+        });
+    }
+
     // Built from the finished scene, so only obstacles that survived every
     // decision above are in it.
     let interactions = Arc::new(crate::interaction::InteractionField::from_primitives(
@@ -677,6 +705,7 @@ pub fn compile_scene(
         fields,
         ground,
         interactions,
+        tuned: Arc::new(tuned),
         report,
     })
 }

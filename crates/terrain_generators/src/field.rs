@@ -408,6 +408,11 @@ pub struct SemanticOverlay {
     /// stones behaves exactly as it did before this existed — which is what
     /// keeps the pinned tuned fixtures unmoved.
     pub interactions: std::sync::Arc<crate::interaction::InteractionField>,
+    /// What the document says about each tuned pass.
+    ///
+    /// Empty when a caller supplies nothing, which makes every factor one and
+    /// leaves the tuned meadow exactly as tuned.
+    pub tuned: std::sync::Arc<crate::tuned::TunedPopulationSet>,
 }
 
 impl std::fmt::Debug for SemanticOverlay {
@@ -1027,6 +1032,35 @@ impl WorldField {
                 overlay.ground.abundance(world),
             ),
         }
+    }
+
+    /// How much of one tuned pass a document asks for here, `0..`.
+    ///
+    /// One where the document says nothing, so an unmodified meadow keeps every
+    /// clump and channel the procedural field gave it. Three spatial terms
+    /// multiplied: substrate affinity, the abundance channel, and the density
+    /// request against what the style already does.
+    pub fn population_factor(&self, pass: crate::tuned::TunedPass, world: Vec2) -> f32 {
+        let Some(overlay) = &self.overlay else {
+            return 1.0;
+        };
+        let Some(control) = overlay.tuned.get(pass) else {
+            return 1.0;
+        };
+        let substrate = overlay.ground.substrates(world);
+        let abundance = match control.abundance_channel {
+            None => 1.0,
+            Some(channel) => overlay
+                .ground
+                .fields()
+                .modifier(
+                    channel,
+                    terrain_core::coords::WorldPoint::new(world.x as f64, world.y as f64),
+                    1.0,
+                )
+                .max(0.0),
+        };
+        (control.affinity_for(&substrate) * abundance * control.density_factor()).max(0.0)
     }
 
     /// What the compiled scene put in the way at a point.

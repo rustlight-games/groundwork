@@ -226,13 +226,23 @@
 
         populations: [
             (
+                // Densities are against the *tuned style's* own figures, not
+                // against the generic family's defaults.
+                //
+                // A tuned population controls an existing pass rather than
+                // scattering anything, so its density is a ratio: asking for
+                // exactly what the style already does gives a factor of one and
+                // the picture does not move. The tuned references are 50 tuft
+                // anchors, 3800 fine blades and 395 thatch strokes a square
+                // metre; the generic family's were 220, 1400 and 300, and
+                // reading one as the other would have quadrupled every meadow.
                 key: "meadow_tufts",
                 recipe: "population.grass_tuft",
                 seed_stream: "tufts",
                 material_affinity: [("meadow_soil", 1.0)],
                 abundance_channel: Some("vegetation_density"),
                 parameters: [
-                    ("density", Number(300.0)),
+                    ("density", Number(68.2)),
                     ("length_m", Number(0.29)),
                     ("width_m", Number(0.0035)),
                     ("blades", Number(7.0)),
@@ -245,7 +255,7 @@
                 material_affinity: [("meadow_soil", 1.0)],
                 abundance_channel: Some("vegetation_density"),
                 parameters: [
-                    ("density", Number(900.0)),
+                    ("density", Number(2442.9)),
                     ("length_m", Number(0.085)),
                 ],
             ),
@@ -256,7 +266,7 @@
                 material_affinity: [("meadow_soil", 1.0)],
                 abundance_channel: Some("thatch_density"),
                 parameters: [
-                    ("density", Number(320.0)),
+                    ("density", Number(421.3)),
                     ("length_m", Number(0.065)),
                 ],
             ),

@@ -1230,6 +1230,7 @@ fn compile(args: &CompileArgs) -> ExitCode {
     let overlay = std::sync::Arc::new(terrain_generators::SemanticOverlay {
         ground: std::sync::Arc::clone(&evaluator),
         interactions: std::sync::Arc::clone(&compiled.interactions),
+        tuned: std::sync::Arc::clone(&compiled.tuned),
     });
 
     // Cycles, and only Cycles. See CLAUDE.md: this framework builds geometry and

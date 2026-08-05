@@ -77,6 +77,9 @@ fn overlay(with_stones: bool) -> Arc<SemanticOverlay> {
     Arc::new(SemanticOverlay {
         ground,
         interactions: Arc::new(InteractionField::from_primitives(primitives)),
+        // No document controls, so every pass factor is one and the tuned
+        // meadow is exactly as tuned. The stones are the only variable.
+        tuned: Arc::new(terrain_generators::tuned::TunedPopulationSet::new()),
     })
 }
 

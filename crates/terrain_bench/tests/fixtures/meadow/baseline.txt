@@ -3,7 +3,7 @@
 // A row that moves without a phase behind it is a regression.
 
 [meadow_path]
-scene = b9c905430823ac1c5e4dcec5d981f296
+scene = 61aab947203570cfa9241e905cc40089
 candidates = 13748 generated, 561 accepted, 0 unowned
 marks = 4556, placements = 561, prototypes = 0, interactions = 27
   field_stones = secondary, 27 marks
@@ -14,7 +14,7 @@ marks = 4556, placements = 561, prototypes = 0, interactions = 27
   path_clods = deferred, 0 marks
 
 [narrow_track]
-scene = 0f8054b5d64d3264028a02e4c0a5b6e5
+scene = ca2f4c4e4d8089c0f7e76a35f3519932
 candidates = 4329 generated, 235 accepted, 0 unowned
 marks = 1953, placements = 235, prototypes = 0, interactions = 3
   field_stones = secondary, 3 marks
@@ -25,7 +25,7 @@ marks = 1953, placements = 235, prototypes = 0, interactions = 3
   track_grit_scatter = deferred, 0 marks
 
 [flower_meadow]
-scene = 8fd5295ee5414a7852f2a2445ae6cdf1
+scene = 438b0c53e7e483fba24c5561b586cd4d
 candidates = 1314 generated, 38 accepted, 0 unowned
 marks = 330, placements = 38, prototypes = 0, interactions = 1
   field_stones = secondary, 1 marks
@@ -35,7 +35,7 @@ marks = 330, placements = 38, prototypes = 0, interactions = 1
   meadow_tufts = tuned(tuft), 0 marks
 
 [stony_pasture]
-scene = 91638fe80d0c102b9d35bbd38e17c777
+scene = e0a28f2af1d6b76e0f679c6c49341e26
 candidates = 1105 generated, 20 accepted, 0 unowned
 marks = 59, placements = 20, prototypes = 0, interactions = 14
   field_stones = secondary, 14 marks
@@ -45,7 +45,7 @@ marks = 59, placements = 20, prototypes = 0, interactions = 14
   meadow_tufts = tuned(tuft), 0 marks
 
 [wet_hollow]
-scene = 8945e9663bb55de2bc3df188d5930baf
+scene = 14b228da2a095301661014897dea3942
 candidates = 1352 generated, 17 accepted, 0 unowned
 marks = 146, placements = 17, prototypes = 0, interactions = 0
   field_stones = secondary, 0 marks
