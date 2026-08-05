@@ -94,6 +94,17 @@
                 unit: "Unitless",
                 role: Some("SoilCompaction"),
             ),
+            (
+                key: "undergrowth_abundance",
+                display_name: "Undergrowth abundance",
+                range: (0.0, 3.0),
+                default_value: 1.0,
+                // Multiply, so a path suppression and a shade suppression
+                // compound rather than one of them winning.
+                composition: "Multiply",
+                unit: "Unitless",
+                role: None,
+            ),
         ],
 
         sources: [
@@ -277,6 +288,19 @@
                 parameters: [
                     ("density", Number(3.2)),
                     ("radius_m", Number(0.075)),
+                ],
+            ),
+            (
+                key: "meadow_undergrowth",
+                recipe: "population.meadow_undergrowth",
+                seed_stream: "undergrowth",
+                material_affinity: [("meadow_soil", 1.0)],
+                abundance_channel: Some("undergrowth_abundance"),
+                parameters: [
+                    ("density", Number(2.6)),
+                    ("leaf_length_m", Number(0.1)),
+                    ("leaf_width_m", Number(0.046)),
+                    ("crown_radius_m", Number(0.02)),
                 ],
             ),
         ],

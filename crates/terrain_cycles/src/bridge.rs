@@ -54,6 +54,10 @@ fn lowering(appearance: &str) -> Option<Lowering> {
         "flower.stem" => Lowering::Curve,
         "flower.head" => Lowering::Disk,
         "flower.petal" => Lowering::Petal,
+        // A ground leaf is a flattened lozenge too: broad, thin, and nearly
+        // horizontal. The difference from a petal is its proportions and its
+        // shader, both of which the bridge picks from the key.
+        "plant.undergrowth_leaf" => Lowering::Leaf,
         "rock.rounded" => Lowering::Stone,
         "rock.fractured" => Lowering::Stone,
         "rock.flat" => Lowering::Stone,
@@ -70,6 +74,8 @@ enum Lowering {
     Curve,
     /// A shallow disk instance: a flower head.
     Disk,
+    /// A flattened lozenge instance: one ground leaf.
+    Leaf,
     /// A flattened lozenge instance: one petal.
     ///
     /// A superellipsoid rather than a swept ribbon, and the choice is a
@@ -129,6 +135,7 @@ pub fn lower(
             Lowering::Curve => "plant.flower_stem",
             Lowering::Disk => "plant.flower_disk",
             Lowering::Petal => "plant.flower_petal",
+            Lowering::Leaf => "plant.undergrowth_leaf",
             Lowering::Stone => "surface.stone",
         };
         material_of.entry(key.to_string()).or_insert_with(|| {
@@ -234,6 +241,37 @@ pub fn lower(
                         ],
                         tint: tint_from(head.attributes.tint),
                         variation: head.attributes.variation,
+                    });
+                    report.instances += 1;
+                }
+                (Lowering::Leaf, SceneMark::Analytic(leaf)) => {
+                    let prototype = bind(
+                        &mut out,
+                        &mut prototypes,
+                        "undergrowth.leaf.v1",
+                        PrototypeFamily::Petal,
+                        material,
+                    );
+                    out.instances.push(Instance {
+                        prototype,
+                        material_variant: 0,
+                        visibility,
+                        translation: [
+                            leaf.centre.u_m as f32,
+                            leaf.centre.v_m as f32,
+                            leaf.centre.z_m as f32,
+                        ],
+                        rotation_xyzw: yaw_quaternion(leaf.rotation_rad),
+                        scale: [
+                            leaf.radius_m[0].max(1.0e-4),
+                            leaf.radius_m[1].max(1.0e-4),
+                            leaf.height_m.max(1.0e-5),
+                        ],
+                        // A green tint rather than a hue wheel: a ground leaf is
+                        // a leaf, and the variation between plants is in how
+                        // yellow or how blue-green rather than in which colour.
+                        tint: leaf_tint(leaf.attributes.tint),
+                        variation: leaf.attributes.variation,
                     });
                     report.instances += 1;
                 }
@@ -411,6 +449,20 @@ fn bind(
 fn yaw_quaternion(yaw_rad: f32) -> [f32; 4] {
     let half = yaw_rad * 0.5;
     [0.0, 0.0, half.sin(), half.cos()]
+}
+
+/// A ground leaf's tint: green, varying in how warm.
+///
+/// Not a hue wheel. A leaf is a leaf; what differs between plants of the same
+/// sward is whether they are a yellow-green or a blue-green, which is a narrow
+/// band and reads as species variation rather than as a paint chart.
+fn leaf_tint(value: f32) -> [f32; 3] {
+    let t = value.clamp(-1.0, 1.0);
+    [
+        (1.0 + 0.20 * t).clamp(0.6, 1.4),
+        1.0,
+        (1.0 - 0.22 * t).clamp(0.5, 1.4),
+    ]
 }
 
 /// A petal's colour, from the hue and saturation the document authored.

@@ -712,7 +712,7 @@ def appearance_builders(settings):
         "plant.flower_stem": lambda: stem_material(settings),
         "plant.flower_petal": lambda: petal_material(settings),
         "plant.flower_disk": lambda: disk_material(settings),
-        "plant.undergrowth_leaf": lambda: blade_material(settings),
+        "plant.undergrowth_leaf": lambda: leaf_material(settings),
         # Weathered granite, measured off a reference rather than guessed at.
         # The first value here was 0.055, which is darker than wet asphalt: the
         # stones rendered as holes in the grass rather than as objects sitting
@@ -835,6 +835,39 @@ def disk_material(settings):
     principled = material.node_tree.nodes["Principled BSDF"]
     principled.inputs["Base Color"].default_value = (0.28, 0.19, 0.035, 1.0)
     principled.inputs["Roughness"].default_value = 0.72
+    return material
+
+
+def leaf_material(settings):
+    """A broad ground leaf: a thin two-sided sheet, greener than a blade.
+
+    Transmission for the same reason the blade material uses it — a leaf is a
+    membrane, and the ones lying away from the sun glow with light that came
+    through them. More of it than a blade gets, because a ground leaf is
+    broader and thinner and that is most of what distinguishes it at a glance.
+
+    The tint comes from the instance, so one material serves the whole sward
+    and the variation between plants is a decision Rust made and recorded.
+    """
+    _ = settings
+    material = bpy.data.materials.new("undergrowth-leaf")
+    material.use_nodes = True
+    tree = material.node_tree
+    principled = tree.nodes["Principled BSDF"]
+    principled.inputs["Roughness"].default_value = 0.48
+    if "Subsurface Weight" in principled.inputs:
+        principled.inputs["Subsurface Weight"].default_value = 0.42
+        principled.inputs["Subsurface Radius"].default_value = (0.006, 0.010, 0.004)
+
+    info = tree.nodes.new("ShaderNodeObjectInfo")
+    info.location = (-600, 0)
+    tinted = tree.nodes.new("ShaderNodeMixRGB")
+    tinted.location = (-350, 0)
+    tinted.blend_type = "MULTIPLY"
+    tinted.inputs["Fac"].default_value = 1.0
+    tinted.inputs["Color1"].default_value = (0.048, 0.098, 0.026, 1.0)
+    tree.links.new(info.outputs["Color"], tinted.inputs["Color2"])
+    tree.links.new(tinted.outputs["Color"], principled.inputs["Base Color"])
     return material
 
 

@@ -48,6 +48,7 @@ pub fn register_families(registry: &mut TerrainRecipeRegistry) {
     registry.register(Box::new(GrassFine));
     registry.register(Box::new(GroundThatch));
     registry.register(Box::new(MeadowFlowers));
+    registry.register(Box::new(MeadowUndergrowth));
     registry.register(Box::new(FieldStones));
     registry.register(Box::new(DirtClods));
 }
@@ -829,6 +830,194 @@ impl TerrainRecipe for MeadowFlowers {
 }
 
 // ---------------------------------------------------------------------------
+// Undergrowth
+// ---------------------------------------------------------------------------
+
+/// Low broad-leaved rosettes, below and between the canopy.
+///
+/// ## Not another grass pass
+///
+/// The tuned generator already grows four layers of grass and a fifth would be
+/// more of the same at a lower quality. What a meadow has that none of those
+/// four supply is *broad* leaves near the ground — plantain, dock, sorrel —
+/// which read completely differently because they are wide, flat and nearly
+/// horizontal where every grass blade is narrow and upright.
+///
+/// That difference is most of the value. A canopy of nothing but blades reads
+/// as one plant repeated however varied its lengths are, and the eye finds the
+/// repetition long before it can name it. One broad leaf per square metre
+/// breaks it.
+///
+/// ## Visible where the grass is not
+///
+/// A rosette sits under the canopy, so in thick grass it contributes shadow and
+/// almost nothing else. Where the sward thins — a path fringe, a scuff, a poor
+/// patch — it is suddenly the thing you see. That is why its abundance is a
+/// channel rather than a constant: an author wants it exactly where the grass
+/// has gone.
+pub struct MeadowUndergrowth;
+
+impl TerrainRecipe for MeadowUndergrowth {
+    fn key(&self) -> RecipeKey {
+        key("population.meadow_undergrowth")
+    }
+
+    fn render_class(&self) -> RecipeRenderClass {
+        // Nothing in the tuned generator grows a broad ground leaf: its
+        // `Stream::Leaf` pass is a *cluster of blades*, not a rosette. This
+        // recipe is the only source, so it is the one that renders.
+        RecipeRenderClass::Secondary
+    }
+
+    fn domain(&self) -> DomainKey {
+        domain_key("vegetation.rosette")
+    }
+
+    fn domain_definition(&self) -> CandidateDomainDef {
+        CandidateDomainDef {
+            key: self.domain(),
+            cell_m: 0.35,
+            candidates_per_cell: 5,
+            // A rosette holds its own ground: two overlapping crowns read as
+            // one torn plant rather than as two.
+            spacing: SpacingPolicy::PriorityDistance {
+                minimum_centre_distance_m: 0.13,
+            },
+        }
+    }
+
+    fn appearances(&self) -> Vec<&'static str> {
+        vec!["plant.undergrowth_leaf"]
+    }
+
+    fn target_density(&self, parameters: &ParameterObject) -> f64 {
+        read(parameters, "density", 1.4)
+    }
+
+    fn maximum_reach_m(&self, parameters: &ParameterObject) -> f64 {
+        // Crown radius plus the longest leaf, both at their upper latent.
+        read(parameters, "crown_radius_m", 0.02) + read(parameters, "leaf_length_m", 0.12) * 1.3
+    }
+
+    fn validate(
+        &self,
+        parameters: &ParameterObject,
+        population: &PopulationKey,
+        diagnostics: &mut DiagnosticReport,
+    ) {
+        number(parameters, "density", 1.4, population, diagnostics);
+        number(parameters, "leaf_length_m", 0.12, population, diagnostics);
+        number(parameters, "leaf_width_m", 0.035, population, diagnostics);
+        number(parameters, "crown_radius_m", 0.02, population, diagnostics);
+    }
+
+    fn emit(
+        &self,
+        candidate: &DomainCandidate,
+        context: &RecipeContext<'_>,
+        output: &mut dyn RecipeOutput,
+    ) {
+        let seeds = &context.seeds;
+        let base_length = read(context.parameters, "leaf_length_m", 0.12) as f32;
+        let base_width = read(context.parameters, "leaf_width_m", 0.035) as f32;
+        let crown = read(context.parameters, "crown_radius_m", 0.02) as f32;
+
+        // Three to eight leaves. Addressed rather than drawn, so adding a leaf
+        // parameter later cannot shift any other decision this plant makes.
+        let leaves = 3 + (candidate.latent(seeds, &stream("rosette_leaves")) * 5.0) as u16;
+        let phase =
+            candidate.latent_range(seeds, &stream("rosette_phase"), 0.0, std::f32::consts::TAU);
+
+        // How much the rosette combs with the meadow's flow.
+        //
+        // A perfect radial rosette repeated everywhere is procedural, and a
+        // rosette fully combed into the flow is a comb. Between a tenth and
+        // half, varying per plant, keeps enough radial structure that it still
+        // reads as one plant.
+        let flow_mix = candidate.latent_range(seeds, &stream("rosette_flow"), 0.10, 0.45);
+        // Which way water runs here. Absent when the document did not ask for
+        // the flow field, in which case the rosette stays purely radial — which
+        // is the honest fallback, not a made-up direction.
+        let flow_angle = context
+            .fields
+            .derived
+            .flow_direction
+            .as_ref()
+            .map(|plane| {
+                let v = plane.sample_unit(&context.fields.grid, candidate.position);
+                v[1].atan2(v[0])
+            })
+            .unwrap_or(0.0);
+        let flow_mix = if context.fields.derived.flow_direction.is_some() {
+            flow_mix
+        } else {
+            0.0
+        };
+
+        let variation = candidate.latent(seeds, &stream("rosette_variation"));
+        let tint = candidate.latent_range(seeds, &stream("rosette_tint"), -1.0, 1.0);
+
+        for index in 0..leaves {
+            let jitter = candidate.latent_range(
+                seeds,
+                &stream(match index % 4 {
+                    0 => "rosette_jitter_a",
+                    1 => "rosette_jitter_b",
+                    2 => "rosette_jitter_c",
+                    _ => "rosette_jitter_d",
+                }),
+                -0.30,
+                0.30,
+            );
+            let radial = phase + std::f32::consts::TAU * index as f32 / leaves as f32 + jitter;
+            // Blended toward the flow as a *vector*: an angular blend takes the
+            // short way round and can swing a leaf through its neighbour.
+            let (rs, rc) = radial.sin_cos();
+            let (fs, fc) = flow_angle.sin_cos();
+            let angle = (rs * (1.0 - flow_mix) + fs * flow_mix)
+                .atan2(rc * (1.0 - flow_mix) + fc * flow_mix);
+
+            let length = base_length
+                * candidate.latent_range(
+                    seeds,
+                    &stream(if index % 2 == 0 {
+                        "rosette_len_a"
+                    } else {
+                        "rosette_len_b"
+                    }),
+                    0.65,
+                    1.25,
+                );
+            let width = base_width * (0.8 + 0.4 * variation);
+            // Set out from the crown, and lifted a little at its middle: a
+            // ground leaf rises from its base and droops at the tip rather than
+            // lying flat, and the rise is what catches the sun.
+            let reach = crown + length * 0.5;
+            output.emit(EmittedMark::Analytic {
+                centre: [
+                    candidate.position.u_m + (reach * angle.cos()) as f64,
+                    candidate.position.v_m + (reach * angle.sin()) as f64,
+                    context.surface_z_m + (length * 0.09) as f64,
+                ],
+                radius_m: [length * 0.5, width * 0.5],
+                // Thin. A ground leaf is a sheet, and thickness here reads as a
+                // slug rather than as a plant.
+                height_m: width * 0.14,
+                rotation_rad: angle,
+                attributes: MarkAttributes {
+                    maturity: 0.55,
+                    moisture: context.ground_sample.state.moisture,
+                    exposure: context.fields.exposure(candidate.position),
+                    tint,
+                    variation,
+                },
+                appearance: 0,
+            });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Stones
 // ---------------------------------------------------------------------------
 
@@ -1180,12 +1369,13 @@ mod tests {
     #[test]
     fn every_family_registers_under_its_own_key() {
         let registry = family_registry();
-        assert_eq!(registry.len(), 6, "six families");
+        assert_eq!(registry.len(), 7, "seven families");
         for key in [
             "population.grass_tuft",
             "population.grass_fine",
             "population.ground_thatch",
             "population.meadow_flowers",
+            "population.meadow_undergrowth",
             "population.field_stones",
             "population.dirt_clods",
         ] {
