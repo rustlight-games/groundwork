@@ -752,7 +752,7 @@ def appearance_builders(settings):
         "rock.elongated": lambda: stone_material(settings, [0.172, 0.170, 0.166]),
         # Broken soil, at soil's own reflectance. The stone shader is four
         # times brighter and turns grit into a scatter of white eggs.
-        "surface.soil_fragment": lambda: stone_material(settings, [0.043, 0.035, 0.024]),
+        "surface.soil_fragment": lambda: soil_fragment_material(settings),
         "surface.shell_fragment": lambda: stone_material(settings, [0.42, 0.40, 0.35]),
         "surface.organic_fragment": lambda: stone_material(settings, [0.045, 0.033, 0.024]),
         # Every ground material shares one implementation. What a particular
@@ -953,6 +953,29 @@ def leaf_material(settings):
     tree.links.new(principled.outputs["BSDF"], mix.inputs[1])
     tree.links.new(translucent.outputs["BSDF"], mix.inputs[2])
     tree.links.new(mix.outputs["Shader"], output.inputs["Surface"])
+    return material
+
+
+def soil_fragment_material(settings):
+    """A lump of the ground, not a pebble of granite.
+
+    Its own builder rather than `stone_material` at a darker colour, because the
+    colour was never the whole difference. A stone is a dense silicate with a
+    weathered but continuous surface; a soil fragment is an aggregate of grains
+    with air between them, so it scatters as roughly as the ground it broke off
+    and has no specular shoulder at all.
+
+    Left at the stone's 0.78 it caught the sun on every fragment, and a track
+    carrying ninety of them a square metre came back covered in white glints —
+    the surface read as wet concrete rather than as earth. Soil's own dry
+    roughness runs 0.82 to 0.96; this sits near the top of that, because a loose
+    fragment is rougher than the packed surface around it.
+    """
+    material = stone_material(settings, [0.043, 0.035, 0.024])
+    principled = material.node_tree.nodes["Principled BSDF"]
+    principled.inputs["Roughness"].default_value = 0.94
+    # A mineral aggregate, not a dense silicate.
+    principled.inputs["IOR"].default_value = 1.45
     return material
 
 
