@@ -268,6 +268,14 @@ pub fn compile_scene(
     // below for why a merge is an error rather than a silent fold.
     let mut tuned_claims: BTreeMap<TunedPass, String> = BTreeMap::new();
 
+    // The soils this document declares, for the recipes that place what a
+    // profile says rather than what a parameter says.
+    let declared = terrain.ground_profiles();
+    let declared_profiles: Vec<&terrain_core::ground_material::GroundMaterialProfile> = declared
+        .iter()
+        .map(|(profile, _materials)| profile.as_ref())
+        .collect();
+
     for population in terrain.populations() {
         let Some(recipe) = recipes.get(&population.recipe) else {
             diagnostics.error(
@@ -281,6 +289,12 @@ pub fn compile_scene(
             continue;
         };
         recipe.validate(&population.parameters, &population.key, &mut diagnostics);
+        recipe.validate_against_profiles(
+            &population.parameters,
+            &declared_profiles,
+            &population.key,
+            &mut diagnostics,
+        );
 
         let render_class = recipe.render_class();
         // One population per tuned pass. The tuned generator has exactly one

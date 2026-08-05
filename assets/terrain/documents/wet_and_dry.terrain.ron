@@ -353,15 +353,21 @@
                 key: "loose_grit",
                 recipe: "population.dirt_clods",
                 seed_stream: "grit",
-                material_affinity: [("sand", 1.0), ("loam", 1.0), ("floor", 0.35)],
+                material_affinity: [("sand", 1.0), ("loam", 1.0), ("floor", 1.0)],
                 abundance_channel: Some("grit_abundance"),
                 parameters: [
-                    // Against the profiles' own `grit_per_m2`, which is 90 for
-                    // the track and 220 for the bar. A fragment is a centimetre
-                    // or two across, so this is a scatter the eye reads as
-                    // texture rather than as a field of rocks.
-                    ("density", Number(110.0)),
-                    ("radius_m", Number(0.007)),
+                    // A *supply*, not a rate. One candidate lattice has to
+                    // serve every soil on the plate, so it must be at least the
+                    // largest rate any profile here asks for — the bar's 220 a
+                    // square metre — or that soil is silently capped at the
+                    // supply and never reaches what it declared. Validation
+                    // says so rather than leaving it to arithmetic.
+                    //
+                    // The radius is a reach bound for the same reason: it has to
+                    // cover the largest `fragment_radius_m` in play, which is
+                    // the loam's twenty millimetres.
+                    ("density", Number(240.0)),
+                    ("radius_m", Number(0.010)),
                 ],
             ),
             (
@@ -371,7 +377,7 @@
                 material_affinity: [("floor", 1.0)],
                 abundance_channel: Some("vegetation_density"),
                 parameters: [
-                    ("density", Number(50.0)),
+                    ("density", Number(240.0)),
                     ("height_m", Number(0.30)),
                     ("blades", Number(7.0)),
                 ],

@@ -202,6 +202,23 @@ pub trait TerrainRecipe: Send + Sync {
     /// join and missing on the other.
     fn maximum_reach_m(&self, parameters: &ParameterObject) -> f64;
 
+    /// Check the parameters against the soils actually in play.
+    ///
+    /// Separate from [`validate`](TerrainRecipe::validate) because it needs
+    /// something the parameters alone cannot supply: a recipe that places what
+    /// a *profile* declares has to know that the document left it room to. The
+    /// default does nothing, because most recipes describe what they place
+    /// entirely themselves.
+    fn validate_against_profiles(
+        &self,
+        parameters: &ParameterObject,
+        profiles: &[&terrain_core::ground_material::GroundMaterialProfile],
+        population: &PopulationKey,
+        diagnostics: &mut DiagnosticReport,
+    ) {
+        let _ = (parameters, profiles, population, diagnostics);
+    }
+
     /// Check the parameters, reporting everything wrong with them.
     fn validate(
         &self,

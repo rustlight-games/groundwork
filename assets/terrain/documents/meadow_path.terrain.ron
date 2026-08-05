@@ -472,15 +472,21 @@
                 key: "loose_grit",
                 recipe: "population.dirt_clods",
                 seed_stream: "grit",
-                material_affinity: [("dirt_compacted", 1.0), ("meadow_soil", 0.20)],
+                material_affinity: [("dirt_compacted", 1.0), ("meadow_soil", 1.0)],
                 abundance_channel: Some("grit_abundance"),
                 parameters: [
-                    // Against the profiles' own `grit_per_m2`, which is 90 for
-                    // the track and 220 for the bar. A fragment is a centimetre
-                    // or two across, so this is a scatter the eye reads as
-                    // texture rather than as a field of rocks.
-                    ("density", Number(70.0)),
-                    ("radius_m", Number(0.008)),
+                    // A *supply*, not a rate. One candidate lattice has to
+                    // serve every soil on the plate, so it must be at least the
+                    // largest rate any profile here asks for — the bar's 220 a
+                    // square metre — or that soil is silently capped at the
+                    // supply and never reaches what it declared. Validation
+                    // says so rather than leaving it to arithmetic.
+                    //
+                    // The radius is a reach bound for the same reason: it has to
+                    // cover the largest `fragment_radius_m` in play, which is
+                    // the loam's twenty millimetres.
+                    ("density", Number(240.0)),
+                    ("radius_m", Number(0.010)),
                 ],
             ),
             (
@@ -567,19 +573,6 @@
                 parameters: [
                     ("density", Number(0.9)),
                     ("radius_m", Number(0.055)),
-                ],
-            ),
-            (
-                key: "path_clods",
-                recipe: "population.dirt_clods",
-                seed_stream: "grit",
-                // Only on the worn ground, which is what keeps the clods off
-                // the meadow without a second suppression layer.
-                material_affinity: [("dirt_compacted", 1.0)],
-                abundance_channel: Some("grit_abundance"),
-                parameters: [
-                    ("density", Number(260.0)),
-                    ("radius_m", Number(0.024)),
                 ],
             ),
             (

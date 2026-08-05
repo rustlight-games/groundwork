@@ -1430,6 +1430,53 @@ impl TerrainRecipe for DirtClods {
         number(parameters, "radius_m", 0.022, population, diagnostics);
     }
 
+    fn validate_against_profiles(
+        &self,
+        parameters: &ParameterObject,
+        profiles: &[&terrain_core::ground_material::GroundMaterialProfile],
+        population: &PopulationKey,
+        diagnostics: &mut DiagnosticReport,
+    ) {
+        // ## A supply below a profile's rate caps it in silence
+        //
+        // The document's `density` sizes one candidate lattice, and that lattice
+        // has to serve every soil on the plate. A soil whose declared scatter
+        // exceeds the supply simply never reaches it: measured on a card whose
+        // supply was 110, a sand bar declaring 220 fragments a square metre got
+        // 110 and nothing anywhere said so. The profile is the authority on what
+        // a soil carries, so the document has to be able to hold it.
+        let supply = read(parameters, "density", 220.0);
+        let radius = read(parameters, "radius_m", 0.022);
+        for profile in profiles {
+            let rate = (profile.scatter.grit_per_m2 + profile.scatter.pebble_per_m2) as f64;
+            if rate > supply {
+                diagnostics.error(
+                    "scatter_supply_below_profile",
+                    Location::at(format!("populations[{population}].parameters.density")),
+                    format!(
+                        "`{}` declares {rate:.0} fragments per square metre and this \
+                         population supplies only {supply:.0}, so that soil is capped \
+                         at the supply and never reaches what it asked for",
+                        profile.key
+                    ),
+                );
+            }
+            let largest = profile.scatter.fragment_radius_m.high as f64;
+            if largest > radius {
+                diagnostics.error(
+                    "scatter_reach_below_profile",
+                    Location::at(format!("populations[{population}].parameters.radius_m")),
+                    format!(
+                        "`{}` declares fragments up to {largest:.3} m and this \
+                         population bounds its reach at {radius:.3} m, so a fragment \
+                         can extend past the halo the compiler sized for it",
+                        profile.key
+                    ),
+                );
+            }
+        }
+    }
+
     fn emit(
         &self,
         candidate: &DomainCandidate,
