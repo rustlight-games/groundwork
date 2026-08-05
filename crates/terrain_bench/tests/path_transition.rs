@@ -175,15 +175,6 @@ fn the_meadow_recovers_across_the_path_rather_than_stopping_at_it() {
         "open meadow carries only {meadow_density:.2} plants per square metre"
     );
 
-    let at = |want: f64| -> f64 {
-        profile
-            .iter()
-            .filter(|(d, v)| (*d - want).abs() < BIN_M && v.is_finite())
-            .map(|(_, v)| v / meadow_density)
-            .next()
-            .unwrap_or(f64::NAN)
-    };
-
     println!("distance  normalised root density");
     for (d, v) in profile.iter().filter(|(d, _)| *d < 6.0) {
         if v.is_finite() {
