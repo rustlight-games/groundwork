@@ -254,6 +254,18 @@ impl Bed<'_> {
     /// parameter. At the 35° this renderer is built for it is one and a half
     /// times the canopy's height; at 20° it would be nearly three times, and a
     /// constant sized for one would silently under-guard the other.
+    /// What is in the way at a prospective root.
+    ///
+    /// Exactly nothing when the field has no document behind it, which is what
+    /// keeps every pinned tuned fixture unmoved.
+    pub fn interaction(
+        &self,
+        root: Vec2,
+        pass: TunedPass,
+    ) -> crate::interaction::InteractionSample {
+        self.field.interaction(root, pass)
+    }
+
     pub fn caster_reach(&self) -> f32 {
         if self.params.quality.shadow_density() <= 0.0 {
             return 0.0;
@@ -363,13 +375,80 @@ fn scatter(
             // leaf cluster several leaves, so the alternative is the same label
             // written out at a dozen construction sites — and one of them
             // eventually gets it wrong.
+            // What is in the way here.
+            //
+            // Queried *after* the cheap page test and the acceptance draw, so a
+            // cell that was never going to plant anything does not pay for it —
+            // and before the stroke is built, because the response has to shape
+            // the plant rather than edit it afterwards. A post-process can cut a
+            // hole; it cannot make the survivors lean.
+            let obstacle = bed.interaction(root, pass);
+            let response = crate::interaction::ObstacleResponse::for_pass(pass);
+            // Widened by how far this pass's marks reach from their root. A
+            // placement is not always one mark — a tuft is five to nine blades
+            // around an anchor — and excluding only the anchor lets a clump's
+            // outlying blades land inside the stone anyway.
+            if obstacle.clearance_m <= response.root_spread_m
+                || (obstacle.blocked && response.hard_exclusion)
+            {
+                // The root is inside a stone. The latent plant still *exists* —
+                // its address and every random value it would have drawn are
+                // unchanged — it simply does not come up. That is what makes
+                // removing a stone reveal the same plant rather than a new one.
+                continue;
+            }
+
             let before = marks.len();
             place(marks, page, &mut draw, root, &ground, params);
             for mark in &mut marks[before..] {
                 mark.pass = pass;
+                if obstacle.influence > 0.0 {
+                    bend_away(mark, &obstacle, &response);
+                }
             }
         }
     }
+}
+
+/// Turn a mark away from an obstacle and shorten it.
+///
+/// ## Applied after the morphology, never before it
+///
+/// Every latent random value the plant would have drawn has already been drawn
+/// by the time this runs, and none of them are consumed here — this is a
+/// deterministic transform of a finished stroke. That ordering is the whole
+/// contract: removing a stone reveals *the same plant*, shorter and leaning a
+/// different way, rather than a new plant with a different shape.
+///
+/// The alternative — feeding the interaction into the draw sequence — would
+/// shift every subsequent value for every plant in the pass, so turning one
+/// stone off would redraw the meadow.
+fn bend_away(
+    mark: &mut Stroke,
+    obstacle: &crate::interaction::InteractionSample,
+    response: &crate::interaction::ObstacleResponse,
+) {
+    let weight = obstacle.influence.clamp(0.0, 1.0);
+
+    // Blend the heading toward "away" as a *vector*, not as an angle. An
+    // angular blend takes the short way round, which for a plant already
+    // pointing nearly at the stone is a swing through the stone.
+    let heading = Vec2::from_angle(mark.azimuth);
+    let blended = heading * (1.0 - response.direction_strength * weight)
+        + obstacle.away * (response.direction_strength * weight);
+    // Near zero the two cancelled, which happens when the plant was pointing
+    // exactly at the stone. Away is the honest answer, not noise.
+    mark.azimuth = blended.normalize_or(obstacle.away).to_angle();
+
+    // Shorter, because the stone took its light and its root space. This is
+    // most of what stops the boundary reading as a cut ring: a hard edge with
+    // full-length blades against it is what an exclusion looks like, and a
+    // gradient of shorter ones is what competition looks like.
+    mark.length *= 1.0 - response.shortening * weight;
+
+    // And laid over a little further, so it reads as growing out from under
+    // rather than as standing to attention beside.
+    mark.bend += response.extra_bend_rad * weight;
 }
 
 /// Reject a stroke that cannot possibly touch the page before rasterising it.

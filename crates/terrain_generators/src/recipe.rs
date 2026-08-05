@@ -52,6 +52,36 @@ use crate::tuned::RecipeRenderClass;
 /// how the compiler happens to lower them.
 pub trait RecipeOutput {
     fn emit(&mut self, mark: EmittedMark);
+
+    /// Declare an obstacle other content must grow around.
+    ///
+    /// A default no-op, so only the recipes that place obstacles implement it —
+    /// which is one of six. The alternative, a `RecipeEmission` enum every
+    /// recipe matches on, would make every flower's emit path carry a variant it
+    /// can never produce.
+    ///
+    /// The footprint is the recipe's own declaration rather than something
+    /// derived from its geometry afterwards. That direction matters: a stone's
+    /// physical footprint is a *conservative* ellipse it guarantees to stay
+    /// inside, and recovering one from a mesh after the fact would be an
+    /// estimate that is sometimes smaller than the object.
+    fn emit_interaction(&mut self, _interaction: EmittedInteraction) {}
+}
+
+/// An obstacle a recipe is declaring, in world terms.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EmittedInteraction {
+    /// Centre on the ground, world metres.
+    pub centre: [f64; 2],
+    pub semi_u_m: f32,
+    pub semi_v_m: f32,
+    pub yaw_rad: f32,
+    /// Inside this, a root is refused outright.
+    pub hard_clearance_m: f32,
+    /// How far past the hard boundary the smooth response reaches.
+    pub response_reach_m: f32,
+    /// Which passes it affects.
+    pub channels: terrain_scene::scene::InteractionChannels,
 }
 
 /// Everything a recipe is told about where it is growing.

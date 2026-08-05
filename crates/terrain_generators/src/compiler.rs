@@ -144,6 +144,13 @@ pub struct SceneCompilation {
     /// relief, the shader that colours it, the overlay that decides how much
     /// grass grows on it, and every secondary root registered to it.
     pub ground: Arc<crate::ground::GroundEvaluator>,
+    /// Every obstacle the tuned generator has to grow around.
+    ///
+    /// Derived from the accepted scene rather than from the candidate lattice:
+    /// only a stone that survived acceptance *and* found an owner *and* was
+    /// actually emitted is in the picture, and only what is in the picture
+    /// should push grass about.
+    pub interactions: Arc<crate::interaction::InteractionField>,
     pub report: SceneCompileReport,
 }
 
@@ -171,6 +178,8 @@ pub struct SceneCompileReport {
     /// picture" and "why is my grass not doubled" are the same question asked
     /// from two directions, and the answer to both is this table.
     pub render_classes: BTreeMap<String, RecipeRenderClass>,
+    /// Obstacles the tuned generator has to grow around.
+    pub interactions: usize,
     /// Populations declared, understood, and deliberately not drawn.
     ///
     /// A separate list rather than a filter over `render_classes`, so that a
@@ -630,10 +639,18 @@ pub fn compile_scene(
         }
     }
 
+    // Built from the finished scene, so only obstacles that survived every
+    // decision above are in it.
+    let interactions = Arc::new(crate::interaction::InteractionField::from_primitives(
+        scene.interactions.clone(),
+    ));
+    report.interactions = scene.interactions.len();
+
     Ok(SceneCompilation {
         scene: Arc::new(scene),
         fields,
         ground,
+        interactions,
         report,
     })
 }
@@ -705,6 +722,28 @@ impl MarkSink<'_> {
 }
 
 impl RecipeOutput for MarkSink<'_> {
+    fn emit_interaction(&mut self, interaction: crate::recipe::EmittedInteraction) {
+        // Named after the mark the recipe emitted before it, which for every
+        // current obstacle is its body. The id is derived from the candidate
+        // address, so it is stable across windows and gives the interaction
+        // field a total order that does not depend on traversal.
+        let source = MarkId::of(self.candidate.id, self.emitted.saturating_sub(1) as u16);
+        self.builder
+            .push_interaction(terrain_scene::scene::InteractionPrimitive {
+                source,
+                anchor: self.anchor,
+                centre: WorldPoint::new(interaction.centre[0], interaction.centre[1]),
+                shape: terrain_scene::scene::InteractionShape::Ellipse {
+                    semi_u_m: interaction.semi_u_m,
+                    semi_v_m: interaction.semi_v_m,
+                    yaw_rad: interaction.yaw_rad,
+                },
+                hard_clearance_m: interaction.hard_clearance_m,
+                response_reach_m: interaction.response_reach_m,
+                channels: interaction.channels,
+            });
+    }
+
     fn emit(&mut self, mark: EmittedMark) {
         // The part index is the count so far *for this candidate*, which is
         // what makes the id a function of identity rather than of how many

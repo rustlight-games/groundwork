@@ -653,6 +653,9 @@ impl GroundEvaluator {
     /// [`BandSplit::spacing_for`], and the exporter derives it the same way, so
     /// the two agree without either having to be told.
     pub fn mesh_surface_z_m(&self, world: Vec2, spacing_m: f32) -> f32 {
+        // `!(x > 0)` rather than `x <= 0`: they are different predicates and a
+        // NaN spacing must take this branch. See `terrain_scene::field`.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
         if !(spacing_m > 0.0) {
             return self.final_surface_z_m(world);
         }

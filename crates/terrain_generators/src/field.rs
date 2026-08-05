@@ -402,6 +402,12 @@ pub struct SemanticOverlay {
     /// is how a track's colour ends up a centimetre from where its grass
     /// thinned.
     pub ground: std::sync::Arc<crate::ground::GroundEvaluator>,
+    /// What the compiled scene put in the way.
+    ///
+    /// Empty when a caller supplies nothing, so a field over a document with no
+    /// stones behaves exactly as it did before this existed — which is what
+    /// keeps the pinned tuned fixtures unmoved.
+    pub interactions: std::sync::Arc<crate::interaction::InteractionField>,
 }
 
 impl std::fmt::Debug for SemanticOverlay {
@@ -1020,6 +1026,23 @@ impl WorldField {
                 overlay.ground.vegetation_support(world),
                 overlay.ground.abundance(world),
             ),
+        }
+    }
+
+    /// What the compiled scene put in the way at a point.
+    ///
+    /// `InteractionSample::NONE` — exactly, not approximately — when there is no
+    /// overlay or no obstacle near enough. That exactness is what lets a render
+    /// with stones be compared against one without them and any difference be
+    /// attributed.
+    pub fn interaction(
+        &self,
+        world: Vec2,
+        pass: crate::tuned::TunedPass,
+    ) -> crate::interaction::InteractionSample {
+        match &self.overlay {
+            None => crate::interaction::InteractionSample::NONE,
+            Some(overlay) => overlay.interactions.sample(world, pass),
         }
     }
 

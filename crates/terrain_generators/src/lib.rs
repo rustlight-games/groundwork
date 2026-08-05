@@ -36,6 +36,7 @@ pub mod field;
 pub mod fixtures;
 pub mod geometry;
 pub mod ground;
+pub mod interaction;
 pub mod iso;
 pub mod ownership;
 pub mod page;
@@ -63,6 +64,9 @@ pub use domain::{
 };
 pub use families::{family_registry, register_families};
 pub use field::{SemanticOverlay, WorldField};
+pub use interaction::{
+    INTERACTION_FIELD_VERSION, InteractionField, InteractionSample, ObstacleResponse,
+};
 pub use ownership::{OwnerOption, assign as assign_owner};
 pub use page::Page;
 pub use population::{PopulationContext, PopulationRecipe, PopulationRegistry};

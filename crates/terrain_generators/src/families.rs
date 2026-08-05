@@ -934,6 +934,37 @@ impl TerrainRecipe for FieldStones {
             },
             appearance: 0,
         });
+
+        // What the stone does to what grows near it.
+        //
+        // Declared here rather than derived from the mark afterwards, because
+        // the footprint is a *conservative* ellipse this recipe guarantees to
+        // stay inside — and a footprint recovered from geometry is an estimate
+        // that is sometimes smaller than the object it is supposed to bound.
+        //
+        // The response reaches further for a bigger stone: what it is taking is
+        // light and root space, and a stone twice the size takes about twice as
+        // much. Scaled off a reference radius rather than made proportional, so
+        // a field of pebbles does not end up with a response band you could not
+        // see and a boulder with one you could not miss.
+        const REFERENCE_RADIUS_M: f32 = 0.06;
+        output.emit_interaction(crate::recipe::EmittedInteraction {
+            centre: [candidate.position.u_m, candidate.position.v_m],
+            semi_u_m: radius,
+            semi_v_m: radius * squash,
+            yaw_rad: candidate.latent_range(
+                seeds,
+                &stream("stone_rotation"),
+                0.0,
+                std::f32::consts::TAU,
+            ),
+            // Eight millimetres of soil between a root and the stone. Zero
+            // would let a blade sprout from the exact edge, which reads as
+            // growing *out of* the rock.
+            hard_clearance_m: 0.008,
+            response_reach_m: 0.11 * (0.8 + 0.45 * (radius / REFERENCE_RADIUS_M).min(2.0)),
+            channels: terrain_scene::scene::InteractionChannels::ALL_TUNED,
+        });
     }
 }
 
