@@ -163,7 +163,6 @@ fn default_profile(key: &str) -> Option<&'static str> {
         "meadow_soil" => "materials/meadow_floor.ground.ron",
         "dirt_compacted" => "materials/compacted_loam.ground.ron",
         "grass_lush" | "grass_dry" => "materials/meadow_floor.ground.ron",
-        "bare_soil" => "materials/loose_farm_soil.ground.ron",
         _ => return None,
     })
 }
@@ -297,14 +296,14 @@ mod tests {
         // already carry the new fields; the step must not second-guess it.
         let mut document = document();
         let mut material = material("dirt_compacted");
-        material.profile = Some("materials/beach_sand.ground.ron".into());
+        material.profile = Some("materials/somebody_elses_soil.ground.ron".into());
         material.vegetation_affinity = Some(0.08);
         document.materials = vec![material];
 
         let (migrated, _) = migrate(document, 1).expect("migrates");
         assert_eq!(
             migrated.materials[0].profile.as_deref(),
-            Some("materials/beach_sand.ground.ron")
+            Some("materials/somebody_elses_soil.ground.ron")
         );
         assert_eq!(migrated.materials[0].vegetation_affinity, Some(0.08));
     }

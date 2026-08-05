@@ -23,22 +23,20 @@ loam whose moisture is high and whose compaction has been broken up. A materials
 list containing `dirt`, `mud`, `wet_mud` and `churned_mud` cannot express the
 ground halfway between any two of them.
 
-`assets/terrain/documents/soil_showcase.terrain.ron` is that claim as a picture:
-three materials down the columns, three conditions across the rows.
-
 ## The library
 
-`assets/terrain/materials/*.ground.ron`, seven of them:
+`assets/terrain/materials/*.ground.ron`, two of them:
 
 | Profile | What it is |
 | --- | --- |
 | `meadow_floor` | dark organic ground under a canopy |
 | `compacted_loam` | a worn track — the measured reference soil |
-| `loose_farm_soil` | freshly turned, clustered clods, a lot of grit |
-| `clay_soil` | plastic when wet, cracked when dry |
-| `beach_sand` | fine granular, rippled, flattened by water |
-| `desert_sand` | broad smooth forms under long coherent ripples |
-| `hard_dust` | compacted silt under powder, crazing where it dries |
+
+**Two, deliberately.** Five more were written — loose farm soil, clay, beach
+sand, desert sand, hardpan — and removed. The schema describes them fine; the
+meadow is what this project is for, and a library of grounds that nothing
+renders is a library nobody is checking. Adding one back is a file, and the
+ripple and crack machinery they exercised is still here and still tested.
 
 ### Where `compacted_loam`'s colours come from
 

@@ -166,16 +166,20 @@ Everything under `assets/terrain/` is authored.
 
 ```text
 assets/terrain/
-  documents/    constant_grass, blend_lab, meadow_path, narrow_track, soil_showcase
-  materials/    meadow_floor, compacted_loam, loose_farm_soil, clay_soil,
-                beach_sand, desert_sand, hard_dust
-  features/     main_path.spline.ron, narrow_track.spline.ron, showcase_*.spline.ron
+  documents/    constant_grass, blend_lab, meadow_path, narrow_track
+  materials/    meadow_floor, compacted_loam
+  features/     main_path.spline.ron, narrow_track.spline.ron
 ```
 
 A **document** says where things are. A **ground material profile** says what a
 soil is made of — its measured palette, its relief bands, how it responds to
 being wet or packed, whether it can crack. Two documents can share one soil and
 one edit retunes both. See [docs/materials/dirt.md](docs/materials/dirt.md).
+
+**Two soils, deliberately.** The profile schema can describe sand, clay and
+hardpan, and five such profiles were written and then removed: the meadow is the
+subject of this project, and a library of grounds nothing renders is a library
+nobody is checking. Adding one back is a file.
 
 - **`constant_grass`** — the base case: one material, everywhere.
 - **`blend_lab`** — four layers reading one spline. Note that it tops out at an
@@ -187,10 +191,6 @@ one edit retunes both. See [docs/materials/dirt.md](docs/materials/dirt.md).
   different widths.
 - **`narrow_track`** — the same idea at a smaller scale, which is what a
   raggedness setting held constant across two band widths has to demonstrate.
-- **`soil_showcase`** — a test card rather than a place: three materials down the
-  columns, three conditions across the rows. It exists to make one claim legible
-  — **mud is a row, not a column**. Render it at `--tile-size-m 0.7`, which is
-  close enough that a two-centimetre clod is a shape rather than a speckle.
 
 ## Measurement
 

@@ -236,5 +236,5 @@ fn every_committed_ground_profile_loads() {
             Err(error) => panic!("{error}"),
         }
     }
-    assert!(checked >= 7, "only {checked} profiles found");
+    assert!(checked >= 2, "only {checked} profiles found");
 }

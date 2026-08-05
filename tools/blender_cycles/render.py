@@ -593,13 +593,17 @@ def blade_material(settings):
 
 # How far a full hollow pulls a soil's tone down its own palette.
 #
-# Most of the way, which sounds drastic and is measured. A photograph of bare
-# earth beside grass spans **twenty times** between its darkest fifth and its
-# brightest; no palette that also has to hold a plausible median can cover that
-# on pigment alone, and at half this value a rendered card came back at eight
-# times. The rest is occlusion, and this is how much of it the mesh-scale
-# hollows are worth.
-CAVITY_TONE = 0.85
+# Half, near enough. A photograph of bare earth beside grass spans twenty times
+# between its darkest fifth and its brightest, and no palette that also has to
+# hold a plausible median covers that on pigment alone — the rest is occlusion,
+# which is what this is.
+#
+# It was pushed to 0.85 chasing the rest of that range, and the range did not
+# move: the render's dark end is lifted four times by ambient fill and a filmic
+# toe, and no material control reaches that. What the extra did reach was the
+# shape skew's narrow crests, which came back as bright dots on dark. Half puts
+# the shadow in the hollows without turning the crumbs into speckle.
+CAVITY_TONE = 0.55
 
 # The same again for the bands too fine to reach the mesh, as a multiplier on
 # the colour rather than a slide along the palette. Grain-scale shadow darkens

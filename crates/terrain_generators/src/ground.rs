@@ -626,27 +626,39 @@ struct Relief {
     cavity: f32,
 }
 
-/// Fold a `0..1` noise value into `-0.5..0.5`, with the band's shape applied.
+/// Centre a `0..1` noise value on zero, with the band's shape applied.
 ///
-/// The ridge transform is what separates a soil from gravel. Folding the field
-/// about its mean and squaring puts a crease along the top of each lump and a
-/// flat between them; leaving it alone gives soft domes. An angular material
-/// gets the full transform, which is nearly a `(1 - |n|)²` ridge.
+/// ## Why this is a skew and not a fold
+///
+/// The obvious way to make a noise field look ridged is to fold it about its
+/// mean — `1 - 2|c|`, then square. It is what ridged fractal noise does, it is
+/// one line, and on terrain at kilometre scale it gives convincing crests.
+///
+/// On soil it produces **worms**. A fold is not monotonic: a noise value well
+/// above the mean and one well below it map to the same height, so the crests
+/// end up tracing the field's *mid-level contour* — and the mid-level set of a
+/// smooth field is a family of closed curves. The result is a maze of even-width
+/// squiggles, and no ground anywhere looks like that.
+///
+/// So the transform here is monotonic by construction: a power curve on the
+/// `0..1` value, re-centred on its own mean. Raising the exponent pushes the
+/// distribution toward zero, which broadens the troughs and narrows the crests —
+/// which is what "ridged" is actually describing about a clod. Nothing folds, so
+/// nothing traces a contour, and a higher noise value is always a higher point.
+///
+/// The mean of `u^g` for uniform `u` is `1/(g+1)`, which is what is subtracted:
+/// the band has to average zero, or raising a soil's shape factor would sink the
+/// ground under it.
 fn shape(raw: f32, shape: AggregateShape) -> f32 {
-    let centred = raw - 0.5;
+    let u = raw.clamp(0.0, 1.0);
     let ridge = shape.ridge();
     if ridge <= 0.0 {
-        return centred;
+        return u - 0.5;
     }
-    // `1 - 2|c|` is a fold; squaring it sharpens the crest and flattens the
-    // trough. The offset is the *mean of the squared fold*, one third, and not
-    // one half — subtracting a half would leave the band averaging -1/12, so
-    // raising a soil's ridge factor would sink the ground under it by eight
-    // centimetres per metre of amplitude and an author tuning the look of the
-    // clods would be moving the terrain.
-    let folded = 1.0 - 2.0 * centred.abs();
-    let ridged = folded * folded - 1.0 / 3.0;
-    centred + (ridged - centred) * ridge
+    // 1 at no ridge — the identity — up to 3 at full, where the troughs are
+    // broad flats and the crests are narrow.
+    let gamma = 1.0 + 2.0 * ridge;
+    u.powf(gamma) - 1.0 / (gamma + 1.0)
 }
 
 /// Wind ripples, in metres.
@@ -890,6 +902,51 @@ mod tests {
         // to resolve a shape that is not there.
         let flat = profile(vec![band(0.002, 0.0)]);
         assert_eq!(BandSplit::spacing_for([&flat]), None);
+    }
+
+    #[test]
+    fn every_shape_is_monotonic_in_its_input() {
+        // The whole of the worm bug in one property. A fold — `1 - 2|c|`, which
+        // is what ridged fractal noise does — maps a value well above the mean
+        // and one well below it to the same height, so the crests trace the
+        // field's mid-level contour, and the mid-level set of a smooth field is
+        // a family of closed curves. The render came back as a maze of squiggles.
+        //
+        // Monotonic means a higher noise value is always a higher point, which
+        // is exactly what a contour cannot survive.
+        for shape_kind in [
+            AggregateShape::Rounded,
+            AggregateShape::RoundedRidged,
+            AggregateShape::Angular,
+        ] {
+            let mut last = f32::NEG_INFINITY;
+            for i in 0..=2000 {
+                let value = shape(i as f32 / 2000.0, shape_kind);
+                assert!(
+                    value >= last,
+                    "{shape_kind:?} fell from {last} to {value} at {i}"
+                );
+                last = value;
+            }
+        }
+    }
+
+    #[test]
+    fn a_ridged_band_spends_more_of_its_range_below_zero() {
+        // What "ridged" means for a clod: broad flat troughs and narrow crests.
+        // Stated as a measurement so that a future reshaping has to keep it.
+        let count = 4000;
+        let below = |kind| {
+            (0..count)
+                .filter(|i| shape(*i as f32 / count as f32, kind) < 0.0)
+                .count()
+        };
+        let rounded = below(AggregateShape::Rounded);
+        let angular = below(AggregateShape::Angular);
+        assert!(
+            angular > rounded + count / 10,
+            "rounded {rounded}, angular {angular} of {count}"
+        );
     }
 
     #[test]
