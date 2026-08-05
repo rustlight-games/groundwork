@@ -1014,6 +1014,274 @@ fn describe(page: Page, params: &GrassParams) -> String {
     )
 }
 
+
+/// Compile a document into one scene and render the nine-tile plate.
+///
+/// The whole production path in one command, and the order is the point: the
+/// document decides what the terrain *is*, the compiler decides what grows, and
+/// the renderer only draws what it was handed. Nothing here scatters anything.
+fn compile(args: &CompileArgs) -> ExitCode {
+    let loaded = match terrain_format::load(&args.document) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let assets = BesideDocument {
+        root: asset_root(&args.document),
+    };
+    let profiles = match load_profiles(&loaded.document, &assets) {
+        Ok(profiles) => profiles,
+        Err(problems) => {
+            eprintln!("{problems}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let terrain = match terrain_core::prepare(
+        &loaded.document,
+        &assets,
+        &terrain_core::SourceRegistry::new(),
+        &terrain_core::PrepareOptions {
+            profiles,
+            ..terrain_core::PrepareOptions::default()
+        },
+    ) {
+        Ok(terrain) => terrain,
+        Err(report) => {
+            eprintln!("{report}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // The world, and which tile is the middle of it. Derived from the seed
+    // through named streams rather than drawn beside it, so one number
+    // reproduces the whole frame.
+    let seed = args.seed.unwrap_or_else(fresh_seed);
+    let centre = match args.centre_tile.as_deref().map(parse_tile) {
+        Some(Ok(tile)) => Some(tile),
+        Some(Err(problem)) => {
+            eprintln!("{problem}");
+            return ExitCode::FAILURE;
+        }
+        None => None,
+    };
+    let identity = terrain_scene::RenderIdentity::resolve(seed, centre);
+
+    let layout = match terrain_scene::IsoTileLayout::nine(identity.centre_tile, args.tile_size_m) {
+        Ok(layout) => layout,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let frame = terrain_scene::ResolvedIsoFrame::resolve(
+        layout,
+        terrain_scene::Projection::default(),
+        terrain_scene::IsoFrameOptions {
+            output_size: [args.width, args.height],
+            ..terrain_scene::IsoFrameOptions::default()
+        },
+    );
+
+    let transition = terrain_generators::TransitionProfile {
+        raggedness: args.raggedness,
+        feature_m: args.boundary_feature_m,
+        octaves: 3,
+    };
+    let options = terrain_generators::SceneCompileOptions {
+        field_spacing_m: args.field_spacing_m,
+        derive: terrain_scene::derive::DerivedFieldRequest::ALL,
+        transition,
+        validate: true,
+    };
+
+    // The halo is derived by the compiler from every reach that exists, so the
+    // request asks for none and lets it decide.
+    let request = frame.scene_request(0.0);
+    let registry = terrain_generators::family_registry();
+
+    // Progress reporting, which is the sanctioned use — see `clippy.toml`.
+    // Nothing here reaches the generator or a digest.
+    #[allow(clippy::disallowed_types)]
+    let started = std::time::Instant::now();
+    let compiled = match terrain_generators::compile_scene(&terrain, &request, &registry, &options)
+    {
+        Ok(compiled) => compiled,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let compile_time = started.elapsed();
+
+    // One evaluator, shared by everything that asks about the ground: the mesh
+    // that carries its relief, the shader that colours it, and the overlay that
+    // decides how much grass grows on it. See `terrain_generators::ground`.
+    //
+    // The lattice it splits its relief bands at is chosen by the soils in play,
+    // so a document of hardpan and beach sand gets a finer mesh than one of
+    // turned farm soil rather than both getting a constant that suits neither.
+    let spacing = terrain_generators::ground::BandSplit::spacing_for(
+        (0..terrain.materials().len())
+            .filter_map(|index| {
+                terrain.material_profile(terrain_core::MaterialIndex(index as u16))
+            })
+            .map(|profile| profile.as_ref()),
+    )
+    .unwrap_or(0.04);
+    let evaluator = std::sync::Arc::new(terrain_generators::ground::GroundEvaluator::new(
+        &terrain,
+        compiled.fields.clone(),
+        transition,
+        spacing,
+    ));
+    for (key, bands) in &evaluator.band_split().geometry {
+        let shader = evaluator
+            .band_split()
+            .shader
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, bands)| bands.len())
+            .unwrap_or(0);
+        println!(
+            "  {key:<18} {} band(s) in the mesh, {shader} in the shader",
+            bands.len()
+        );
+    }
+
+    // The tuned generator, driven by the document.
+    //
+    // Deliberately *not* a fresh renderer over the generic scene. What the
+    // document controls is `SemanticOverlay`: how much grows, and where the
+    // earth shows. Every style field stays exactly as tuned.
+    let overlay = std::sync::Arc::new(terrain_generators::SemanticOverlay {
+        ground: std::sync::Arc::clone(&evaluator),
+    });
+
+    // Cycles, and only Cycles. See CLAUDE.md: this framework builds geometry and
+    // a path tracer renders it. There is no second renderer to fall back to and
+    // no cheap tier to compare against — the low-fidelity representation of this
+    // terrain is the field stack, not a smaller picture of it.
+    let params = plate::cycles_params(&GrassParams {
+        seed,
+        ..GrassParams::default()
+    });
+    let field =
+        terrain_generators::WorldField::lit_by(params.seed, params.light).with_overlay(overlay);
+
+    let visible = frame.layout.visible_bounds();
+    let request = PlateRequest {
+        width: args.width as usize,
+        height: args.height as usize,
+        origin: Vec2::new(frame.cache_origin[0], frame.cache_origin[1]),
+        px_per_metre: frame.pixels_per_metre,
+        supersample: args.supersample,
+        tiles: args.trace_tiles_across,
+        blade_width: 0.0,
+        visible: Some((
+            Vec2::new(visible.min.u_m as f32, visible.min.v_m as f32),
+            Vec2::new(visible.max.u_m as f32, visible.max.v_m as f32),
+        )),
+        settings: RenderSettings {
+            samples: args.samples,
+            device: if args.cpu { "CPU" } else { "GPU" }.to_string(),
+            view_transform: "AgX".to_string(),
+            sun_elevation: args.sun_elevation_deg.to_radians(),
+            ..RenderSettings::default()
+        },
+        scene_dir: std::env::temp_dir().join("terrain-compile-scene"),
+        keep_scene: std::env::var_os("TERRAIN_KEEP_SCENE").is_some(),
+    };
+
+    let plan = PlatePlan::resolve(&request, &params);
+    println!(
+        "  tracing at {:.0} px/m ({}x), {} ribs, ~{:.1}M blades",
+        plan.trace_px_per_metre,
+        plan.supersample,
+        plan.ribs,
+        plan.estimated_blades / 1.0e6,
+    );
+
+    // Progress reporting, which is the sanctioned use — see `clippy.toml`.
+    // Nothing here reaches the generator or a digest.
+    #[allow(clippy::disallowed_types)]
+    let started = std::time::Instant::now();
+    let mut progress = |p: Progress| {
+        if p.tiles > 1 {
+            println!("  slice {}/{}", p.tile, p.tiles);
+        }
+    };
+    let plate = match plate::trace(&request, &params, &field, &mut progress) {
+        Ok(plate) => plate,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let render_time = started.elapsed();
+
+    if let Some(parent) = args.out.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(error) = image::save_buffer(
+        &args.out,
+        &plate.pixels,
+        plate.width as u32,
+        plate.height as u32,
+        image::ColorType::Rgba8,
+    ) {
+        eprintln!("cannot write {}: {error}", args.out.display());
+        return ExitCode::FAILURE;
+    }
+
+    let report = &compiled.report;
+    println!("{}", args.out.display());
+    println!(
+        "  document {} — seed {} — centre tile {},{}",
+        loaded.document.metadata.name,
+        identity.seed_hex(),
+        identity.centre_tile.u,
+        identity.centre_tile.v
+    );
+    println!(
+        "  matrix   {} samples at {:.3} m, halo {:.2} m",
+        report.field_samples, report.field_spacing_m, report.halo_m
+    );
+    println!(
+        "  candidates {} generated, {} accepted, {} unowned",
+        report.candidates_generated, report.candidates_accepted, report.candidates_unowned
+    );
+    println!(
+        "  marks    {} from {} populations",
+        report.marks_emitted,
+        report.marks_by_population.len()
+    );
+    for (population, count) in &report.marks_by_population {
+        println!("             {population}: {count}");
+    }
+    println!(
+        "  scene    {} — {:.1} marks/m2",
+        compiled.scene.fingerprint().short(),
+        compiled.scene.mark_density()
+    );
+    println!(
+        "  traced   {} blades in {:.0}s (compile {:.2}s)",
+        plate.blades,
+        render_time.as_secs_f64(),
+        compile_time.as_secs_f64()
+    );
+    println!("\nreplay:");
+    println!(
+        "  terrain compile {} --seed {} --centre-tile={},{}",
+        args.document.display(),
+        identity.seed_hex(),
+        identity.centre_tile.u,
+        identity.centre_tile.v
+    );
+    ExitCode::SUCCESS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1242,265 +1510,4 @@ mod tests {
         assert!(described.contains("marks"));
         assert!(described.contains("fingerprint"));
     }
-}
-
-/// Compile a document into one scene and render the nine-tile plate.
-///
-/// The whole production path in one command, and the order is the point: the
-/// document decides what the terrain *is*, the compiler decides what grows, and
-/// the renderer only draws what it was handed. Nothing here scatters anything.
-fn compile(args: &CompileArgs) -> ExitCode {
-    let loaded = match terrain_format::load(&args.document) {
-        Ok(loaded) => loaded,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let assets = BesideDocument {
-        root: asset_root(&args.document),
-    };
-    let profiles = match load_profiles(&loaded.document, &assets) {
-        Ok(profiles) => profiles,
-        Err(problems) => {
-            eprintln!("{problems}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let terrain = match terrain_core::prepare(
-        &loaded.document,
-        &assets,
-        &terrain_core::SourceRegistry::new(),
-        &terrain_core::PrepareOptions {
-            profiles,
-            ..terrain_core::PrepareOptions::default()
-        },
-    ) {
-        Ok(terrain) => terrain,
-        Err(report) => {
-            eprintln!("{report}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    // The world, and which tile is the middle of it. Derived from the seed
-    // through named streams rather than drawn beside it, so one number
-    // reproduces the whole frame.
-    let seed = args.seed.unwrap_or_else(fresh_seed);
-    let centre = match args.centre_tile.as_deref().map(parse_tile) {
-        Some(Ok(tile)) => Some(tile),
-        Some(Err(problem)) => {
-            eprintln!("{problem}");
-            return ExitCode::FAILURE;
-        }
-        None => None,
-    };
-    let identity = terrain_scene::RenderIdentity::resolve(seed, centre);
-
-    let layout = match terrain_scene::IsoTileLayout::nine(identity.centre_tile, args.tile_size_m) {
-        Ok(layout) => layout,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let frame = terrain_scene::ResolvedIsoFrame::resolve(
-        layout,
-        terrain_scene::Projection::default(),
-        terrain_scene::IsoFrameOptions {
-            output_size: [args.width, args.height],
-            ..terrain_scene::IsoFrameOptions::default()
-        },
-    );
-
-    let transition = terrain_generators::TransitionProfile {
-        raggedness: args.raggedness,
-        feature_m: args.boundary_feature_m,
-        octaves: 3,
-    };
-    let options = terrain_generators::SceneCompileOptions {
-        field_spacing_m: args.field_spacing_m,
-        derive: terrain_scene::derive::DerivedFieldRequest::ALL,
-        transition,
-        validate: true,
-    };
-
-    // The halo is derived by the compiler from every reach that exists, so the
-    // request asks for none and lets it decide.
-    let request = frame.scene_request(0.0);
-    let registry = terrain_generators::family_registry();
-
-    let started = std::time::Instant::now();
-    let compiled = match terrain_generators::compile_scene(&terrain, &request, &registry, &options)
-    {
-        Ok(compiled) => compiled,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let compile_time = started.elapsed();
-
-    // One evaluator, shared by everything that asks about the ground: the mesh
-    // that carries its relief, the shader that colours it, and the overlay that
-    // decides how much grass grows on it. See `terrain_generators::ground`.
-    //
-    // The lattice it splits its relief bands at is chosen by the soils in play,
-    // so a document of hardpan and beach sand gets a finer mesh than one of
-    // turned farm soil rather than both getting a constant that suits neither.
-    let spacing = terrain_generators::ground::BandSplit::spacing_for(
-        (0..terrain.materials().len())
-            .filter_map(|index| {
-                terrain.material_profile(terrain_core::MaterialIndex(index as u16))
-            })
-            .map(|profile| profile.as_ref()),
-    )
-    .unwrap_or(0.04);
-    let evaluator = std::sync::Arc::new(terrain_generators::ground::GroundEvaluator::new(
-        &terrain,
-        compiled.fields.clone(),
-        transition,
-        spacing,
-    ));
-    for (key, bands) in &evaluator.band_split().geometry {
-        let shader = evaluator
-            .band_split()
-            .shader
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, bands)| bands.len())
-            .unwrap_or(0);
-        println!(
-            "  {key:<18} {} band(s) in the mesh, {shader} in the shader",
-            bands.len()
-        );
-    }
-
-    // The tuned generator, driven by the document.
-    //
-    // Deliberately *not* a fresh renderer over the generic scene. What the
-    // document controls is `SemanticOverlay`: how much grows, and where the
-    // earth shows. Every style field stays exactly as tuned.
-    let overlay = std::sync::Arc::new(terrain_generators::SemanticOverlay {
-        ground: std::sync::Arc::clone(&evaluator),
-    });
-
-    // Cycles, and only Cycles. See CLAUDE.md: this framework builds geometry and
-    // a path tracer renders it. There is no second renderer to fall back to and
-    // no cheap tier to compare against — the low-fidelity representation of this
-    // terrain is the field stack, not a smaller picture of it.
-    let params = plate::cycles_params(&GrassParams {
-        seed,
-        ..GrassParams::default()
-    });
-    let field =
-        terrain_generators::WorldField::lit_by(params.seed, params.light).with_overlay(overlay);
-
-    let visible = frame.layout.visible_bounds();
-    let request = PlateRequest {
-        width: args.width as usize,
-        height: args.height as usize,
-        origin: Vec2::new(frame.cache_origin[0], frame.cache_origin[1]),
-        px_per_metre: frame.pixels_per_metre,
-        supersample: args.supersample,
-        tiles: args.trace_tiles_across,
-        blade_width: 0.0,
-        visible: Some((
-            Vec2::new(visible.min.u_m as f32, visible.min.v_m as f32),
-            Vec2::new(visible.max.u_m as f32, visible.max.v_m as f32),
-        )),
-        settings: RenderSettings {
-            samples: args.samples,
-            device: if args.cpu { "CPU" } else { "GPU" }.to_string(),
-            view_transform: "AgX".to_string(),
-            sun_elevation: args.sun_elevation_deg.to_radians(),
-            ..RenderSettings::default()
-        },
-        scene_dir: std::env::temp_dir().join("terrain-compile-scene"),
-        keep_scene: std::env::var_os("TERRAIN_KEEP_SCENE").is_some(),
-    };
-
-    let plan = PlatePlan::resolve(&request, &params);
-    println!(
-        "  tracing at {:.0} px/m ({}x), {} ribs, ~{:.1}M blades",
-        plan.trace_px_per_metre,
-        plan.supersample,
-        plan.ribs,
-        plan.estimated_blades / 1.0e6,
-    );
-
-    let started = std::time::Instant::now();
-    let mut progress = |p: Progress| {
-        if p.tiles > 1 {
-            println!("  slice {}/{}", p.tile, p.tiles);
-        }
-    };
-    let plate = match plate::trace(&request, &params, &field, &mut progress) {
-        Ok(plate) => plate,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let render_time = started.elapsed();
-
-    if let Some(parent) = args.out.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Err(error) = image::save_buffer(
-        &args.out,
-        &plate.pixels,
-        plate.width as u32,
-        plate.height as u32,
-        image::ColorType::Rgba8,
-    ) {
-        eprintln!("cannot write {}: {error}", args.out.display());
-        return ExitCode::FAILURE;
-    }
-
-    let report = &compiled.report;
-    println!("{}", args.out.display());
-    println!(
-        "  document {} — seed {} — centre tile {},{}",
-        loaded.document.metadata.name,
-        identity.seed_hex(),
-        identity.centre_tile.u,
-        identity.centre_tile.v
-    );
-    println!(
-        "  matrix   {} samples at {:.3} m, halo {:.2} m",
-        report.field_samples, report.field_spacing_m, report.halo_m
-    );
-    println!(
-        "  candidates {} generated, {} accepted, {} unowned",
-        report.candidates_generated, report.candidates_accepted, report.candidates_unowned
-    );
-    println!(
-        "  marks    {} from {} populations",
-        report.marks_emitted,
-        report.marks_by_population.len()
-    );
-    for (population, count) in &report.marks_by_population {
-        println!("             {population}: {count}");
-    }
-    println!(
-        "  scene    {} — {:.1} marks/m2",
-        compiled.scene.fingerprint().short(),
-        compiled.scene.mark_density()
-    );
-    println!(
-        "  traced   {} blades in {:.0}s (compile {:.2}s)",
-        plate.blades,
-        render_time.as_secs_f64(),
-        compile_time.as_secs_f64()
-    );
-    println!("\nreplay:");
-    println!(
-        "  terrain compile {} --seed {} --centre-tile={},{}",
-        args.document.display(),
-        identity.seed_hex(),
-        identity.centre_tile.u,
-        identity.centre_tile.v
-    );
-    ExitCode::SUCCESS
 }

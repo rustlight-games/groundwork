@@ -862,12 +862,10 @@ mod tests {
     fn the_wet_curve_passes_through_the_declared_wet_mid() {
         let p = profile();
         let soaked = p.albedo(0.5, 1.0);
-        for channel in 0..3 {
+        for (channel, (got, want)) in soaked.iter().zip(p.optics.wet.wet_mid).enumerate() {
             assert!(
-                (soaked[channel] - p.optics.wet.wet_mid[channel]).abs() < 1e-6,
-                "channel {channel}: {} is not {}",
-                soaked[channel],
-                p.optics.wet.wet_mid[channel]
+                (got - want).abs() < 1e-6,
+                "channel {channel}: {got} is not {want}"
             );
         }
     }

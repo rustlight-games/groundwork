@@ -42,6 +42,10 @@
 //! changes hands. A boundary nudged by a centimetre reassigns a handful of marks
 //! and leaves every other one exactly where it was.
 
+// See `terrain_scene::field`: `!(x > 0.0)` is true for NaN and `x <= 0.0` is
+// not, and this is a guard whose job is to catch one.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 use terrain_core::ids::StreamKey;
 use terrain_core::seed::{RandomAddress, SeedContext};
 

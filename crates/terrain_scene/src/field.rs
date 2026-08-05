@@ -63,6 +63,13 @@
 //! the whole stack exists to prevent, since a population placing by one slope
 //! and a renderer shading by a different one is invisible until it is a seam.
 
+// Clippy reads `!(x > 0.0)` as a negated comparison and suggests `x <= 0.0`.
+// They are not the same predicate. `!(x > 0.0)` is **true** for NaN and
+// `x <= 0.0` is false, and every one of these is a guard whose whole job is to
+// catch a NaN before it poisons an accumulator. The awkward spelling is the
+// point.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 use terrain_core::coords::{WorldPoint, WorldRect};
 use terrain_core::digest::{Digest, Digestible, Fingerprint};
 use terrain_core::ids::{MaterialIndex, ModifierIndex};
@@ -544,10 +551,10 @@ impl ScalarPlane {
     /// Read the plane at a world point, honouring its declared filter and
     /// border.
     pub fn sample(&self, grid: &FieldGridSpec, at: WorldPoint) -> f32 {
-        if let FieldBorder::Value(outside) = self.descriptor.border {
-            if !grid.contains(at) {
-                return outside;
-            }
+        if let FieldBorder::Value(outside) = self.descriptor.border
+            && !grid.contains(at)
+        {
+            return outside;
         }
         let (cell, t) = grid.locate(at);
         match self.descriptor.filter {
@@ -792,10 +799,11 @@ impl DerivedFieldSet {
             &self.dominant_material,
             &self.secondary_material,
             &self.blend,
-        ] {
-            if let Some(plane) = plane {
-                out.push((plane.descriptor.key.as_str(), plane));
-            }
+        ]
+        .into_iter()
+        .flatten()
+        {
+            out.push((plane.descriptor.key.as_str(), plane));
         }
         out
     }
@@ -803,10 +811,11 @@ impl DerivedFieldSet {
     /// Every vector plane present, with its key.
     pub fn vector_planes(&self) -> Vec<(&str, &VectorPlane)> {
         let mut out = Vec::new();
-        for plane in [&self.normal, &self.flow_direction, &self.boundary_tangent] {
-            if let Some(plane) = plane {
-                out.push((plane.descriptor.key.as_str(), plane));
-            }
+        for plane in [&self.normal, &self.flow_direction, &self.boundary_tangent]
+            .into_iter()
+            .flatten()
+        {
+            out.push((plane.descriptor.key.as_str(), plane));
         }
         out
     }

@@ -435,10 +435,10 @@ mod tests {
                     profile,
                     SEED,
                 );
-                if let Some((material, _)) = realised.dominant() {
-                    if material == MaterialIndex(1) {
-                        return u;
-                    }
+                if let Some((material, _)) = realised.dominant()
+                    && material == MaterialIndex(1)
+                {
+                    return u;
                 }
                 last = u;
             }
@@ -496,10 +496,10 @@ mod tests {
                         &profile,
                         SEED,
                     );
-                    if let Some((material, _)) = realised.dominant() {
-                        if material == MaterialIndex(1) {
-                            return u;
-                        }
+                    if let Some((material, _)) = realised.dominant()
+                        && material == MaterialIndex(1)
+                    {
+                        return u;
                     }
                 }
                 1.0

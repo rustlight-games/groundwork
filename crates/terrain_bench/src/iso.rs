@@ -300,15 +300,14 @@ mod tests {
         // a fixture that silently produced a constant field would pass the
         // tests below for the wrong reason.
         let mut state = (seed ^ 0x9E37_79B9_7F4A_7C15) | 1;
-        for index in 0..width * height {
+        for lit in subject.iter().take(width * height) {
             // A cheap xorshift, enough to give the field texture without
             // pulling in a dependency for a test fixture.
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
             let value = ((state >> 40) as u32 & 0xFF) as f32 / 255.0;
-            let lift = subject_lift * subject[index];
-            colour.push(Vec3::splat(0.3 + value * 0.4 + lift));
+            colour.push(Vec3::splat(0.3 + value * 0.4 + subject_lift * lit));
         }
         RenderImage {
             colour,

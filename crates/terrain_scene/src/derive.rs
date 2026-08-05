@@ -42,6 +42,13 @@
 //! a stated tie-break they resolve in whatever order the sort happened to leave
 //! them.
 
+// Clippy reads `!(x > 0.0)` as a negated comparison and suggests `x <= 0.0`.
+// They are not the same predicate. `!(x > 0.0)` is **true** for NaN and
+// `x <= 0.0` is false, and every one of these is a guard whose whole job is to
+// catch a NaN before it poisons an accumulator. The awkward spelling is the
+// point.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 use rayon::prelude::*;
 
 use terrain_core::ids::MaterialIndex;

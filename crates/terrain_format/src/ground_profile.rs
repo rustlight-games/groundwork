@@ -18,6 +18,15 @@
 //!
 //! So the numbers live in an asset, both halves read them, and the one place
 //! they are written down is a file an author can open.
+//!
+//! ## A large error is fine here
+//!
+//! [`ProfileError`] carries a path, a parser span and — for the interesting
+//! variant — every diagnostic found. Clippy objects to a wide `Result`, and the
+//! objection is aimed at hot paths where the success value is small and returned
+//! millions of times. A profile is read once per document. The same argument
+//! `ron_io` makes, for the same reason.
+#![allow(clippy::result_large_err)]
 
 use serde::{Deserialize, Serialize};
 use terrain_core::diagnostics::{DiagnosticReport, Location};

@@ -439,8 +439,7 @@ mod tests {
         // Both directions matter. One frame would be the hot loop again; a
         // wait long enough to outlast a session would mean a prebake finishing
         // mid-run never showed up.
-        assert!(MISSING_RETRY_FRAMES > 1);
-        assert!(MISSING_RETRY_FRAMES < 60 * 30);
+        assert!((2..60 * 30).contains(&MISSING_RETRY_FRAMES));
     }
 
     #[test]
