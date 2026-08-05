@@ -23,7 +23,7 @@
 //! the numbers below are that statement turned into arithmetic.
 
 use glam::Vec2;
-use terrain_bench::{documents, meadow};
+use terrain_bench::documents;
 use terrain_generators::compiler::{SceneCompileOptions, compile_scene};
 
 /// How wide a distance bin is.
