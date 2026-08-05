@@ -190,32 +190,40 @@
             cohesion: 0.06,
         ),
 
-        // ## No ripples, after trying them
+        // ## Ripples, on the second attempt, and short crested
         //
-        // This was the first profile in the tree to declare a `RippleProfile`,
-        // and three renders in a row came back looking like corduroy, then like
-        // brushed burlap, then like woven canvas. Lowering the amplitude,
-        // trebling the meander and adding a patchiness field each made it a
-        // slightly different fabric.
+        // The first attempt declared a `RippleProfile` and three renders came
+        // back as corduroy, then brushed burlap, then woven canvas. Lowering
+        // the amplitude, trebling the meander and adding a patchiness field
+        // each produced a slightly different fabric, and the profile shipped
+        // with `ripples: None` for a while because of it.
         //
-        // The reason is structural rather than a matter of tuning. A ripple
-        // field is *one frequency in one direction*, and at this framing it is
-        // an order of magnitude higher in contrast than anything else the
-        // profile puts on the surface — so it is not a texture over a ground,
-        // it is the whole of what a viewer sees, and a single frequency in a
-        // single direction over a whole plate is the definition of a weave.
-        // Real ripples escape that by being *short crested*: they fork, break
-        // into segments and die out, and none of that is expressible as a phase
-        // displacement on a sine.
+        // The defect was in the *solver*, not in these numbers. A ripple drawn
+        // as a continuous wave is a weave however it is tuned, because the one
+        // thing a real ripple field has that a sine does not is termination:
+        // crests run for a few times their own wavelength, die out, and a new
+        // one starts offset from it, with smooth ground between. `ripple_height`
+        // now carries that, so a wavelength that used to cover a whole plate
+        // covers about half of it in runs a third of a metre long.
         //
-        // So sand is carried here by the things that do work — a wide patch
-        // term, real grain, and a scour band a hand across — and the ripple
-        // code stays for a document that wants a dune, where the camera is
-        // further away and the wave is the landform rather than the surface.
-        // Its own defect is fixed on the way past: the meander derived its
-        // frequency from its amplitude, so the displacement field ran faster
-        // than the ripple it displaced. See `ripple_height`.
-        ripples: None,
+        // The envelope is what a river bar actually measures: eight-centimetre
+        // crest spacing, a millimetre and a half of relief, and coverage near
+        // a half.
+        ripples: Some((
+            wavelength_m: 0.080,
+            // A millimetre and a half. The first attempt used four, which put
+            // more relief in the ripple than in everything else on the surface
+            // combined — a ripple is a texture *over* a ground, not the ground.
+            amplitude_m: 0.0015,
+            direction_deg: 35.0,
+            crest_sharpness: 0.42,
+            asymmetry: 0.45,
+            meander_m: 0.055,
+            // Wet sand does not ripple: the water holds the grains where they
+            // are. Nearly total, so their disappearance is one more thing that
+            // reads as wetness.
+            wetness_suppression: 0.88,
+        )),
 
         // None, and deliberately. Cracking is a clay behaviour — it needs
         // cohesion for the shrinking sheet to hold together long enough to

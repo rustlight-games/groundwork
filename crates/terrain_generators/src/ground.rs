@@ -1157,23 +1157,46 @@ fn ripple_height(
         0.0
     };
 
-    // How hard the ripples are working here. A bar carries stretches that were
-    // reworked yesterday beside stretches a flood smoothed over, and drawing
-    // them at one amplitude everywhere is the second half of the corduroy
-    // reading: an even pattern over an even field has nothing anywhere for the
-    // eye to catch on except its own regularity.
+    // ## Short crests, which is the whole difference between a ripple and a weave
     //
-    // Over two metres, so it organises the bar rather than the ripple. Floored
-    // well above zero, because a ripple field with holes in it reads as damage.
-    let patchiness = 0.45
-        + 0.55
-            * fbm(
-                root_seed ^ 0x_21_99_1E_5A,
-                Stream::Ripple,
-                world.x * 0.5,
-                world.y * 0.5,
-                2,
-            );
+    // A ripple field drawn as a continuous wave is a woven fabric, and no
+    // amount of meander or amplitude variation rescues it — three renders were
+    // spent proving that, and the profile that declared them was left with
+    // `ripples: None` for a while as a result.
+    //
+    // What a real ripple field has that a sine does not is **termination**.
+    // Crests run for a few times their own wavelength, die out, and a new one
+    // starts offset from it; between them the surface is smooth. That is a
+    // property of the crest's *length along itself*, so the field that carries
+    // it has to be anisotropic — long across the wave and short along it —
+    // which is what the two different frequencies below are.
+    //
+    // Coverage lands near half: about that much of a bar is actively rippled
+    // and the rest is smooth between. `smoothstep` rather than a threshold, so
+    // a crest fades out along its length instead of stopping at a line.
+    let segment = fbm(
+        root_seed ^ 0x_21_99_1E_5A,
+        Stream::Ripple,
+        // Along the wave: slow, so a run of crests shares a fate.
+        along * 0.9,
+        // Across it: fast, so neighbouring crests do not.
+        across * 2.6,
+        2,
+    );
+    let crested_here = smoothstep(0.38, 0.62, segment);
+
+    // And a broad term on top, so the bar has reworked stretches and smoothed
+    // ones at a scale above the individual crest.
+    let patchiness = crested_here
+        * (0.45
+            + 0.55
+                * fbm(
+                    root_seed ^ 0x_21_99_1E_A7,
+                    Stream::Ripple,
+                    world.x * 0.5,
+                    world.y * 0.5,
+                    2,
+                ));
 
     let phase =
         (along + meander) * std::f32::consts::TAU / ripples.wavelength_m.max(f32::MIN_POSITIVE);

@@ -49,7 +49,7 @@ marks = 355, placements = 67, prototypes = 0, interactions = 14
   meadow_undergrowth = secondary, 312 marks
 
 [wet_hollow]
-scene = 55b2a0c9e692fb0ee588645812d78a52
+scene = 88b2c1e8d43d81ff2c0e3243f8978a52
 candidates = 1804 generated, 34 accepted, 0 unowned
 marks = 224, placements = 34, prototypes = 0, interactions = 0
   field_stones = secondary, 0 marks
@@ -60,7 +60,7 @@ marks = 224, placements = 34, prototypes = 0, interactions = 0
   meadow_undergrowth = secondary, 200 marks
 
 [wet_and_dry]
-scene = 4ecace2fa1cea0557f3aca21474d585f
+scene = 1fd360d8c0b4c230878f4f177662ab67
 candidates = 635151 generated, 116735 accepted, 0 unowned
 marks = 37628, placements = 116735, prototypes = 0, interactions = 0
   loose_grit = secondary, 36414 marks
