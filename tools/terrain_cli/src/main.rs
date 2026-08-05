@@ -130,14 +130,26 @@ struct CompileArgs {
     /// Supersample factor for the trace.
     #[arg(long, default_value_t = 2)]
     supersample: usize,
-    /// How high the sun sits, in degrees.
+    /// How high the sun sits, in degrees. Omitted uses the renderer's own.
     ///
-    /// Thirty-five is what the grass was tuned under. Bare ground wants less:
-    /// high light hides shallow relief, and a clod two centimetres tall throws
-    /// no shadow worth seeing from overhead. Fifteen or twenty is where a soil
-    /// plate shows what its surface actually is.
-    #[arg(long, default_value_t = 35.0)]
-    sun_elevation_deg: f32,
+    /// Bare ground wants a low sun: high light hides shallow relief, and a clod
+    /// two centimetres tall throws no shadow worth seeing from overhead.
+    ///
+    /// This used to default to 35, which silently overrode whatever
+    /// `RenderSettings::default` said — so lowering the renderer's elevation
+    /// changed every caller *except* the one that renders the documents. An
+    /// unset option inherits instead, which is what a default should do.
+    #[arg(long)]
+    sun_elevation_deg: Option<f32>,
+    /// The view transform. Omitted uses AgX, which is what production renders.
+    ///
+    /// `Standard` is the one worth knowing about: it is the only way to measure
+    /// a plate in something close to scene-linear. AgX has a toe, so converting
+    /// its PNG back through the sRGB curve recovers linearised *tone-mapped*
+    /// values rather than radiance — and a four-fold albedo swing measured that
+    /// way reads as under two.
+    #[arg(long)]
+    view_transform: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1260,8 +1272,14 @@ fn compile(args: &CompileArgs) -> ExitCode {
         settings: RenderSettings {
             samples: args.samples,
             device: if args.cpu { "CPU" } else { "GPU" }.to_string(),
-            view_transform: "AgX".to_string(),
-            sun_elevation: args.sun_elevation_deg.to_radians(),
+            view_transform: args
+                .view_transform
+                .clone()
+                .unwrap_or_else(|| "AgX".to_string()),
+            sun_elevation: args
+                .sun_elevation_deg
+                .map(f32::to_radians)
+                .unwrap_or(RenderSettings::default().sun_elevation),
             ..RenderSettings::default()
         },
         scene_dir: std::env::temp_dir().join("terrain-compile-scene"),

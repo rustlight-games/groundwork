@@ -76,6 +76,13 @@ def jobs_from_argv():
 def live(sockets, name):
     """The *enabled* socket of a given name.
 
+    **Use this for every `ShaderNodeMix` and every `ShaderNodeMapRange` socket,
+    without exception.** Both node types carry one socket set per data type and
+    every set uses the same names, so raw `inputs[...]` returns whichever comes
+    first — which is disabled whenever the node is set to anything but that
+    type. Linking to a disabled socket is not an error and draws no warning, and
+    setting its default is not an error either. The link simply has no effect.
+
     `ShaderNodeMix` carries one A/B/Result triple per data type and they all
     share their names, so `inputs["A"]` returns whichever comes first — the
     `VALUE` one at index two, which is disabled whenever the node is set to
@@ -1009,10 +1016,10 @@ def blade_material(settings):
     separate.location = (-1300, -200)
     along = nodes.new("ShaderNodeMapRange")
     along.location = (-1100, -200)
-    along.inputs["From Min"].default_value = 0.0
-    along.inputs["From Max"].default_value = 0.30
+    live(along.inputs, "From Min").default_value = 0.0
+    live(along.inputs, "From Max").default_value = 0.30
     links.new(geometry.outputs["Position"], separate.inputs["Vector"])
-    links.new(separate.outputs["Z"], along.inputs["Value"])
+    links.new(separate.outputs["Z"], live(along.inputs, "Value"))
 
     maturity = nodes.new("ShaderNodeAttribute")
     maturity.attribute_name = "maturity"
@@ -1064,7 +1071,7 @@ def blade_material(settings):
     mix.location = (-500, 0)
     live(mix.inputs, "B").default_value = (0.020, 0.152, 0.003, 1.0)
 
-    links.new(along.outputs["Result"], ramp.inputs["Fac"])
+    links.new(live(along.outputs, "Result"), ramp.inputs["Fac"])
     links.new(ramp.outputs["Color"], live(mix.inputs, "A"))
     links.new(maturity.outputs["Fac"], live(mix.inputs, "Factor"))
 
@@ -1122,12 +1129,12 @@ def blade_material(settings):
     # edge anywhere in it.
     spread = nodes.new("ShaderNodeMapRange")
     spread.location = (-1120, 320)
-    spread.inputs["From Min"].default_value = 0.06
-    spread.inputs["From Max"].default_value = 0.94
+    live(spread.inputs, "From Min").default_value = 0.06
+    live(spread.inputs, "From Max").default_value = 0.94
     spread.clamp = True
 
     links.new(coordinate.outputs["Object"], drift.inputs["Vector"])
-    links.new(drift.outputs["Fac"], spread.inputs["Value"])
+    links.new(drift.outputs["Fac"], live(spread.inputs, "Value"))
 
     # Tints rather than colours — multiplied, so they ride on the value ramp
     # instead of replacing it. Two of them, so the axis runs both ways from the
@@ -1155,7 +1162,7 @@ def blade_material(settings):
     links.new(mix_out, live(cool.inputs, "A"))
     links.new(live(cool.outputs, "Result"), live(graded.inputs, "A"))
     links.new(live(warm.outputs, "Result"), live(graded.inputs, "B"))
-    links.new(spread.outputs["Result"], live(graded.inputs, "Factor"))
+    links.new(live(spread.outputs, "Result"), live(graded.inputs, "Factor"))
 
     # ## Dry blades
     #
@@ -1174,8 +1181,8 @@ def blade_material(settings):
 
     is_dry = nodes.new("ShaderNodeMapRange")
     is_dry.location = (-900, -260)
-    is_dry.inputs["From Min"].default_value = 3.3
-    is_dry.inputs["From Max"].default_value = 3.9
+    live(is_dry.inputs, "From Min").default_value = 3.3
+    live(is_dry.inputs, "From Max").default_value = 3.9
     is_dry.clamp = True
 
     straw = nodes.new("ShaderNodeValToRGB")
@@ -1187,11 +1194,11 @@ def blade_material(settings):
     withered.data_type = "RGBA"
     withered.location = (-20, 150)
 
-    links.new(tone.outputs["Fac"], is_dry.inputs["Value"])
-    links.new(along.outputs["Result"], straw.inputs["Fac"])
+    links.new(tone.outputs["Fac"], live(is_dry.inputs, "Value"))
+    links.new(live(along.outputs, "Result"), straw.inputs["Fac"])
     links.new(live(graded.outputs, "Result"), live(withered.inputs, "A"))
     links.new(live(straw.outputs, "Color"), live(withered.inputs, "B"))
-    links.new(is_dry.outputs["Result"], live(withered.inputs, "Factor"))
+    links.new(live(is_dry.outputs, "Result"), live(withered.inputs, "Factor"))
     links.new(live(withered.outputs, "Result"), principled.inputs["Base Color"])
 
     # ## Why the specular lobe is kept small
@@ -1536,12 +1543,12 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     floor = 0.5 * (1.0 - optics["region_strength"])
     tone_norm = nodes.new("ShaderNodeMapRange")
     tone_norm.location = (-1850, y + 300)
-    tone_norm.inputs["From Min"].default_value = floor
-    tone_norm.inputs["From Max"].default_value = (
+    live(tone_norm.inputs, "From Min").default_value = floor
+    live(tone_norm.inputs, "From Max").default_value = (
         floor + optics["region_strength"] + optics["patch_strength"]
     )
     tone_norm.clamp = True
-    links.new(tone2.outputs["Value"], tone_norm.inputs["Value"])
+    links.new(tone2.outputs["Value"], live(tone_norm.inputs, "Value"))
 
     # The palette: three measured stops, interpolated through the middle one.
     # Three rather than two because real earth varies in hue as well as value —
@@ -1556,7 +1563,7 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     ramp.elements[1].color = tuple(entry["dry_palette"]["high"]) + (1.0,)
     middle = ramp.elements.new(0.5)
     middle.color = tuple(entry["dry_palette"]["mid"]) + (1.0,)
-    links.new(tone_norm.outputs["Result"], palette.inputs["Fac"])
+    links.new(live(tone_norm.outputs, "Result"), palette.inputs["Fac"])
 
     # Grain: a darkening, not a second colour. Multiplying keeps the hue the
     # palette already chose and only varies how much light comes back.
@@ -1733,9 +1740,9 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     dry_low, dry_high = entry["roughness_dry"]
     rough = nodes.new("ShaderNodeMapRange")
     rough.location = (-1250, y - 150)
-    rough.inputs["To Min"].default_value = dry_low
-    rough.inputs["To Max"].default_value = dry_high
-    links.new(tone_norm.outputs["Result"], rough.inputs["Value"])
+    live(rough.inputs, "To Min").default_value = dry_low
+    live(rough.inputs, "To Max").default_value = dry_high
+    links.new(live(tone_norm.outputs, "Result"), live(rough.inputs, "Value"))
 
     # Relief finer than a pixel is not a bump, it is a BRDF. Bands below the
     # sampling rate were folded into one roughness figure in Rust; adding them
@@ -1743,7 +1750,7 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     micro = nodes.new("ShaderNodeMath")
     micro.operation = "ADD"
     micro.location = (-1100, y - 150)
-    links.new(rough.outputs["Result"], micro.inputs[0])
+    links.new(live(rough.outputs, "Result"), micro.inputs[0])
     micro.inputs[1].default_value = entry.get("micro_roughness", 0.0)
     micro.use_clamp = True
 
