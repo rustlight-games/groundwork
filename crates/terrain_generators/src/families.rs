@@ -875,7 +875,17 @@ impl TerrainRecipe for FieldStones {
     }
 
     fn appearances(&self) -> Vec<&'static str> {
-        vec!["rock.granite"]
+        // Four silhouettes, not four rocks. A meadow stone needs enough
+        // variety that the eye stops finding the repeat, and nothing like a
+        // unique mesh per instance — at this framing the silhouette is nearly
+        // all of what is legible, and high-frequency detail on a
+        // five-centimetre object is invisible.
+        vec![
+            "rock.rounded",
+            "rock.fractured",
+            "rock.flat",
+            "rock.elongated",
+        ]
     }
 
     fn target_density(&self, parameters: &ParameterObject) -> f64 {
@@ -909,16 +919,48 @@ impl TerrainRecipe for FieldStones {
         // of balls is the giveaway of an analytic rock.
         let squash = 0.55 + 0.45 * candidate.latent(seeds, &stream("stone_squash"));
 
+        // Which of the four silhouettes, addressed rather than drawn.
+        //
+        // A flat pebble is not a rounded stone that happens to be short: the
+        // families differ in *proportion* as well as in shape, so the family
+        // decides the height range and the burial before any of it is scaled.
+        let family = (candidate.latent(seeds, &stream("stone_family")) * 4.0).min(3.99) as u8;
+        let (height_low, height_high, burial_low, burial_high) = match family {
+            // Rounded: a waterworn cobble. Sits proud, buries a third.
+            0 => (0.62, 1.05, 0.20, 0.38),
+            // Fractured: broken rock, taller and more angular, sits shallower
+            // because its flat faces do not bed in.
+            1 => (0.70, 1.15, 0.16, 0.32),
+            // Flat: a slab. Low, wide, and buried deepest — a flat stone works
+            // its way down until only its face shows.
+            2 => (0.24, 0.42, 0.28, 0.48),
+            // Elongated: a long fragment lying along its own axis.
+            _ => (0.44, 0.78, 0.22, 0.40),
+        };
+        let height = radius
+            * (height_low
+                + (height_high - height_low) * candidate.latent(seeds, &stream("stone_height")));
+        // Correlated weakly with flatness: a small flat fragment sits deeper
+        // than a big round one. A constant burial fraction is visible as a
+        // common horizon line across a whole field of stones.
+        let burial = burial_low
+            + (burial_high - burial_low) * candidate.latent(seeds, &stream("stone_burial"));
+
         output.emit(EmittedMark::Analytic {
             centre: [
                 candidate.position.u_m,
                 candidate.position.v_m,
                 // Settled: a stone sits *in* the ground rather than on it, and
-                // the buried third is what stops it reading as a decal.
-                context.surface_z_m - (radius * 0.3) as f64,
+                // the buried part is what stops it reading as a decal. Measured
+                // from the object's own height rather than from its radius, so
+                // a slab and a cobble bury by the same *fraction of themselves*.
+                context.surface_z_m - (height * burial) as f64,
             ],
-            radius_m: [radius, radius * squash],
-            height_m: radius * (0.6 + 0.5 * candidate.latent(seeds, &stream("stone_height"))),
+            radius_m: [
+                radius,
+                radius * if family == 3 { squash * 0.6 } else { squash },
+            ],
+            height_m: height,
             rotation_rad: candidate.latent_range(
                 seeds,
                 &stream("stone_rotation"),
@@ -932,7 +974,7 @@ impl TerrainRecipe for FieldStones {
                 tint: candidate.latent_range(seeds, &stream("stone_tint"), -1.0, 1.0),
                 variation: candidate.latent(seeds, &stream("stone_variation")),
             },
-            appearance: 0,
+            appearance: family,
         });
 
         // What the stone does to what grows near it.

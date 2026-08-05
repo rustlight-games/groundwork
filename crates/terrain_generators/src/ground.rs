@@ -482,6 +482,18 @@ impl GroundEvaluator {
         self.support_of(&realised)
     }
 
+    /// How much an already-realised substrate supports plants, `0..1`.
+    ///
+    /// The same answer as [`vegetation_support`](Self::vegetation_support)
+    /// without realising the boundary a second time, for a caller that already
+    /// has the weights.
+    pub fn support_for(&self, realised: &RealisedSubstrate) -> f32 {
+        if realised.is_empty() {
+            return 1.0;
+        }
+        self.support_of(realised)
+    }
+
     fn support_of(&self, realised: &RealisedSubstrate) -> f32 {
         realised
             .iter()

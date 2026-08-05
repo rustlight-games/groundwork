@@ -538,10 +538,36 @@ pub fn compile_scene(
 
             // One blended target density from every claimant, so acceptance is
             // decided before any material owns anything.
+            // How much this ground supports plants at all.
+            //
+            // Read from each material's declared `vegetation_affinity` — the
+            // author already said that compacted dirt grows nothing — and
+            // applied to any population that expressed a material preference.
+            //
+            // ## Why a linear affinity is not enough on its own
+            //
+            // `affinity_for` blends the population's preference by realised
+            // weight, so ground that is a fifth meadow soil and four fifths
+            // compacted track offers a fifth of the flowers. That is the right
+            // arithmetic for a *mixture* and the wrong answer for a plant: a
+            // fifth of a track is still a track, and nothing roots in it. What
+            // came out was daisies standing on bare compacted earth, which
+            // every document then had to suppress by hand.
+            //
+            // Multiplying by support squares the falloff through the band and
+            // takes it to exactly zero on pure track, without any document
+            // saying so. A population with no material preference — a stone
+            // does not care what grows around it — is left alone.
+            let support = ground.support_for(&substrate);
             options_buffer.clear();
             let mut target = 0.0f64;
             for claimant in &members {
-                let affinity = claimant.affinity_for(&substrate);
+                let affinity = claimant.affinity_for(&substrate)
+                    * if claimant.affinity.is_empty() {
+                        1.0
+                    } else {
+                        support
+                    };
                 let abundance = match claimant.abundance_channel {
                     Some(channel) => fields.modifier(channel, candidate.position, 1.0),
                     None => 1.0,

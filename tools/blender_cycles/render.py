@@ -719,6 +719,13 @@ def appearance_builders(settings):
         # in it. Dry silicate rock in daylight sits around a fifth, and reads
         # slightly cool against the warm soil beside it.
         "surface.stone": lambda: stone_material(settings, [0.180, 0.178, 0.172]),
+        # The four silhouettes share one shader. They differ in *shape*, which
+        # is the prototype's job; a fractured stone is not a different mineral
+        # from a rounded one.
+        "rock.rounded": lambda: stone_material(settings, [0.180, 0.178, 0.172]),
+        "rock.fractured": lambda: stone_material(settings, [0.165, 0.162, 0.158]),
+        "rock.flat": lambda: stone_material(settings, [0.195, 0.192, 0.184]),
+        "rock.elongated": lambda: stone_material(settings, [0.172, 0.170, 0.166]),
         "surface.shell_fragment": lambda: stone_material(settings, [0.42, 0.40, 0.35]),
         "surface.organic_fragment": lambda: stone_material(settings, [0.045, 0.033, 0.024]),
         # Every ground material shares one implementation. What a particular

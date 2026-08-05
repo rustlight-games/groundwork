@@ -54,6 +54,10 @@ fn lowering(appearance: &str) -> Option<Lowering> {
         "flower.stem" => Lowering::Curve,
         "flower.head" => Lowering::Disk,
         "flower.petal" => Lowering::Petal,
+        "rock.rounded" => Lowering::Stone,
+        "rock.fractured" => Lowering::Stone,
+        "rock.flat" => Lowering::Stone,
+        "rock.elongated" => Lowering::Stone,
         "rock.granite" => Lowering::Stone,
         "soil.clod" | "soil.grit" => Lowering::Stone,
         _ => return None,
@@ -262,10 +266,14 @@ pub fn lower(
                     report.instances += 1;
                 }
                 (Lowering::Stone, SceneMark::Analytic(stone)) => {
+                    // One prototype per named silhouette. The appearance key is
+                    // what the recipe chose, so the shape a stone gets is a
+                    // decision Rust made and recorded rather than one Blender
+                    // reached for.
                     let prototype = bind(
                         &mut out,
                         &mut prototypes,
-                        "stone.rounded.v1",
+                        &format!("{}.v1", appearance.replace('.', "_")),
                         PrototypeFamily::Superellipsoid,
                         material,
                     );
@@ -351,22 +359,47 @@ fn bind(
             material,
             unit_height_m: 1.0,
         },
-        _ => Prototype {
-            key: key.to_string(),
-            family: PrototypeFamily::Superellipsoid,
-            semi_axes_m: [1.0, 1.0, 1.0],
-            // Slightly under one: squarer shoulders than an ellipsoid, which is
-            // what stops a field of these reading as a field of balls.
-            exponents: [0.85, 0.85],
-            // One low-order term. High-frequency displacement turns a small
-            // stone into a noisy potato at this scale, and the silhouette is
-            // what makes a stone recognisable.
-            deformation: vec![[0.07, 3.0, 0.6]],
-            clips: Vec::new(),
-            tessellation: [10, 16],
-            material,
-            unit_height_m: 1.0,
-        },
+        _ => {
+            // The exponents *are* the silhouette. Barr's superquadrics span
+            // rounded, blocky, flattened and pinched from two numbers, which is
+            // why a handful of prototypes can carry a field of stones without
+            // repeating visibly — and why a unique mesh per instance would be
+            // paying for detail nobody can resolve at five centimetres.
+            let (exponents, deformation, clips) = if key.starts_with("rock_fractured") {
+                (
+                    // Squarer, so the shoulders read as broken faces rather
+                    // than as a weathered curve.
+                    [0.60, 0.60],
+                    vec![[0.04, 2.0, 1.1]],
+                    // Two deterministic cuts. Part of the binding, so part of
+                    // the prototype's fingerprint.
+                    vec![[0.62, 0.34, 0.71, 0.74], [-0.48, 0.79, 0.38, 0.80]],
+                )
+            } else if key.starts_with("rock_flat") {
+                ([0.80, 0.72], vec![[0.05, 2.0, 0.2]], Vec::new())
+            } else if key.starts_with("rock_elongated") {
+                ([0.78, 0.70], vec![[0.06, 2.0, 1.7]], Vec::new())
+            } else {
+                // Rounded: slightly under one, so the shoulders are fuller than
+                // an ellipsoid's. A field of true ellipsoids reads as a field
+                // of balls.
+                ([0.88, 0.88], vec![[0.07, 3.0, 0.6]], Vec::new())
+            };
+            Prototype {
+                key: key.to_string(),
+                family: PrototypeFamily::Superellipsoid,
+                semi_axes_m: [1.0, 1.0, 1.0],
+                exponents,
+                // Low-order only. High-frequency displacement turns a small
+                // stone into a noisy potato at this scale, and the silhouette
+                // is what makes a stone recognisable.
+                deformation,
+                clips,
+                tessellation: [10, 16],
+                material,
+                unit_height_m: 1.0,
+            }
+        }
     };
     let index = out.prototypes.len() as u32;
     out.prototypes.push(prototype);
