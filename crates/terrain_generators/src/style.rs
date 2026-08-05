@@ -82,10 +82,11 @@ impl Default for GrassParams {
 /// family each carries. Change any of it and the meadow is a different meadow,
 /// so every scene fingerprint moves.
 ///
-/// The four dimensions the rasteriser also reads — blade length, width, bend and
-/// the under-stroke — are here rather than in [`PreviewRasterStyle`] because the
-/// generator *decides* them and writes them onto each mark. A renderer reading a
-/// style is fine; a renderer that could change one would not be.
+/// The four dimensions a renderer also reads — blade length, width, bend and
+/// the under-stroke — are here, decided once, rather than duplicated into a
+/// renderer's own style. The generator *decides* them and writes them onto
+/// each mark. A renderer reading a style is fine; a renderer that could
+/// change one would not be.
 #[derive(Clone, Copy, Debug)]
 pub struct GrassStyle {
     /// Tufts per square metre of ground at full density.

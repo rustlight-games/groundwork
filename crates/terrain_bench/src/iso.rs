@@ -286,19 +286,29 @@ mod tests {
     /// matches the mask it was built from, and a field with no seam by
     /// construction (independent per-pixel noise has no structure at a tile
     /// boundary) measures as one.
-    fn synthetic_image(frame: &ResolvedIsoFrame, seed: u64) -> RenderImage {
+    ///
+    /// `subject_lift` raises the subject tile above its surroundings. Zero is
+    /// the uniform field most tests want; a non-zero value is what proves the
+    /// subject-weighted metrics actually read the subject rather than
+    /// reporting the layout figure twice.
+    fn synthetic_image(frame: &ResolvedIsoFrame, seed: u64, subject_lift: f32) -> RenderImage {
         let (width, height) = (frame.output_size[0] as usize, frame.output_size[1] as usize);
         let mask = overlay::layout_mask(frame);
+        let subject = overlay::subject_mask(frame);
         let mut colour = Vec::with_capacity(width * height);
-        let mut state = seed ^ 0x9E37_79B9_7F4A_7C15;
-        for _ in 0..width * height {
+        // Never zero: an all-zero state is the xorshift's one fixed point, and
+        // a fixture that silently produced a constant field would pass the
+        // tests below for the wrong reason.
+        let mut state = (seed ^ 0x9E37_79B9_7F4A_7C15) | 1;
+        for index in 0..width * height {
             // A cheap xorshift, enough to give the field texture without
             // pulling in a dependency for a test fixture.
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
             let value = ((state >> 40) as u32 & 0xFF) as f32 / 255.0;
-            colour.push(Vec3::splat(0.3 + value * 0.4));
+            let lift = subject_lift * subject[index];
+            colour.push(Vec3::splat(0.3 + value * 0.4 + lift));
         }
         RenderImage {
             colour,
@@ -346,7 +356,7 @@ mod tests {
         // is a hole in the silhouette rather than a look.
         let scenario = iso_scenario("iso_nine.origin").expect("pinned");
         let frame = scenario.frame();
-        let image = synthetic_image(&frame, scenario.seed);
+        let image = synthetic_image(&frame, scenario.seed, 0.0);
         let report = measure(&frame, &image);
         assert!(
             report.subject_coverage > 0.999,
@@ -370,7 +380,7 @@ mod tests {
         // `terrain compile` output — see AGENTS.md invariant 8.
         for scenario in ISO_SCENARIOS {
             let frame = scenario.frame();
-            let image = synthetic_image(&frame, scenario.seed);
+            let image = synthetic_image(&frame, scenario.seed, 0.0);
             let visibility = join_visibility(&frame, &image);
             assert!(
                 (0.5..1.5).contains(&visibility),
@@ -386,7 +396,7 @@ mod tests {
         // what says whether a change is about the subject or about everything.
         let scenario = iso_scenario("iso_nine.origin").expect("pinned");
         let frame = scenario.frame();
-        let image = synthetic_image(&frame, scenario.seed);
+        let image = synthetic_image(&frame, scenario.seed, 0.0);
         let report = measure(&frame, &image);
 
         assert!(report.detail > 0.0 && report.subject_detail > 0.0);
@@ -405,6 +415,42 @@ mod tests {
             "subject detail {:.4} against layout {:.4}",
             report.subject_detail,
             report.detail
+        );
+    }
+
+    #[test]
+    fn the_subject_figure_reads_the_subject_and_not_the_layout() {
+        // The other half of the claim above, and the one a uniform field
+        // cannot make: `the_subject_is_measured_apart_from_its_surroundings`
+        // asserts the two numbers land *close*, which would also hold if
+        // `subject_luminance` accidentally reported the layout figure twice.
+        //
+        // So lift the subject tile deliberately and check the subject figure
+        // follows it further than the layout figure does. The subject is one
+        // ninth of the diamond, so a lift of L moves the layout mean by about
+        // L/9 and the subject mean by about L — an eightfold difference that
+        // no amount of noise can produce by accident.
+        let scenario = iso_scenario("iso_nine.origin").expect("pinned");
+        let frame = scenario.frame();
+        const LIFT: f32 = 0.2;
+
+        let flat = measure(&frame, &synthetic_image(&frame, scenario.seed, 0.0));
+        let lifted = measure(&frame, &synthetic_image(&frame, scenario.seed, LIFT));
+
+        let subject_moved = lifted.subject_luminance - flat.subject_luminance;
+        let layout_moved = lifted.luminance - flat.luminance;
+        assert!(
+            subject_moved > layout_moved * 4.0,
+            "lifting the subject moved the subject figure by {subject_moved:.4} \
+             and the layout figure by {layout_moved:.4} — the subject-weighted \
+             metric is not reading the subject"
+        );
+        // And the layout figure did move, since the subject is inside it. A
+        // subject mask that had drifted off the diamond entirely would leave
+        // this at zero.
+        assert!(
+            layout_moved > 0.0,
+            "the layout figure did not notice the subject at all"
         );
     }
 
@@ -475,7 +521,7 @@ mod tests {
         // between grass and nothing, which is enormous and meaningless.
         let scenario = iso_scenario("iso_nine.origin").expect("pinned");
         let frame = scenario.frame();
-        let mut image = synthetic_image(&frame, scenario.seed);
+        let mut image = synthetic_image(&frame, scenario.seed, 0.0);
         image.alpha.fill(0.0);
         assert_eq!(
             join_visibility(&frame, &image),

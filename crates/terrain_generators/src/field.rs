@@ -1112,9 +1112,9 @@ impl WorldField {
     /// How wet that earth is, `0..1`.
     ///
     /// From the document's own moisture channel where it declares one, and from
-    /// where water collects otherwise. Wet earth is not dry earth in shadow —
-    /// see [`terrain_bake::palette::wet_earth`] — so this drives a colour
-    /// response rather than a brightness one.
+    /// where water collects otherwise. Wet earth is not dry earth in shadow, so
+    /// this drives a colour response in whatever reads it rather than a
+    /// brightness one.
     pub fn earth_wetness(&self, world: Vec2) -> f32 {
         match &self.overlay {
             None => 0.0,

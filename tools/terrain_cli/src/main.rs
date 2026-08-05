@@ -1287,13 +1287,14 @@ fn compile(args: &CompileArgs) -> ExitCode {
     };
     let compile_time = started.elapsed();
 
-    // The tuned rasteriser, driven by the document.
+    // The tuned generator, driven by the document.
     //
-    // Deliberately *not* a fresh renderer over the generic scene. The painterly
-    // tier is years of tuning against reference art — canopy lighting, glazing,
-    // depth composition, the whole palette — and a from-scratch generic renderer
-    // is a regression however clean its architecture is. What the document
-    // controls is `SemanticOverlay`: how much grows, and where the earth shows.
+    // Deliberately *not* a fresh generic scene. `terrain_generators` — the
+    // grass geometry, not a renderer — is years of tuning against reference
+    // art: colonies, flow, tillers, statement fields, tuft groups. A
+    // from-scratch generic tuft recipe is a regression however clean its
+    // architecture is. What the document controls is `SemanticOverlay`: how
+    // much grows, and where the earth shows.
     let overlay = std::sync::Arc::new(terrain_generators::SemanticOverlay {
         fields: compiled.fields.clone(),
         transition,

@@ -67,7 +67,18 @@ impl Default for GrassWorld {
 enum PageState {
     Loading(Task<Option<Vec<u8>>>),
     Ready(Entity),
+    /// Asked for and not found. Counts down to zero before `request_pages`
+    /// asks again — without this, a page nobody has traced yet spawns a new
+    /// filesystem read on the compute pool every single frame, forever.
+    Missing(u32),
 }
+
+/// Frames a missing page waits before it is asked for again.
+///
+/// Two seconds at sixty frames a second. Long enough that a prebake finishing
+/// mid-session is noticed promptly; short enough that this is a retry
+/// interval and not effectively "never".
+const MISSING_RETRY_FRAMES: u32 = 120;
 
 /// Ordering within a frame.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -163,12 +174,43 @@ fn view_rect(camera: &Projection, transform: &GlobalTransform, window: Vec2) -> 
     (low, high)
 }
 
+/// Count every waiting page down, and forget the ones whose wait is over.
+///
+/// Forgetting is what lets [`request_pages`] ask again: it skips any
+/// coordinate already in the map, so a page stays unasked-for exactly as long
+/// as it stays in it.
+fn tick_missing(pages: &mut HashMap<IVec2, PageState>) {
+    let mut elapsed = Vec::new();
+    for (coordinate, state) in pages.iter_mut() {
+        if let PageState::Missing(remaining) = state {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                elapsed.push(*coordinate);
+            }
+        }
+    }
+    for coordinate in elapsed {
+        pages.remove(&coordinate);
+    }
+}
+
 /// Start loading every page the camera can see and does not have.
 fn request_pages(
     mut world: ResMut<GrassWorld>,
     cameras: Query<(&Projection, &GlobalTransform), With<Camera2d>>,
     windows: Query<&Window>,
 ) {
+    // Every retry costs a page's worth of tasks; tick every waiting one down
+    // before deciding what to (re)request this frame.
+    tick_missing(&mut world.pages);
+
+    // Nothing is traced, so nothing will ever load — see `crate::cache`,
+    // "Cycles is the only renderer". Without this, every visible page would
+    // ask, miss, and ask again every single frame for no reason.
+    if !crate::cache::traced_enabled() {
+        return;
+    }
+
     let Ok((projection, transform)) = cameras.single() else {
         return;
     };
@@ -211,10 +253,10 @@ fn publish_pages(
 ) {
     let size = PAGE_PIXELS as f32 / iso::PX_PER_METRE;
     let mut finished = Vec::new();
-    // Loaded and empty: nothing traced there yet. Dropped rather than shown,
-    // so `request_pages` asks again later instead of this standing in for
-    // ground nobody has rendered — see `crate::cache`, "Cycles is the only
-    // renderer".
+    // Loaded and empty: nothing traced there yet. Held as `Missing` rather
+    // than shown or immediately re-asked for — see `crate::cache`, "Cycles is
+    // the only renderer" — and rather than removed outright, which would have
+    // `request_pages` spawn a fresh filesystem read for it every frame.
     let mut missed = Vec::new();
     for (coordinate, state) in world.pages.iter_mut() {
         let PageState::Loading(task) = state else {
@@ -227,7 +269,9 @@ fn publish_pages(
         }
     }
     for coordinate in missed {
-        world.pages.remove(&coordinate);
+        world
+            .pages
+            .insert(coordinate, PageState::Missing(MISSING_RETRY_FRAMES));
     }
 
     for (coordinate, bytes) in finished {
@@ -360,5 +404,54 @@ mod tests {
             app.world().entity(entity).get::<Tonemapping>(),
             Some(Tonemapping::None)
         ));
+    }
+
+    #[test]
+    fn a_page_nobody_has_traced_is_not_asked_for_every_frame() {
+        // The failure this exists to prevent: with no renderer to fall back to,
+        // a cache miss used to be dropped from the map outright, so the very
+        // next frame asked for it again. At a normal view size that is a few
+        // hundred filesystem reads spawned onto the compute pool every frame,
+        // forever, for ground that will not appear until somebody traces it.
+        let mut pages = HashMap::default();
+        pages.insert(IVec2::new(3, -4), PageState::Missing(MISSING_RETRY_FRAMES));
+
+        for frame in 1..MISSING_RETRY_FRAMES {
+            tick_missing(&mut pages);
+            assert!(
+                pages.contains_key(&IVec2::new(3, -4)),
+                "the page was released for a retry after {frame} frames, not \
+                 {MISSING_RETRY_FRAMES}"
+            );
+        }
+
+        // The last tick retires it, and only then will `request_pages` — which
+        // skips any coordinate already present — ask for it again.
+        tick_missing(&mut pages);
+        assert!(
+            !pages.contains_key(&IVec2::new(3, -4)),
+            "the page was never released, so it would never be retried"
+        );
+    }
+
+    #[test]
+    fn waiting_is_a_wait_and_not_a_synonym_for_never() {
+        // Both directions matter. One frame would be the hot loop again; a
+        // wait long enough to outlast a session would mean a prebake finishing
+        // mid-run never showed up.
+        assert!(MISSING_RETRY_FRAMES > 1);
+        assert!(MISSING_RETRY_FRAMES < 60 * 30);
+    }
+
+    #[test]
+    fn a_loading_or_ready_page_is_left_alone_by_the_countdown() {
+        // `tick_missing` walks every entry; only the waiting ones are its
+        // business. Evicting a page mid-load would leak its task, and evicting
+        // a ready one would drop a page off the screen for no reason.
+        let mut pages = HashMap::default();
+        let entity = App::new().world_mut().spawn_empty().id();
+        pages.insert(IVec2::ZERO, PageState::Ready(entity));
+        tick_missing(&mut pages);
+        assert!(matches!(pages.get(&IVec2::ZERO), Some(PageState::Ready(_))));
     }
 }

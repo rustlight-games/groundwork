@@ -8,8 +8,8 @@
 //!
 //! There is no renderer here to fall back to — see root `CLAUDE.md`, "Cycles is
 //! the only renderer". Ground nobody has traced yet is ground the game does not
-//! draw, rather than ground drawn some cheaper way; see
-//! [`crate::plugin::request_pages`] for how a cache miss is handled.
+//! draw, rather than ground drawn some cheaper way; [`crate::plugin`] holds the
+//! retry that keeps a miss from being re-asked every frame.
 //!
 //! ## The key has to name everything that changes the picture
 //!
@@ -45,20 +45,19 @@ pub const DEFAULT_DIRECTORY: &str = "target/grass-pages";
 /// Environment variable pointing at the page cache.
 pub const TERRAIN_GRASS_CACHE: &str = "TERRAIN_GRASS_CACHE";
 
-/// Set this to read traced pages. Unset, the game rasterises everything.
+/// Set this to read traced pages. Unset, the game draws nothing at all.
 ///
-/// Off by default, and that is a correctness decision rather than caution.
+/// Off by default, and that is a correctness decision rather than caution:
+/// there is no second renderer to fall back to, so a page nobody has traced
+/// stays undrawn rather than standing in for one — see root `CLAUDE.md`,
+/// "Cycles is the only renderer".
 ///
-/// A traced page and a rasterised one are not two qualities of one picture, they
-/// are two pictures — different tone, different saturation, different blade
-/// vocabulary. Serving whichever happens to be on disk puts them side by side,
-/// and a single traced page in a field of rasterised ones does not read as "one
-/// page is better", it reads as **a rendering fault**: a hard-edged square of
-/// some other grass in the middle of the ground. Which is exactly what it looked
-/// like the first time this shipped.
-///
-/// So the mixing is opt-in. Trace a region, set the variable, and every page in
-/// that region is traced; leave it unset and the whole field is consistent.
+/// This still matters as a gate even with one renderer, because "traced" and
+/// "not traced yet" would otherwise look identical from inside the loop: a
+/// single traced page arriving in an otherwise-empty field does not read as
+/// "one page is better", it reads as **a rendering fault**, and turning
+/// tracing on only for a region under test keeps the rest of the field
+/// consistently undrawn rather than a mix.
 pub const TERRAIN_GRASS_TRACED: &str = "TERRAIN_GRASS_TRACED";
 
 /// Whether the game should read traced pages at all.
