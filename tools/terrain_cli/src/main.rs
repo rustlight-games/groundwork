@@ -22,12 +22,17 @@
 //! game with a grass module in it", and that is the sentence the whole
 //! migration is written to change.
 //!
-//! ## What is a stub, and why it says so loudly
+//! ## Measuring the ground
 //!
-//! `benchmark` needs the terrain fixtures, which arrive with `terrain_bench`. It
-//! exits non-zero with the reason rather than printing something reassuring: a
-//! command that quietly succeeds while doing nothing is worse than one that is
-//! missing, because the first thing built on top of it will be built on sand.
+//! ```sh
+//! terrain benchmark ground                       # every laboratory, as a table
+//! terrain benchmark ground --scenario ground_band_coarse_only
+//! terrain benchmark ground --out target/ground-bench --json
+//! ```
+//!
+//! Exits non-zero when a gate *fails*. A gate that needs review does not fail
+//! the run: those thresholds are still bootstrap guesses, and a suite that
+//! failed on them would be silenced within a week and then stop being read.
 //!
 //! ## What it reaches for
 //!
@@ -456,8 +461,17 @@ struct RenderArgs {
 
 #[derive(Args, Debug)]
 struct BenchmarkArgs {
-    /// Which suite to run.
+    /// Which suite to run. `ground` is the soil benchmark.
     suite: Option<String>,
+    /// Run one scenario rather than all of them.
+    #[arg(long)]
+    scenario: Option<String>,
+    /// Write each report's JSON under this directory.
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Print the JSON rather than the table.
+    #[arg(long)]
+    json: bool,
 }
 
 fn main() -> ExitCode {
@@ -466,12 +480,86 @@ fn main() -> ExitCode {
         Command::Validate(args) => validate(&args),
         Command::Inspect(args) => inspect(&args),
         Command::Render(args) => render(&args),
-        Command::Benchmark(args) => not_yet(
-            "benchmark",
-            &args.suite.unwrap_or_else(|| "the default suite".into()),
-            "the terrain fixtures and metrics arrive with `terrain_bench`",
-        ),
+        Command::Benchmark(args) => benchmark(&args),
     }
+}
+
+/// Run a measurement suite.
+///
+/// Exits non-zero when a gate fails, so this is usable as a CI gate. A gate that
+/// needs review does *not* fail the run: those are the thresholds that are still
+/// bootstrap guesses, and a suite that fails on them would be silenced within a
+/// week and then stop being read.
+fn benchmark(args: &BenchmarkArgs) -> ExitCode {
+    use terrain_bench::ground;
+
+    let suite = args.suite.as_deref().unwrap_or("ground");
+    if suite != "ground" {
+        eprintln!("`{suite}` is not a suite this build knows. Try `ground`.");
+        return ExitCode::FAILURE;
+    }
+
+    let scenarios: Vec<&ground::GroundScenario> = match args.scenario.as_deref() {
+        None => ground::GROUND_SCENARIOS.iter().collect(),
+        Some(name) => match ground::scenarios::scenario(name) {
+            Some(scenario) => vec![scenario],
+            None => {
+                eprintln!(
+                    "`{name}` is not a scenario. Known: {}",
+                    ground::GROUND_SCENARIOS
+                        .iter()
+                        .map(|s| s.name)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+
+    if let Some(directory) = &args.out
+        && let Err(error) = std::fs::create_dir_all(directory)
+    {
+        eprintln!("cannot create {}: {error}", directory.display());
+        return ExitCode::FAILURE;
+    }
+
+    let mut failed = 0usize;
+    let mut review = 0usize;
+    for scenario in scenarios {
+        let report = ground::run(scenario, ground::DEFAULT_SEED);
+        match report.verdict.status {
+            ground::GateStatus::Fail => failed += 1,
+            ground::GateStatus::NeedsReview => review += 1,
+            _ => {}
+        }
+        if args.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report.to_json()).unwrap_or_default()
+            );
+        } else {
+            print!("{}", report.to_table());
+            println!();
+        }
+        if let Some(directory) = &args.out {
+            let path = directory.join(format!("{}.json", scenario.name));
+            let text = serde_json::to_string_pretty(&report.to_json()).unwrap_or_default();
+            if let Err(error) = std::fs::write(&path, text) {
+                eprintln!("cannot write {}: {error}", path.display());
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    if failed > 0 {
+        eprintln!("{failed} scenario(s) failed a gate");
+        return ExitCode::FAILURE;
+    }
+    if review > 0 {
+        println!("{review} scenario(s) need review; none failed");
+    }
+    ExitCode::SUCCESS
 }
 
 /// Load a document and report everything wrong with it.

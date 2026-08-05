@@ -147,6 +147,17 @@ pub struct RealisedSubstrate {
 }
 
 impl RealisedSubstrate {
+    /// One material, at full weight.
+    ///
+    /// What a laboratory has: no document, no boundary, one soil. Distinct from
+    /// an empty substrate, which means "nothing has claimed this ground" and
+    /// makes every material-weighted term evaluate to zero.
+    pub fn pure(material: MaterialIndex) -> Self {
+        let mut entries = [(MaterialIndex(0), 0.0); MAX_REALISED_MATERIALS];
+        entries[0] = (material, 1.0);
+        Self { entries, count: 1 }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }

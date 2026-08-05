@@ -193,6 +193,21 @@ pub struct GroundEvaluator {
     materials: Vec<MaterialEntry>,
     split: BandSplit,
     roles: Roles,
+    /// A laboratory: state held constant, and one material everywhere.
+    ///
+    /// A benchmark that wants to measure "the ground at compaction 0.75" cannot
+    /// get there through a document: compaction is a modifier channel, and
+    /// authoring one document per sweep point would make the sweep a test of the
+    /// loader. So this exists, and it is `None` on every evaluator the compiler
+    /// builds — [`GroundEvaluator::new`] cannot set it, and only
+    /// [`GroundEvaluator::for_benchmark`] can. A production document has no way
+    /// to reach it even by accident.
+    ///
+    /// It forces the *substrate* as well, and that half is not optional: a flat
+    /// field stack carries no material weights, so a laboratory relying on the
+    /// document's substrate would measure a ground made of nothing and report
+    /// zero relief for every band it declared.
+    laboratory: Option<GroundState>,
 }
 
 struct MaterialEntry {
@@ -258,6 +273,7 @@ impl GroundEvaluator {
             root_seed: terrain.root_seed().bits(),
             materials,
             split,
+            laboratory: None,
             roles: Roles {
                 moisture: terrain.role_channel(ModifierRole::SoilMoisture),
                 compaction: terrain.role_channel(ModifierRole::SoilCompaction),
@@ -293,6 +309,54 @@ impl GroundEvaluator {
             materials: Vec::new(),
             split: BandSplit::resolve(std::iter::empty(), 0.04),
             roles: Roles::default(),
+            laboratory: None,
+        }
+    }
+
+    /// An evaluator over explicit profiles, at a state held constant.
+    ///
+    /// The laboratory constructor. A benchmark isolating one relief band needs a
+    /// profile carrying exactly that band and a compaction it can sweep, and
+    /// neither is expressible as a document without making the measurement a
+    /// test of the loader as well.
+    ///
+    /// Deliberately separate from [`GroundEvaluator::new`] rather than a flag on
+    /// it. A forced state reaching a production render would silently override
+    /// every authored moisture channel in the document, and the picture would
+    /// look plausible.
+    pub fn for_benchmark(
+        fields: Arc<TerrainFieldStack>,
+        transition: TransitionProfile,
+        root_seed: u64,
+        profiles: Vec<Arc<GroundMaterialProfile>>,
+        spacing_m: f32,
+        compaction: f32,
+        moisture: f32,
+    ) -> Self {
+        let materials: Vec<MaterialEntry> = profiles
+            .into_iter()
+            .map(|profile| MaterialEntry {
+                key: profile.key.as_str().to_string(),
+                affinity: profile.vegetation_affinity,
+                profile: Some(profile),
+            })
+            .collect();
+        let split = BandSplit::resolve(
+            materials.iter().filter_map(|m| m.profile.as_deref()),
+            spacing_m,
+        );
+        Self {
+            fields,
+            transition,
+            root_seed,
+            materials,
+            split,
+            roles: Roles::default(),
+            laboratory: Some(GroundState {
+                compaction: compaction.clamp(0.0, 1.0),
+                moisture: moisture.clamp(0.0, 1.0),
+                ..GroundState::default()
+            }),
         }
     }
 
@@ -352,6 +416,12 @@ impl GroundEvaluator {
     /// realising the same boundary separately is how a track's colour ends up a
     /// centimetre away from where its grass thinned.
     pub fn substrates(&self, world: Vec2) -> RealisedSubstrate {
+        // A laboratory is one material everywhere: there is no document, so
+        // there are no authored weights to realise. Returned before the field
+        // read rather than after, because the field would answer "nothing".
+        if self.laboratory.is_some() {
+            return RealisedSubstrate::pure(MaterialIndex(0));
+        }
         let at = WorldPoint::new(world.x as f64, world.y as f64);
         let mut weights: Vec<(MaterialIndex, f32)> = Vec::new();
         self.fields.substrate_weights_into(at, &mut weights);
@@ -393,6 +463,11 @@ impl GroundEvaluator {
 
     /// The state channels and derived fields at a point.
     pub fn state(&self, world: Vec2) -> GroundState {
+        // A laboratory holds the state constant so a sweep varies one thing.
+        // `None` on every evaluator the compiler builds — see `forced_state`.
+        if let Some(forced) = self.laboratory {
+            return forced;
+        }
         let at = WorldPoint::new(world.x as f64, world.y as f64);
         let read = |channel: Option<ModifierIndex>, fallback: f32| match channel {
             None => fallback,

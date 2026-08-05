@@ -42,6 +42,11 @@ glam = "0.32"
 # --- general ----------------------------------------------------------------
 serde = { version = "1.0", features = ["derive"] }
 ron = "0.12"
+# The ground benchmark report is a durable interchange format with a published
+# JSON schema beside it (`docs/spec/ground-benchmark-report.schema.json`).
+# Hand-writing that much JSON is how a NaN ends up unquoted in a file a CI job
+# then fails to parse, so this is one place a serialiser earns its line.
+serde_json = "1.0"
 thiserror = "2.0"
 clap = { version = "4.6", features = ["derive"] }
 rayon = "1.12"
