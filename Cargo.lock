@@ -5150,7 +5150,9 @@ dependencies = [
 name = "terrain_scene"
 version = "0.1.0"
 dependencies = [
+ "rayon",
  "terrain_core",
+ "terrain_format",
 ]
 
 [[package]]

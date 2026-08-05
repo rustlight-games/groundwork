@@ -73,8 +73,8 @@ pub use document::{
     TerrainDocument, ValueRange,
 };
 pub use ids::{
-    AppearanceKey, KeyError, LayerKey, MaterialIndex, MaterialKey, ModifierIndex, ModifierKey,
-    PopulationIndex, PopulationKey, RecipeKey, SourceIndex, SourceKey, StreamKey,
+    AppearanceKey, DomainKey, KeyError, LayerKey, MaterialIndex, MaterialKey, ModifierIndex,
+    ModifierKey, PopulationIndex, PopulationKey, RecipeKey, SourceIndex, SourceKey, StreamKey,
 };
 pub use prepare::{PrepareOptions, PrepareReport, PreparedTerrain, prepare};
 pub use registry::{

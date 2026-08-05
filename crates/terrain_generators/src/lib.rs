@@ -28,11 +28,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod domain;
 pub mod fastmath;
 pub mod field;
 pub mod fixtures;
 pub mod geometry;
 pub mod iso;
+pub mod ownership;
 pub mod page;
 pub mod placement;
 pub mod population;
@@ -44,8 +46,13 @@ pub mod stroke;
 pub mod style;
 pub mod sun;
 pub mod tone;
+pub mod transition;
 
+pub use domain::{
+    CandidateDomainDef, DOMAIN_ALGORITHM_VERSION, DomainCandidate, DomainRequest, SpacingPolicy,
+};
 pub use field::WorldField;
+pub use ownership::{OwnerOption, assign as assign_owner};
 pub use page::Page;
 pub use population::{PopulationContext, PopulationRecipe, PopulationRegistry};
 pub use quality::GrassRenderQuality;
@@ -55,3 +62,6 @@ pub use stroke::Stroke;
 pub use style::{GrassParams, GrassStyle};
 pub use sun::Key;
 pub use tone::Tone;
+pub use transition::{
+    RealisedSubstrate, TRANSITION_VERSION, TransitionProfile, realise, realise_set,
+};

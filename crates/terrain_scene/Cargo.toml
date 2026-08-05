@@ -9,3 +9,7 @@ description = "The renderer-independent scene: ground, marks, instances and thei
 # being the thing all of them consume.
 [dependencies]
 terrain_core.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+terrain_format.workspace = true

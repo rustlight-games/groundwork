@@ -208,6 +208,7 @@ stable_key!(LayerKey, "a layer");
 stable_key!(PopulationKey, "a population");
 stable_key!(ModifierKey, "a modifier channel");
 stable_key!(RecipeKey, "a registered recipe");
+stable_key!(DomainKey, "a shared candidate domain");
 stable_key!(StreamKey, "a named random stream");
 stable_key!(AppearanceKey, "a renderer-side appearance binding");
 

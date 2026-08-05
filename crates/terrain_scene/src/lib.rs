@@ -24,8 +24,12 @@
 //!
 //! - [`projection`] — how ground becomes screen. A contract between four
 //!   renderers rather than one renderer's detail.
-//! - [`ground`] — the terrain, sampled onto an edge-anchored lattice so that
-//!   independently built neighbours agree along their join.
+//! - [`field`] — the canonical low-fidelity matrix: a typed, multi-channel,
+//!   top-down stack of named planes with declared units. What every later stage
+//!   reads, and what the cheap picture is a *derivative* of rather than the
+//!   other way round.
+//! - [`ground`] — the structural subset of that stack, in the shape the Cycles
+//!   exporter takes.
 //! - [`mark`] — ribbons, curves, analytic shapes and stamps, plus the total
 //!   painter order that decides what draws over what.
 //! - [`instance`] — prototypes, for geometry that is distinctive and expensive
@@ -51,6 +55,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod derive;
+pub mod field;
 pub mod frame;
 pub mod ground;
 pub mod instance;
@@ -59,6 +65,10 @@ pub mod mark;
 pub mod projection;
 pub mod scene;
 
+pub use field::{
+    CoverPlane, DerivedFieldSet, FieldBorder, FieldDescriptor, FieldFilter, FieldGridSpec,
+    FieldUnit, MaterialPlane, ModifierPlane, ScalarPlane, TerrainFieldStack, VectorPlane,
+};
 pub use frame::{
     IsoFrameOptions, RenderIdentity, ResolvedIsoFrame, ResolvedRenderSample, TilePolygon,
     resolve_render_sample,

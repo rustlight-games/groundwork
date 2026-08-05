@@ -81,6 +81,13 @@ pub enum Stream {
     Colony = 0x1b,
     /// The stream-function whose curl bends the flow into arcs and eddies.
     Curl = 0x1c,
+    /// How ragged the join between two substrates runs.
+    ///
+    /// Read by the transition solver, which perturbs material scores before they
+    /// are normalised. Its own stream because the raggedness of a boundary must
+    /// not correlate with anything growing near it — grass that thinned in step
+    /// with the mud's own lobes would read as a pattern rather than as an edge.
+    Boundary = 0x1d,
 }
 
 /// Mix a 64-bit value until its bits are independent.
