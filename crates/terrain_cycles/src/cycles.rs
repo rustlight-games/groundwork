@@ -832,6 +832,11 @@ pub struct GroundSurface {
     pub moisture: Vec<f32>,
     pub compaction: Vec<f32>,
     pub wet_film: Vec<f32>,
+    /// How deep in its own relief each sample sits, `0..1`.
+    ///
+    /// What lets the shader put the dark where the ground is low. See
+    /// [`GroundSample::cavity`](terrain_generators::ground::GroundSample::cavity).
+    pub cavity: Vec<f32>,
     /// The lattice this was sampled on. Recorded rather than assumed: the
     /// exporter may coarsen it, and a manifest that still claimed the requested
     /// spacing would make a change in vertex budget look like a shader bug.
@@ -849,6 +854,7 @@ impl GroundSurface {
             ("moisture", &self.moisture),
             ("compaction", &self.compaction),
             ("wet_film", &self.wet_film),
+            ("cavity", &self.cavity),
         ]
         .into_iter()
         .filter(|(_, plane)| !plane.is_empty())
@@ -1027,6 +1033,7 @@ fn sample_ground(
     let mut moisture = Vec::with_capacity(count);
     let mut compaction = Vec::with_capacity(count);
     let mut wet_film = Vec::with_capacity(count);
+    let mut cavity = Vec::with_capacity(count);
 
     // Where each material's weight goes, resolved once rather than by key
     // comparison per sample.
@@ -1070,6 +1077,7 @@ fn sample_ground(
             moisture.push(sample.state.moisture);
             compaction.push(sample.state.compaction);
             wet_film.push(sample.wet_film);
+            cavity.push(sample.cavity);
         }
     }
 
@@ -1086,6 +1094,7 @@ fn sample_ground(
             moisture,
             compaction,
             wet_film,
+            cavity,
             spacing_m: spacing,
         },
         rows,
@@ -1550,7 +1559,7 @@ mod tests {
             // Every `"name": "name.bin"` in the manifest must be a plane that
             // was actually filled. Crude parsing on purpose: the point is to
             // read the manifest the way the Python side does, as text.
-            for name in ["moisture", "compaction", "wet_film"] {
+            for name in ["moisture", "compaction", "wet_film", "cavity"] {
                 let declared = header.contains(&format!("\"{name}\": \"{name}.bin\""));
                 assert_eq!(
                     declared,
@@ -1568,6 +1577,7 @@ mod tests {
                 moisture: vec![0.5; 16],
                 compaction: vec![0.0; 16],
                 wet_film: vec![0.0; 16],
+                cavity: vec![0.5; 16],
                 spacing_m: 0.01,
             },
             16,

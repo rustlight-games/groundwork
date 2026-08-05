@@ -591,6 +591,22 @@ def blade_material(settings):
     return material
 
 
+# How far a full hollow pulls a soil's tone down its own palette.
+#
+# Most of the way, which sounds drastic and is measured. A photograph of bare
+# earth beside grass spans **twenty times** between its darkest fifth and its
+# brightest; no palette that also has to hold a plausible median can cover that
+# on pigment alone, and at half this value a rendered card came back at eight
+# times. The rest is occlusion, and this is how much of it the mesh-scale
+# hollows are worth.
+CAVITY_TONE = 0.85
+
+# The same again for the bands too fine to reach the mesh, as a multiplier on
+# the colour rather than a slide along the palette. Grain-scale shadow darkens
+# without changing which soil you are looking at.
+CAVITY_TONE_FINE = 0.70
+
+
 def ground_material(materials=None):
     """The ground, built from the soils the scene actually carries.
 
@@ -652,6 +668,12 @@ def ground_material(materials=None):
     moisture.location = (-2600, -600)
     moisture.attribute_name = "moisture"
 
+    # How deep in its own relief each point sits. The channel that puts the dark
+    # where the ground is low — see the docstring.
+    cavity = nodes.new("ShaderNodeAttribute")
+    cavity.location = (-2600, -750)
+    cavity.attribute_name = "cavity"
+
     colour_sum = None
     rough_sum = None
     height_sum = None
@@ -663,7 +685,7 @@ def ground_material(materials=None):
         weight.attribute_name = f"w{index}"
 
         colour, roughness, height = soil_branch(
-            nodes, links, coordinate, moisture, entry, y
+            nodes, links, coordinate, moisture, cavity, entry, y
         )
 
         colour_sum = accumulate_colour(nodes, links, colour_sum, colour, weight, y)
@@ -688,7 +710,7 @@ def ground_material(materials=None):
     return material
 
 
-def soil_branch(nodes, links, coordinate, moisture, entry, y):
+def soil_branch(nodes, links, coordinate, moisture, cavity, entry, y):
     """One soil's colour, roughness and micro-height.
 
     Returns three sockets. Nothing is connected to the output here — the caller
@@ -729,16 +751,41 @@ def soil_branch(nodes, links, coordinate, moisture, entry, y):
     tone2.inputs[1].default_value = optics["patch_strength"]
     links.new(tone.outputs["Value"], tone2.inputs[2])
 
+    # ## Where the dark comes from
+    #
+    # Not from the noise above. A crevice in bare earth reads twenty times
+    # darker than the crest beside it, and that is **occlusion**, not pigment —
+    # which is why the deepest fifth of a photograph of soil is nearly neutral
+    # in hue while its median is a warm brown. Sky lights a hole; sun lights a
+    # crest.
+    #
+    # So the mesh-scale hollows pull the tone down before any noise touches it.
+    # Without this the shading and the form disagree about where the low ground
+    # is, and the surface reads as painted paper however much relief the mesh
+    # carries. That was the whole failure of the first soil card.
+    hollow = nodes.new("ShaderNodeMath")
+    hollow.operation = "MULTIPLY_ADD"
+    hollow.location = (-1900, y + 220)
+    links.new(cavity.outputs["Fac"], hollow.inputs[0])
+    hollow.inputs[1].default_value = -CAVITY_TONE
+    links.new(tone2.outputs["Value"], hollow.inputs[2])
+    tone2 = hollow
+
     # Back to 0..1, and the *exact* bounds matter. Both noises run 0..1, so the
     # sum above runs from `floor` to `floor + region + patch`; getting the low
     # bound wrong biases every soil toward one end of its own palette, which
     # reads as the wrong material rather than as a mistuned one. This had an
     # extra `- patch_strength` in the low bound for one render and turned dark
     # loam into pale tan.
+    #
+    # The cavity term only widens the window *downward*. Shifting both ends by
+    # it — which this did for one render — moves the whole surface up its own
+    # palette instead, and a card of dark loam and grey hardpan came back as
+    # pale sand.
     floor = 0.5 * (1.0 - optics["region_strength"])
     tone_norm = nodes.new("ShaderNodeMapRange")
     tone_norm.location = (-1850, y + 300)
-    tone_norm.inputs["From Min"].default_value = floor
+    tone_norm.inputs["From Min"].default_value = floor - CAVITY_TONE
     tone_norm.inputs["From Max"].default_value = (
         floor + optics["region_strength"] + optics["patch_strength"]
     )
@@ -847,8 +894,44 @@ def soil_branch(nodes, links, coordinate, moisture, entry, y):
 
     height = band_height(nodes, links, coordinate, moisture, entry, y)
 
+    # The bands the mesh could not carry make hollows too, at grain scale, and
+    # they are already summed for the Bump node. Reusing that sum rather than
+    # sampling a fresh field is what keeps the fine shading registered with the
+    # fine form — the same argument as the mesh-scale cavity, one tier down.
+    if entry["shader_bands"]:
+        reach = sum(b["amplitude_m"] for b in entry["shader_bands"]) or 1.0
+        fine = nodes.new("ShaderNodeMath")
+        fine.operation = "MULTIPLY_ADD"
+        fine.location = (-1750, y + 160)
+        links.new(height, fine.inputs[0])
+        fine.inputs[1].default_value = CAVITY_TONE_FINE / reach
+        fine.inputs[2].default_value = 0.0
+
+        shaded = nodes.new("ShaderNodeMix")
+        shaded.data_type = "RGBA"
+        shaded.blend_type = "MULTIPLY"
+        shaded.location = (-820, y + 300)
+        live(shaded.inputs, "Factor").default_value = 1.0
+        links.new(live(wetted.outputs, "Result"), live(shaded.inputs, "A"))
+
+        lift = nodes.new("ShaderNodeMath")
+        lift.operation = "ADD"
+        lift.location = (-1600, y + 160)
+        links.new(fine.outputs["Value"], lift.inputs[0])
+        lift.inputs[1].default_value = 1.0
+        lift.use_clamp = True
+
+        grey = nodes.new("ShaderNodeCombineColor")
+        grey.location = (-1450, y + 160)
+        for channel in ("Red", "Green", "Blue"):
+            links.new(lift.outputs["Value"], grey.inputs[channel])
+        links.new(grey.outputs["Color"], live(shaded.inputs, "B"))
+        colour_out = live(shaded.outputs, "Result")
+    else:
+        colour_out = live(wetted.outputs, "Result")
+
     return (
-        live(wetted.outputs, "Result"),
+        colour_out,
         live(wet_rough.outputs, "Result"),
         height,
     )

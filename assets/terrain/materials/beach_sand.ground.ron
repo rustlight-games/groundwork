@@ -25,15 +25,15 @@
             // that ratio wrong is what makes pale soil read as sand and sand
             // read as pale soil.
             dry_palette: (
-                low:  (0.1300, 0.1080, 0.0810),
-                mid:  (0.2200, 0.1850, 0.1400),
-                high: (0.3400, 0.2900, 0.2250),
+                low:  (0.1450, 0.0800, 0.0330),
+                mid:  (0.2600, 0.1330, 0.0500),
+                high: (0.4300, 0.2560, 0.1130),
             ),
             // Sand darkens more dramatically than soil, because there is more
             // brightness to lose and its grains are transparent enough that a
             // film between them changes the scattering completely.
             wet: (
-                wet_mid: (0.0700, 0.0560, 0.0400),
+                wet_mid: (0.0820, 0.0400, 0.0140),
                 roughness_wet: 0.10,
                 saturation_flattening: 0.80,
             ),

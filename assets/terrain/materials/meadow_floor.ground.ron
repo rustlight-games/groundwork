@@ -30,16 +30,16 @@
 
         optics: (
             dry_palette: (
-                low:  (0.0135, 0.0145, 0.0078),
+                low:  (0.0035, 0.0033, 0.0030),
                 mid:  (0.0240, 0.0205, 0.0110),
-                high: (0.0385, 0.0310, 0.0150),
+                high: (0.0900, 0.0640, 0.0330),
             ),
             // A shaded floor is half damp already, so soaking it moves it less
             // than it moves an open track — and it never goes glossy, because a
             // sheen down there would be a specular highlight arriving from a
             // direction the canopy has already blocked.
             wet: (
-                wet_mid: (0.0101, 0.0074, 0.0033),
+                wet_mid: (0.0095, 0.0069, 0.0031),
                 roughness_wet: 0.30,
                 saturation_flattening: 0.35,
             ),

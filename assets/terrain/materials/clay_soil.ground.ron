@@ -14,15 +14,15 @@
 
         optics: (
             dry_palette: (
-                low:  (0.0330, 0.0205, 0.0125),
-                mid:  (0.0700, 0.0430, 0.0250),
-                high: (0.1300, 0.0800, 0.0470),
+                low:  (0.0080, 0.0068, 0.0060),
+                mid:  (0.0560, 0.0355, 0.0210),
+                high: (0.1950, 0.1230, 0.0710),
             ),
             // The lowest wet roughness of any soil here. Clay's particles are
             // small enough that a film covers them completely rather than
             // draping over a rough aggregate.
             wet: (
-                wet_mid: (0.0245, 0.0125, 0.0058),
+                wet_mid: (0.0205, 0.0106, 0.0049),
                 roughness_wet: 0.12,
                 saturation_flattening: 0.65,
             ),

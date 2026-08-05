@@ -89,6 +89,28 @@ pub struct GroundSample {
     pub vegetation_support: f32,
     /// Relief the mesh should carry, in metres.
     pub displacement_m: f32,
+    /// How deep in its own relief this point sits, `0..1`.
+    ///
+    /// Zero on a crest, one at the bottom of a hollow. The single most important
+    /// channel for making ground read as ground, and the one this system did not
+    /// have for its first working render.
+    ///
+    /// ## The dark in soil is shadow, not pigment
+    ///
+    /// A photograph of bare earth beside grass spans **twenty times** between
+    /// its darkest fifth-percentile and its brightest — and the dark end is
+    /// nearly neutral in hue, because a crevice deep enough to be that dark is
+    /// lit by sky rather than by sun. That is not a colour the soil has. It is
+    /// occlusion between crumbs.
+    ///
+    /// A shader whose tone comes from noise *uncorrelated with its height* can
+    /// reproduce neither. Widening the palette only makes louder mottling, and
+    /// the surface reads as painted paper however much relief the mesh carries,
+    /// because the shading and the form disagree about where the low ground is.
+    ///
+    /// So this comes out of the same band sum that makes the displacement. One
+    /// field, two consumers — the same rule the whole evaluator exists for.
+    pub cavity: f32,
     /// How wet the surface reads, `0..1`.
     pub wet_film: f32,
 }
@@ -435,8 +457,10 @@ impl GroundEvaluator {
         } else {
             self.support_of(&substrates)
         };
+        let relief = self.relief_of(&substrates, &state, world);
         GroundSample {
-            displacement_m: self.displacement_of(&substrates, &state, world),
+            displacement_m: relief.displacement_m,
+            cavity: relief.cavity,
             wet_film: self.wet_film_of(&substrates, &state),
             substrates,
             state,
@@ -454,16 +478,21 @@ impl GroundEvaluator {
         if substrates.is_empty() {
             return 0.0;
         }
-        self.displacement_of(&substrates, &self.state(world), world)
+        self.relief_of(&substrates, &self.state(world), world)
+            .displacement_m
     }
 
-    fn displacement_of(
+    fn relief_of(
         &self,
         substrates: &RealisedSubstrate,
         state: &GroundState,
         world: Vec2,
-    ) -> f32 {
+    ) -> Relief {
         let mut total = 0.0;
+        // Relief measured against how much this material *could* have, so a
+        // smooth clay and a cloddy loam both report their own hollows rather
+        // than the loam reporting all of them.
+        let mut cavity = 0.0;
         for (material, weight) in substrates.iter() {
             if weight <= 0.0 {
                 continue;
@@ -487,9 +516,24 @@ impl GroundEvaluator {
             if let Some(cracks) = &profile.cracks {
                 height -= crack_depth(cracks, profile, world, state, self.root_seed);
             }
+            // Normalised against the band amplitudes actually in play, then
+            // flipped so that deep is one. A material whose bands are all in the
+            // shader has no mesh-scale cavity, and says so.
+            let reach: f32 = self
+                .split
+                .bands_for(&entry.key)
+                .iter()
+                .map(|band| band.amplitude_m)
+                .sum();
+            if reach > 0.0 {
+                cavity += (0.5 - height / reach).clamp(0.0, 1.0) * weight;
+            }
             total += height * weight;
         }
-        total
+        Relief {
+            displacement_m: total,
+            cavity: cavity.clamp(0.0, 1.0),
+        }
     }
 
     /// One band's contribution, in metres.
@@ -574,6 +618,12 @@ impl GroundEvaluator {
         let hollow = smoothstep(-0.35, 0.15, -state.curvature);
         (held * (0.35 + 0.65 * hollow)).clamp(0.0, 1.0)
     }
+}
+
+/// What one point's relief is, and how deep in it that point sits.
+struct Relief {
+    displacement_m: f32,
+    cavity: f32,
 }
 
 /// Fold a `0..1` noise value into `-0.5..0.5`, with the band's shape applied.

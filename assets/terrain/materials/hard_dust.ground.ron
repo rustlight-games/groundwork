@@ -14,12 +14,12 @@
             // Pale and desaturated by the powder lying on it — G/R 0.82, B/R
             // 0.63 — which is nearly sand's ratio at half sand's brightness.
             dry_palette: (
-                low:  (0.0700, 0.0570, 0.0420),
-                mid:  (0.1250, 0.1030, 0.0790),
-                high: (0.2000, 0.1680, 0.1330),
+                low:  (0.0180, 0.0160, 0.0148),
+                mid:  (0.1250, 0.0940, 0.0640),
+                high: (0.3100, 0.2400, 0.1720),
             ),
             wet: (
-                wet_mid: (0.0440, 0.0330, 0.0230),
+                wet_mid: (0.0430, 0.0290, 0.0180),
                 roughness_wet: 0.22,
                 saturation_flattening: 0.55,
             ),

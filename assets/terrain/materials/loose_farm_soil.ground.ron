@@ -15,12 +15,12 @@
             // Richer and slightly cooler than a worn track — more organic
             // matter, and none of it packed down. G/R 0.66, B/R 0.40.
             dry_palette: (
-                low:  (0.0310, 0.0208, 0.0128),
-                mid:  (0.0620, 0.0410, 0.0250),
-                high: (0.1180, 0.0790, 0.0490),
+                low:  (0.0070, 0.0062, 0.0058),
+                mid:  (0.0480, 0.0316, 0.0192),
+                high: (0.2050, 0.1330, 0.0790),
             ),
             wet: (
-                wet_mid: (0.0217, 0.0119, 0.0058),
+                wet_mid: (0.0180, 0.0098, 0.0048),
                 roughness_wet: 0.24,
                 saturation_flattening: 0.50,
             ),
