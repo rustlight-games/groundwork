@@ -466,19 +466,6 @@ fn the_grass_itself_recovers_across_the_path() {
         u += step;
     }
 
-    let density = |counts: &[f64]| -> Vec<(f64, f64)> {
-        (0..bins)
-            .map(|bin| {
-                let d = (bin as f64 + 0.5) * BIN_M;
-                let n = if area[bin] > 0.03 {
-                    counts[bin] / area[bin]
-                } else {
-                    f64::NAN
-                };
-                (d, n)
-            })
-            .collect()
-    };
     // The document's effect alone: this world's grass over the same world's
     // grass without a path in it, bin for bin.
     let live_profile: Vec<(f64, f64)> = (0..bins)
