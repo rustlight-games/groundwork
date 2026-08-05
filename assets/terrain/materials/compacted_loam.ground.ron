@@ -34,9 +34,23 @@
                 // — a broad orange midtone behind dark green geometry, which
                 // reads as two different worlds however well the boundary is
                 // blended. These land near 1.95 at the same luminance.
-                low:  (0.0072, 0.0057, 0.0038),
-                mid:  (0.0530, 0.0403, 0.0265),
-                high: (0.2100, 0.1610, 0.1065),
+                // ## Halved, once the tonal ramp started working
+                //
+                // `tone_norm`'s input socket was a disabled duplicate for the
+                // whole of this profile's life, so the palette ramp ran at a
+                // constant and every soil rendered at its *low* stop. These
+                // numbers were authored against that, which is why the track
+                // came out at two and a half times the grass's luminance the
+                // moment the socket was fixed — the same palette, finally
+                // showing its middle.
+                //
+                // Halved, and warmed back to a red-to-blue ratio of 2.35. The
+                // first cooling pass took it to 2.00 to sit in the grass's
+                // world, and rendered it came back at 1.44 against the grass's
+                // 1.84 — cooler than the thing it was supposed to match.
+                low:  (0.00758, 0.00576, 0.00280),
+                mid:  (0.05570, 0.04233, 0.02063),
+                high: (0.22060, 0.16760, 0.08170),
             ),
             // A third of the dry value, and distinctly warmer: wet ground keeps
             // its red far better than its blue. Roughness is the important one

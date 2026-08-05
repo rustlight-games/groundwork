@@ -51,9 +51,13 @@
                 // the track that `soil_decision.rs` requires — this soil is the
                 // greyer and greener of the two, because humus and fine root
                 // are — while putting the colour back.
-                low:  (0.0102, 0.0090, 0.0051),
-                mid:  (0.0268, 0.0238, 0.0134),
-                high: (0.1120, 0.0985, 0.0560),
+                // Rescaled with the track, for the reason written out in
+                // `compacted_loam`: the tonal ramp was reading a dead socket
+                // and every soil rendered at its low stop, so every palette in
+                // the set was authored against a constant.
+                low:  (0.00810, 0.00761, 0.00394),
+                mid:  (0.02133, 0.02003, 0.01040),
+                high: (0.08917, 0.08373, 0.04350),
             ),
             // A shaded floor is half damp already, so soaking it moves it less
             // than it moves an open track — and it never goes glossy, because a

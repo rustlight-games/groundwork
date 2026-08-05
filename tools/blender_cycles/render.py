@@ -1797,7 +1797,17 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     rough_response.operation = "POWER"
     rough_response.location = (-1100, y - 260)
     links.new(moisture.outputs["Fac"], rough_response.inputs[0])
-    rough_response.inputs[1].default_value = 0.5
+    # ## Front-loaded, but not this hard
+    #
+    # A square root puts a surface at 0.45 moisture two-thirds of the way to its
+    # wet roughness — so `meadow_path`'s track, authored as damp, rendered at a
+    # roughness of 0.40 and caught the sun across its whole width. It read as wet
+    # concrete, and halving its albedo moved the picture by four percent because
+    # almost none of its brightness was diffuse.
+    #
+    # Seven tenths keeps the shape the physics asks for — a first shower makes
+    # ground shine before it makes it dark — while leaving damp ground damp.
+    rough_response.inputs[1].default_value = 0.7
 
     wet_rough = nodes.new("ShaderNodeMix")
     wet_rough.data_type = "FLOAT"

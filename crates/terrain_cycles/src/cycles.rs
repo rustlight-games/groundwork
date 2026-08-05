@@ -389,7 +389,29 @@ impl Default for RenderSettings {
             // than a surface, which is worse than the no-sheen-at-all it
             // replaced. Twenty-five degrees off the mirror puts the response on
             // the crests, where it traces form instead of flooding the plane.
-            sun_azimuth: 200.0f32.to_radians(),
+            // ## Reverted to where the meadow was tuned
+            //
+            // It was moved to 200° so a wet surface could produce a highlight
+            // at all: mirror alignment for this camera is near 225°, it sat at
+            // 125°, and no roughness anywhere could make a sheen the camera
+            // could see. That diagnosis was right and the wet card is much
+            // better for it.
+            //
+            // It is back at 125° anyway, because the change could not be
+            // stabilised on the production documents. `meadow_path`'s track
+            // went from 1.10x the grass's luminance to 2.88x and read as wet
+            // concrete, and halving its albedo moved the picture by four per
+            // cent — so almost none of that brightness was diffuse and I could
+            // not isolate what it was. Shipping a broken meadow to keep a
+            // better test card is the wrong trade.
+            //
+            // What this costs is real and is written down rather than lost: the
+            // wet response is now albedo, roughness and relief with no specular
+            // event, which `WetResponse`'s own documentation says is the reading
+            // that makes wet ground look like ground in shadow. Restoring it
+            // needs a lighting pass that re-tunes the whole plate, not a
+            // one-line azimuth.
+            sun_azimuth: 125.0f32.to_radians(),
             // Lower, which sharpens the same effect: a shallower sun rakes the
             // relief, lengthens every contact shadow, and brings the half-vector
             // nearer the vertical that a slumped wet surface presents.
@@ -397,7 +419,7 @@ impl Default for RenderSettings {
             // Twenty-five degrees is the floor this renderer supports. Below it
             // a blade shades ground more than one and a half times its own
             // height away and the guard band grows faster than the page.
-            sun_elevation: 30.0f32.to_radians(),
+            sun_elevation: 35.0f32.to_radians(),
             sun_angle: 3.0f32.to_radians(),
             // Lowered with the azimuth. Eighteen was tuned when the sun pointed
             // away from the camera and *all* the light reaching it was diffuse;
@@ -405,7 +427,7 @@ impl Default for RenderSettings {
             // one, and the first plate rendered under the new bearing was
             // uniformly blown out. This is the same total energy arriving at the
             // camera, redistributed between the two paths.
-            sun_strength: 14.0,
+            sun_strength: 18.0,
             sun_colour: [1.0, 0.92, 0.72],
             // ## Lowered, because ambient fill is what makes dirt look flat
             //
@@ -419,7 +441,7 @@ impl Default for RenderSettings {
             //
             // Three quarters keeps the shadowed side of a blade from going to
             // black, which is what the fill is actually for.
-            sky_strength: 0.75,
+            sky_strength: 1.15,
             sky_colour: [0.30, 0.44, 0.72],
             passes: false,
             ribs: 0,

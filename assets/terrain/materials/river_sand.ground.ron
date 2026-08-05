@@ -69,9 +69,12 @@
             // narrowness *is* the material: sorted grains are all the same
             // grain, so there is nothing for a broad tonal field to describe.
             dry_palette: (
-                low:  (0.0640, 0.0466, 0.0262),
-                mid:  (0.1420, 0.1075, 0.0600),
-                high: (0.2280, 0.1760, 0.1000),
+                // Rescaled with the other two — see `compacted_loam` for why
+                // every palette in the set needed it. Still the brightest
+                // ground here by a wide margin, which is what sand is.
+                low:  (0.06336, 0.04796, 0.02640),
+                mid:  (0.14080, 0.10659, 0.05867),
+                high: (0.22528, 0.17054, 0.09387),
             ),
             wet: (
                 // A third of the dry mid, which is what a waterline actually
