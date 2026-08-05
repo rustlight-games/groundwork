@@ -481,6 +481,15 @@ def build_instances(scene_dir, spec, prototypes, materials, settings, cache):
         x, y, z, w = (float(v) for v in floats[row, 3:7])
         obj.rotation_quaternion = (w, x, y, z)
         obj.scale = tuple(float(v) for v in floats[row, 7:10])
+        # The per-instance tint, on the object rather than in the shader.
+        #
+        # Rust decided this colour — a petal's hue comes from the document and
+        # its drift from the plant's own address — so the shader reads it back
+        # through Object Info rather than inventing one from noise. That is what
+        # keeps the image and the conditioning metadata describing the same
+        # cause: a texture-driven hue is a colour nothing upstream can name.
+        tint = tuple(float(v) for v in floats[row, 10:13])
+        obj.color = (*tint, 1.0)
         bpy.context.collection.objects.link(obj)
         apply_visibility(obj, visibility)
         objects.append(obj)
@@ -776,16 +785,38 @@ def petal_material(settings):
     flower largely because its far petals glow with light that came through them.
     Restrained, because a petal that transmits too freely stops having a
     silhouette.
+
+    ## The colour comes from the instance, not from here
+
+    One material serves every flower in the scene and each instance carries its
+    own tint, read back through Object Info. The alternative — a hue driven by a
+    texture in this graph — would produce a perfectly good picture that nothing
+    upstream could account for: the document could not say what colour its
+    flowers were, and the conditioning metadata could not name the cause of what
+    was rendered.
     """
     _ = settings
     material = bpy.data.materials.new("flower-petal")
     material.use_nodes = True
-    principled = material.node_tree.nodes["Principled BSDF"]
-    principled.inputs["Base Color"].default_value = (0.72, 0.70, 0.66, 1.0)
+    tree = material.node_tree
+    principled = tree.nodes["Principled BSDF"]
     principled.inputs["Roughness"].default_value = 0.42
     if "Subsurface Weight" in principled.inputs:
         principled.inputs["Subsurface Weight"].default_value = 0.35
         principled.inputs["Subsurface Radius"].default_value = (0.004, 0.004, 0.004)
+
+    info = tree.nodes.new("ShaderNodeObjectInfo")
+    info.location = (-600, 0)
+    base = tree.nodes.new("ShaderNodeMixRGB")
+    base.location = (-350, 0)
+    base.blend_type = "MULTIPLY"
+    base.inputs["Fac"].default_value = 1.0
+    # A near-white membrane, tinted by the instance. Even a buttercup is mostly
+    # white light with a strong cast, so the tint multiplies a pale base rather
+    # than replacing it.
+    base.inputs["Color1"].default_value = (0.78, 0.76, 0.72, 1.0)
+    tree.links.new(info.outputs["Color"], base.inputs["Color2"])
+    tree.links.new(base.outputs["Color"], principled.inputs["Base Color"])
     return material
 
 
@@ -806,14 +837,29 @@ def stone_material(settings, base_colour):
     The colour arrives as an argument rather than being chosen here, because
     `surface.stone` and `surface.shell_fragment` are the same shader at two
     reflectances and writing it twice would be two places to fix a roughness.
+
+    The per-instance tint multiplies it, from Object Info, so a field of stones
+    is not a field of clones. Bounded well inside a factor of two on the Rust
+    side: the point is to break the repetition, not to make one of them a
+    different rock.
     """
     _ = settings
     material = bpy.data.materials.new("stone")
     material.use_nodes = True
-    principled = material.node_tree.nodes["Principled BSDF"]
-    principled.inputs["Base Color"].default_value = (*base_colour, 1.0)
+    tree = material.node_tree
+    principled = tree.nodes["Principled BSDF"]
     principled.inputs["Roughness"].default_value = 0.78
     principled.inputs["IOR"].default_value = 1.52
+
+    info = tree.nodes.new("ShaderNodeObjectInfo")
+    info.location = (-600, 0)
+    tinted = tree.nodes.new("ShaderNodeMixRGB")
+    tinted.location = (-350, 0)
+    tinted.blend_type = "MULTIPLY"
+    tinted.inputs["Fac"].default_value = 1.0
+    tinted.inputs["Color1"].default_value = (*base_colour, 1.0)
+    tree.links.new(info.outputs["Color"], tinted.inputs["Color2"])
+    tree.links.new(tinted.outputs["Color"], principled.inputs["Base Color"])
     return material
 
 
