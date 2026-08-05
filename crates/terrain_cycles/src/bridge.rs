@@ -366,7 +366,14 @@ pub fn lower(
                             stone.radius_m[1].max(1.0e-4),
                             stone.height_m.max(1.0e-4),
                         ],
-                        tint: tint_from(stone.attributes.tint),
+                        tint: if appearance.starts_with("soil.") {
+                            soil_fragment_tint(
+                                stone.attributes.tint,
+                                stone.attributes.moisture,
+                            )
+                        } else {
+                            tint_from(stone.attributes.tint)
+                        },
                         variation: stone.attributes.variation,
                     });
                     report.instances += 1;
@@ -692,6 +699,27 @@ fn normalise(v: [f32; 3]) -> [f32; 3] {
 fn yaw_quaternion(yaw_rad: f32) -> [f32; 4] {
     let half = crate::cycles::bearing_to_blender(yaw_rad) * 0.5;
     [0.0, 0.0, half.sin(), half.cos()]
+}
+
+/// A soil fragment's tint: earth, and as wet as the ground it lies on.
+///
+/// A fragment is the ground it broke off, so it takes the ground's state as
+/// well as its colour. Without the wet term a saturated hollow came out flecked
+/// with light dry specks — every fragment drawn at its dry reflectance on mud
+/// that had darkened around it, which reads as gravel scattered on mud rather
+/// than as mud that has lumps in it.
+///
+/// The same square-free ratio the ground itself uses, at the same strength as a
+/// mid stop: see `GroundMaterialProfile::wet_ratio`. It is applied here rather
+/// than in the shader because an instance carries a colour and not a moisture,
+/// and adding a per-instance state channel to carry one number is a wider change
+/// than this earns.
+fn soil_fragment_tint(value: f32, moisture: f32) -> [f32; 3] {
+    let base = tint_from(value);
+    // A third at full saturation, which is where a soil's own `wet_mid` sits
+    // against its dry mid across the shipped set.
+    let wet = 1.0 - 0.62 * moisture.clamp(0.0, 1.0);
+    [base[0] * wet, base[1] * wet, base[2] * wet]
 }
 
 /// A ground leaf's tint: green, varying in how warm.

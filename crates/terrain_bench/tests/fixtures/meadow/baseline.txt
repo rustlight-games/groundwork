@@ -3,30 +3,30 @@
 // A row that moves without a phase behind it is a regression.
 
 [meadow_path]
-scene = db08e94f8d103b91c5404bcab4726a58
+scene = aae9c604ed630fac42471658b90fec86
 candidates = 338249 generated, 17815 accepted, 0 unowned
-marks = 23016, placements = 17815, prototypes = 0, interactions = 27
+marks = 17560, placements = 17815, prototypes = 0, interactions = 27
   field_stones = secondary, 27 marks
-  loose_grit = secondary, 8678 marks
+  loose_grit = secondary, 8622 marks
   meadow_fine_grass = tuned(fine), 0 marks
   meadow_flowers = secondary, 3677 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
   meadow_undergrowth = secondary, 2317 marks
-  path_clods = secondary, 8317 marks
+  path_clods = secondary, 2917 marks
 
 [narrow_track]
-scene = 1f61559ebf2c5a2032630c7bdebc8ef8
+scene = 39322e3d7d6697d550481b9579690d8c
 candidates = 107021 generated, 2580 accepted, 0 unowned
-marks = 5154, placements = 2580, prototypes = 0, interactions = 3
+marks = 4383, placements = 2580, prototypes = 0, interactions = 3
   field_stones = secondary, 3 marks
-  loose_grit = secondary, 1105 marks
+  loose_grit = secondary, 1089 marks
   meadow_fine_grass = tuned(fine), 0 marks
   meadow_flowers = secondary, 1897 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
   meadow_undergrowth = secondary, 1061 marks
-  track_grit_scatter = secondary, 1088 marks
+  track_grit_scatter = secondary, 333 marks
 
 [flower_meadow]
 scene = 9d5bef1f90f18c4e73988a4dd36fd1f9
@@ -62,10 +62,10 @@ marks = 224, placements = 34, prototypes = 0, interactions = 0
   meadow_undergrowth = secondary, 200 marks
 
 [wet_and_dry]
-scene = ab533e8f687939cc35913618125019fb
+scene = 5102b9a15e369a494e8226da39e9d76b
 candidates = 635151 generated, 29212 accepted, 0 unowned
-marks = 30263, placements = 29212, prototypes = 0, interactions = 0
-  loose_grit = secondary, 29049 marks
+marks = 20553, placements = 29212, prototypes = 0, interactions = 0
+  loose_grit = secondary, 19339 marks
   meadow_fine_grass = tuned(fine), 0 marks
   meadow_flowers = secondary, 713 marks
   meadow_thatch = tuned(thatch), 0 marks

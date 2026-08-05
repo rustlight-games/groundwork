@@ -459,6 +459,18 @@ impl GroundEvaluator {
     }
 
     /// Every distinct profile in play, in material-index order of first use.
+    /// The profile of one material, if it declared one.
+    ///
+    /// What a recipe needs to place loose material at the density and size the
+    /// *soil* says, rather than at a constant a document repeated. A sand bar
+    /// carries 220 fragments a square metre and a meadow floor 40, and those
+    /// numbers are already authored in the profiles — see `GroundScatter`.
+    pub fn profile_of(&self, material: MaterialIndex) -> Option<&Arc<GroundMaterialProfile>> {
+        self.materials
+            .get(material.0 as usize)
+            .and_then(|entry| entry.profile.as_ref())
+    }
+
     pub fn profiles(&self) -> Vec<&Arc<GroundMaterialProfile>> {
         let mut seen: Vec<&Arc<GroundMaterialProfile>> = Vec::new();
         for entry in &self.materials {

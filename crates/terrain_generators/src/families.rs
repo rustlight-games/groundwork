@@ -1438,17 +1438,61 @@ impl TerrainRecipe for DirtClods {
     ) {
         let seeds = &context.seeds;
         let size = candidate.latent(seeds, &stream("clod_size"));
-        let base = read(context.parameters, "radius_m", 0.022) as f32;
+
+        // ## The soil says how much is loose and how big it is
+        //
+        // The document's `radius_m` and `density` are a *supply*: they size the
+        // candidate lattice, which has to be one lattice for every soil the
+        // plate contains. What actually lands is the profile's own
+        // `GroundScatter`, which is where a sand bar's 220 fragments a square
+        // metre and a meadow floor's 40 are already written down — and which
+        // nothing had ever read.
+        //
+        // Taken from the *dominant* substrate rather than blended. A fragment
+        // is one lump of one soil; averaging two soils' scatter would give a
+        // boundary a size and a rate that neither side has.
+        let scatter = context
+            .substrate
+            .dominant()
+            .and_then(|(material, _)| context.ground.profile_of(material))
+            .map(|profile| profile.scatter);
+        let base = match &scatter {
+            Some(scatter) => scatter.fragment_radius_m.high,
+            None => read(context.parameters, "radius_m", 0.022) as f32,
+        };
+
+        // How much of the supply this soil actually wants. A candidate the soil
+        // does not want is dropped rather than shrunk, because a scatter thinned
+        // by shrinking is a scatter of the wrong particle.
+        if let Some(scatter) = &scatter {
+            let supply = read(context.parameters, "density", 220.0).max(1.0) as f32;
+            let wanted = (scatter.grit_per_m2 + scatter.pebble_per_m2) / supply;
+            if candidate.latent(seeds, &stream("clod_keep")) > wanted.clamp(0.0, 1.0) {
+                return;
+            }
+        }
         // Two populations in one: a few big clods and a lot of fine grit. A
         // single size reads as gravel, which is the wrong material.
         // A tenth of them are lumps and the rest is fine. The big multiplier
         // used to reach three times the authored radius, which at a document's
         // eighteen millimetres put five-centimetre cobbles on a meadow floor.
-        let big = size > 0.90;
+        // The pebble share, from the profile: a bar sorts its coarse load out
+        // and a trodden loam keeps some. Falls back to a tenth when no profile
+        // says otherwise.
+        let pebble_share = match &scatter {
+            Some(s) => (s.pebble_per_m2 / (s.grit_per_m2 + s.pebble_per_m2).max(1.0e-6))
+                .clamp(0.0, 0.25),
+            None => 0.10,
+        };
+        let low = scatter
+            .as_ref()
+            .map(|s| s.fragment_radius_m.low / s.fragment_radius_m.high.max(1.0e-6))
+            .unwrap_or(0.25);
+        let big = size > 1.0 - pebble_share;
         let radius = if big {
-            base * (1.1 + 0.7 * size)
+            base * (0.8 + 0.2 * size)
         } else {
-            base * (0.18 + 0.5 * size)
+            base * (low + (0.75 - low).max(0.0) * size)
         };
 
         // Loose material sorts: fines wash into the hollows and the coarse
@@ -1456,7 +1500,17 @@ impl TerrainRecipe for DirtClods {
         // the scatter look deposited rather than sprinkled.
         let curvature = context.fields.curvature(candidate.position);
         let hollow = smoothstep(0.5, -0.5, curvature);
-        let wetness = hollow;
+        // The ground's *actual* moisture, plus a little for sitting in a
+        // hollow. This carried `hollow` alone, which is curvature wearing a
+        // moisture's name — so a fragment lying in saturated mud was drawn as
+        // dry as one on a baked crust, and a plate of wet ground came out
+        // flecked with light dry specks.
+        let wetness = context
+            .ground_sample
+            .state
+            .moisture
+            .max(hollow * 0.35)
+            .clamp(0.0, 1.0);
 
         output.emit(EmittedMark::Analytic {
             centre: [
