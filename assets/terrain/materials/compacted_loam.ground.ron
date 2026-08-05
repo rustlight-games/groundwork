@@ -34,7 +34,7 @@
                 // — a broad orange midtone behind dark green geometry, which
                 // reads as two different worlds however well the boundary is
                 // blended. These land near 1.95 at the same luminance.
-                // ## Halved, once the tonal ramp started working
+                // ## Recalibrated, once the tonal ramp started working
                 //
                 // `tone_norm`'s input socket was a disabled duplicate for the
                 // whole of this profile's life, so the palette ramp ran at a
@@ -44,10 +44,19 @@
                 // moment the socket was fixed — the same palette, finally
                 // showing its middle.
                 //
-                // Halved, and warmed back to a red-to-blue ratio of 2.35. The
-                // first cooling pass took it to 2.00 to sit in the grass's
-                // world, and rendered it came back at 1.44 against the grass's
-                // 1.84 — cooler than the thing it was supposed to match.
+                // Calibrated against the render rather than scaled by a factor,
+                // which is why these are not simply the old numbers halved — an
+                // earlier revision of this comment said "halved" and the stops
+                // had in fact risen about five per cent from their parent. The
+                // measurement that fixed them is the track's luminance against
+                // the grass beside it: 1.10x in the approved plate, 2.88x when
+                // the ramp first started working, and these are what bring it
+                // back.
+                //
+                // Warmed to a red-to-blue ratio of 2.70. The cooling pass took
+                // it to 2.00 to sit in the grass's world and rendered at 1.44
+                // against the grass's 1.84 — cooler than the thing it was
+                // supposed to match.
                 low:  (0.00758, 0.00576, 0.00280),
                 mid:  (0.05570, 0.04233, 0.02063),
                 high: (0.22060, 0.16760, 0.08170),
