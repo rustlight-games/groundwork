@@ -726,10 +726,13 @@ def ground_material():
     bare = nodes.new("ShaderNodeValToRGB")
     bare.location = (-1350, -40)
     ramp = bare.color_ramp
-    stops = len(EARTH)
+    # A fresh ramp arrives with two elements already on it, so the first two
+    # stops reuse those and the rest are added. Positions ascend, which is the
+    # order a ColorRamp keeps its elements in anyway — writing them out of
+    # order would silently reindex the ones already placed.
     for index, rgb in enumerate(EARTH):
-        position = 0.10 + (index / (stops - 1)) * 0.80
-        element = ramp.elements[0] if index == 0 else ramp.elements[1] if index == 1 else ramp.elements.new(position)
+        position = 0.10 + (index / (len(EARTH) - 1)) * 0.80
+        element = ramp.elements[index] if index < 2 else ramp.elements.new(position)
         element.position = position
         element.color = (*rgb, 1.0)
     links.new(patch.outputs["Fac"], bare.inputs["Fac"])

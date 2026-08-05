@@ -177,10 +177,11 @@ assets/terrain/
 
 - **`cargo test -p terrain_bench --test refactor_fingerprints`** — *is it the
   same meadow?* No renderer in the loop. A tenth of a second.
-- **`cargo bench -p terrain_bake --bench bake`** — *what did it cost?*
-- **`grass_snapshot`** — *did the picture move?*
-- **`terrain_bench::iso`** — *is the subject any good, and are the joins
-  invisible?*
+- **`terrain compile`** — *did the picture move?* The only renderer, so the
+  only answer. Minutes, and it needs Blender.
+- **`terrain_bench::iso`** — *do the subject and join metrics still measure
+  what they claim?* Against synthetic plates: there is no renderer in this
+  crate to produce a real one.
 
 `terrain_bench::SCENARIOS` is the pinned ground. Append only.
 
@@ -206,7 +207,6 @@ page in [docs/todo/](docs/todo/) saying what would make it done.
   constants and noise compile.
 - **Cycles still renders through `GrassScene`**, not the generic package.
   `write_package` exists and is not on the active path.
-- **`terrain dataset` still frames by page, not by layout.**
 - **Dataset corpus generation is retired, not redesigned.** It paired a cheap
   rasterised input against a Cycles target, and the input side rasterised the
   shared scene even on the Cycles-target path — not only through the removed

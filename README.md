@@ -111,14 +111,11 @@ Not built yet:
 ## Running it
 
 ```sh
-# Nine isometric tiles, somewhere new, through the cheap rasteriser. Seconds.
-./run
-
-# The same nine tiles, path-traced. Minutes.
+# Nine isometric tiles, somewhere new, path-traced. Minutes.
 ./render
 
-# That world again, exactly. Both scripts print the command that repeats them.
-TERRAIN_SEED=5a17e33b0c9d2f14 ./run
+# That world again, exactly. The script prints the command that repeats it.
+TERRAIN_SEED=5a17e33b0c9d2f14 ./render
 
 cargo run -p terrain_cli -- --help
 
@@ -128,12 +125,12 @@ cargo run -p terrain_cli -- validate assets/terrain/documents/blend_lab.terrain.
 # What is the ground here, and why?
 cargo run -p terrain_cli -- inspect assets/terrain/documents/blend_lab.terrain.ron --at 0,5
 
+# Compile a document and path-trace it: the production path.
+cargo run --release -p terrain_cli -- compile assets/terrain/documents/meadow_path.terrain.ron
+
 # A hand-framed laboratory plate, for a diagnostic that has to be the same
 # twice. The layout options and the manual ones refuse each other.
-cargo run --release -p terrain_cli -- preview-export --manual --size 1024 --px-per-metre 192
-
-# A paired corpus: one scene, two renderers, structural channels beside it.
-cargo run --release -p terrain_cli -- dataset --shards 8 --aovs --out target/corpus
+cargo run --release -p terrain_cli -- render --manual --size 1024 --px-per-metre 192
 
 # The terrain live, in a window. Pan with WASD, zoom with the wheel,
 # 1/2/3 for the close, standard and wide framings.
@@ -187,14 +184,13 @@ Three instruments, answering different questions:
   meadow?* Hashes the generated scene itself: every mark, its shape, its
   material, and the ground beneath. No renderer in the loop, so it survives a
   refactor that moves the renderer. Runs in a tenth of a second.
-- **`cargo bench -p terrain_bake`** — *what did it cost?* Deliberately granular: the
-  bake is five stages and each is timed separately, because a single number for
-  "a page costs 100 ms" tells an optimiser nothing about which fifth to attack.
-- **`grass_snapshot`** — *did the picture move?* Photographs three places at four
-  camera heights and compares pixel for pixel against the last accepted set.
-- **`terrain_bench::iso`** — *is the subject any good, and are the joins
-  invisible?* A nine-tile plate is eight ninths set dressing, so every number is
-  taken twice: once over the layout and once weighted by the subject mask.
+- **`terrain compile`** — *did the picture move?* Cycles is the only renderer,
+  so this is the only thing that produces a picture to compare. It needs
+  Blender and it takes minutes, which is why the fingerprint test above exists.
+- **`terrain_bench::iso`** — *do the subject and join metrics still measure what
+  they claim?* A nine-tile plate is eight ninths set dressing, so every number
+  is taken twice: once over the layout and once weighted by the subject mask.
+  Checked against synthetic plates — there is no renderer in that crate.
 
 A speed improvement bought by generating fewer marks or shorter grass is a
 quality-tier change, not an optimisation, so every speed claim carries its

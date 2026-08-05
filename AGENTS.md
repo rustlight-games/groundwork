@@ -118,8 +118,9 @@ cargo fmt --all -- --check
 # Is it the same meadow? A tenth of a second, no renderer in the loop.
 cargo test -p terrain_bench --test refactor_fingerprints
 
-# What did it cost?
-cargo bench -p terrain_bake --bench bake
+# Did the picture move? Cycles is the only renderer, so this is the only
+# thing that answers it. Minutes, and it needs Blender.
+cargo run --release -p terrain_cli -- compile assets/terrain/documents/meadow_path.terrain.ron
 
 # Does the document still mean what it says?
 cargo run -p terrain_cli -- validate assets/terrain/documents/blend_lab.terrain.ron
