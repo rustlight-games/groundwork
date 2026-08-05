@@ -49,15 +49,15 @@ marks = 355, placements = 67, prototypes = 0, interactions = 14
   meadow_undergrowth = secondary, 312 marks
 
 [wet_hollow]
-scene = 0330d0f0c008397fe902f510d439cb56
-candidates = 1804 generated, 111 accepted, 0 unowned
-marks = 732, placements = 111, prototypes = 0, interactions = 0
+scene = 9adba9248853e5ef7e9524f1817a47f8
+candidates = 1804 generated, 34 accepted, 0 unowned
+marks = 224, placements = 34, prototypes = 0, interactions = 0
   field_stones = secondary, 0 marks
   meadow_fine_grass = tuned(fine), 0 marks
-  meadow_flowers = secondary, 175 marks
+  meadow_flowers = secondary, 24 marks
   meadow_thatch = tuned(thatch), 0 marks
   meadow_tufts = tuned(tuft), 0 marks
-  meadow_undergrowth = secondary, 557 marks
+  meadow_undergrowth = secondary, 200 marks
 
 [tuned_strokes]
   thatch = 1454

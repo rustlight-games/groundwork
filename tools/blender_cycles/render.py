@@ -1487,14 +1487,38 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
 
     # Grain: a darkening, not a second colour. Multiplying keeps the hue the
     # palette already chose and only varies how much light comes back.
+    #
+    # ## And it is a dry phenomenon
+    #
+    # Grain contrast is light scattering off the *tops* of individual grains
+    # with air between them. Fill that space with water and the scattering
+    # collapses: the grains stop being separate reflectors and become inclusions
+    # in a continuous film. Which is why wet ground is visually *smooth* at
+    # grain scale — a wet beach reads as a poured surface — and why leaving the
+    # grain at full strength through saturation produced mud with dust on it.
+    #
+    # Faded by the soil's own `saturation_flattening`, so the number that says
+    # how much relief water fills also says how much grain contrast it removes.
+    # They are the same physical fact measured two ways, and giving them two
+    # authored constants would let a profile claim water fills its pores while
+    # its shading says otherwise.
     grain_band = entry["shader_bands"][0] if entry["shader_bands"] else None
     grain_wavelength = grain_band["wavelength_m"] if grain_band else 0.02
     grain = noise(grain_wavelength, 4.0, -50)
+    grain_fade = nodes.new("ShaderNodeMapRange")
+    grain_fade.location = (-1600, y + 60)
+    grain_fade.inputs["To Min"].default_value = optics["grain_strength"]
+    grain_fade.inputs["To Max"].default_value = optics["grain_strength"] * (
+        1.0 - entry["wet"]["flattening"]
+    )
+    grain_fade.clamp = True
+    links.new(moisture.outputs["Fac"], grain_fade.inputs["Value"])
+
     grained = nodes.new("ShaderNodeMix")
     grained.data_type = "RGBA"
     grained.blend_type = "MULTIPLY"
     grained.location = (-1450, y + 300)
-    live(grained.inputs, "Factor").default_value = optics["grain_strength"]
+    links.new(grain_fade.outputs["Result"], live(grained.inputs, "Factor"))
     links.new(live(palette.outputs, "Color"), live(grained.inputs, "A"))
     links.new(grain.outputs["Color"], live(grained.inputs, "B"))
 

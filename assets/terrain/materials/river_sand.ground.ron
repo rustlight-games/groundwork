@@ -1,0 +1,201 @@
+// Coarse river sand: pale, uniform, rippled, and dramatic when it gets wet.
+//
+// The third shipped soil, and the one that exists because the other two cannot
+// be tuned into it. `meadow_floor` and `compacted_loam` are both *cohesive*
+// ground — they hold a crumb, they carry clods a centimetre and a half across,
+// and one of them can crack. Sand does none of that, and every one of those
+// differences is structural rather than a matter of colour.
+//
+// ## What actually makes sand read as sand
+//
+// Not the colour. A pale warm palette is the least of it: a photograph of dry
+// loam at the right exposure is the same colour, and the two are never confused.
+// Three things are:
+//
+//   **It has no aggregate structure.** Loam's coarsest band is five centimetres
+//   of clustered clods, and clods are what the eye reads as *soil*. Sand's
+//   coarsest band here is four millimetres. Between those two numbers is the
+//   whole difference between ground that broke into lumps and ground that never
+//   held together.
+//
+//   **It ripples.** Directional relief with coherence over a metre is the one
+//   signal isotropic noise cannot fake — noise at ripple amplitude reads as a
+//   rough plane, however carefully it is tuned. `RippleProfile` has been in the
+//   schema since the beginning and no shipped profile had ever declared one, so
+//   this is also the first thing to exercise that path.
+//
+//   **It is tonally flat.** Loam's region term moves the palette by half its
+//   range, because a meadow floor genuinely is patchy — richer here, scuffed
+//   there. Sand is sorted by water, which is a mixing process: a sand bar is
+//   very nearly one colour over its whole length, and reproducing that
+//   *uniformity* is what stops it reading as pale dirt.
+//
+// ## And why it is the material that shows moisture best
+//
+// Wet sand is the most dramatic wet response of any ground there is. A dry bar
+// sits near an albedo of a quarter and the same sand at the waterline is under a
+// tenth — a factor of three, where wet loam manages barely two. Sand's grains
+// are large and near-transparent, so a water film changes almost all of the
+// light path rather than a little of it.
+//
+// It also *smooths* more than any other soil. Water fills the space between
+// grains completely, which is why a wet beach reflects the sky and a wet field
+// does not: `saturation_flattening` is 0.78 here against loam's 0.45, and the
+// ripples are suppressed on top of that.
+(
+    format: "ground-material",
+    format_version: 1,
+    material: (
+        key: "river_sand",
+        display_name: "River sand",
+
+        optics: (
+            // Quartz sand with a little iron. Linear light, like every other
+            // palette here.
+            //
+            // ## Checked against the render, not only against the file
+            //
+            // The first version of this was authored by eye at a mid of 0.218
+            // and looked correct in isolation. Measured off the plate beside
+            // the compacted track it came back **1.18 times** the track's
+            // luminance with a *lower* red-to-blue ratio — which is to say it
+            // rendered as slightly lighter dirt, which is exactly what it reads
+            // as. Dry quartz sand sits near an albedo of a third in red and is
+            // conspicuously the warmest ground in any photograph that contains
+            // it, so both numbers moved.
+            //
+            // The span is deliberately narrow — a factor of three and a half
+            // between the low and high stops against loam's twenty-seven. That
+            // narrowness *is* the material: sorted grains are all the same
+            // grain, so there is nothing for a broad tonal field to describe.
+            dry_palette: (
+                low:  (0.1500, 0.1080, 0.0580),
+                mid:  (0.3300, 0.2480, 0.1320),
+                high: (0.5200, 0.4020, 0.2220),
+            ),
+            wet: (
+                // A third of the dry mid, which is what a waterline actually
+                // measures. Loam only manages a half, and the difference is
+                // grain size: sand's grains are large enough that a film
+                // changes nearly the whole light path.
+                // A third of the dry mid, and warmer than it: a water film
+                // absorbs blue harder than red, so wet sand is not merely
+                // darker sand — it moves along the hue axis as well, and doing
+                // only the darkening is what makes wet ground read as ground in
+                // shadow.
+                wet_mid: (0.1080, 0.0760, 0.0360),
+                // Glossier than any other ground here. Wet sand reflects the
+                // sky; wet loam does not.
+                roughness_wet: 0.14,
+                // Water fills the space between grains almost completely. The
+                // single largest figure in the shipped set, against loam's
+                // 0.45, and it is why a wet bar looks poured rather than
+                // heaped.
+                saturation_flattening: 0.78,
+                film_ior: 1.333,
+            ),
+            // Wide, and wider than loam's, which is the opposite of what the
+            // first version had. Sand is a heap of *individual* quartz grains
+            // with faces on them, so the brightest parts of a dry bar are
+            // grains catching the sun at a specular angle while the shaded
+            // pockets between them scatter diffusely. Clamping the whole
+            // surface to 0.90–0.99 removed every one of those catches, and what
+            // came back was a matte card that read as dried mud.
+            //
+            // The bright end still stays under loam's, because a *crest* of
+            // sand is loose grains rather than a packed crust.
+            roughness_dry: (0.42, 0.94),
+            // Quartz.
+            ior: 1.544,
+
+            // Tonally flat, which is the point. Half of loam's region strength
+            // over one and a half times its wavelength: a bar varies over
+            // metres, not over hand's widths.
+            region_wavelength_m: 3.0,
+            region_strength: 0.26,
+            patch_wavelength_m: 0.28,
+            patch_strength: 0.38,
+            // Fine and even. Loam's grain is 0.55 and describes crumb; this
+            // describes actual grains, which at any framing this project
+            // renders at are below a pixel and belong in the BRDF rather than
+            // in the colour.
+            grain_strength: 0.34,
+        ),
+
+        structure: (
+            // Three bands, none of them a clod. The coarsest is four
+            // millimetres — a tenth of loam's — because sand has no aggregate
+            // above grain scale at all. Everything larger on a real bar is a
+            // ripple, and ripples are declared separately below where their
+            // *direction* can be stated.
+            bands: [
+                (wavelength_m: 0.0040, amplitude_m: 0.00090, shape: "Angular", compaction_response: 0.30, clustered: false),
+                (wavelength_m: 0.0012, amplitude_m: 0.00032, shape: "Angular", compaction_response: 0.18, clustered: false),
+                (wavelength_m: 0.0004, amplitude_m: 0.00010, shape: "Angular", compaction_response: 0.10, clustered: false),
+            ],
+            // Nothing clusters. A clump of sand is a thing that has stopped
+            // being sand, and leaving the clustering on would put loam's
+            // hand's-width lumpiness back into a material defined by not
+            // having it.
+            cluster_wavelength_m: 0.8,
+            cluster_strength: 0.0,
+            // Almost none. This is the number that says the material cannot
+            // hold a shape, and it is why there is no crack profile below: a
+            // material with no cohesion has nothing to crack.
+            cohesion: 0.06,
+        ),
+
+        // The first shipped ripples. See `RippleProfile`.
+        ripples: Some((
+            // Seven and a half centimetres, which is where current ripples on a
+            // river bar actually sit. Wind ripples on dry dune sand are finer;
+            // this is a bar that was under water recently.
+            wavelength_m: 0.075,
+            // Four millimetres peak to trough. Small enough that it is a
+            // texture rather than a landform, large enough to catch a low sun
+            // along its whole length — which is the entire reason it is here.
+            amplitude_m: 0.0040,
+            // Across the prevailing flow, which is what a current leaves.
+            direction_deg: 35.0,
+            // Rounded rather than sharp. Sharp crests are a wind signature;
+            // water-formed ripples are smooth on top and steep on the lee.
+            crest_sharpness: 0.48,
+            // Positive steepens the lee face, which is what makes a ripple
+            // field read as having a direction rather than merely an axis.
+            asymmetry: 0.45,
+            // The wavefronts wander by well over half their own wavelength,
+            // over a scale of six of them. Zero would give parallel sine waves,
+            // which is the single most recognisable procedural failure in this
+            // whole vocabulary — and the first render of this profile proved
+            // that a *small* meander is barely better, because what reads as
+            // corduroy is regularity rather than straightness.
+            meander_m: 0.048,
+            // Wet sand does not ripple: the water holds the grains where they
+            // are, and a bar under a film is smooth. Nearly total, so the
+            // ripples are a *dry* signature and their disappearance is one more
+            // thing that reads as wetness.
+            wetness_suppression: 0.88,
+        )),
+
+        // None, and deliberately. Cracking is a clay behaviour — it needs
+        // cohesion for the shrinking sheet to hold together long enough to
+        // part. Sand shrinks by draining, which moves no grains relative to
+        // each other, so a cracked sand is a thing nobody has photographed.
+        cracks: None,
+
+        scatter: (
+            // A great deal of grit and almost no pebbles, which is what sorting
+            // means: a river drops its coarse load before it drops its fine
+            // one, so a sand bar is sand.
+            grit_per_m2: 220.0,
+            pebble_per_m2: 0.12,
+            fragment_radius_m: (0.0018, 0.010),
+        ),
+
+        // Nearly nothing grows in it. Higher than the track's zero, because a
+        // river bar does carry the odd tuft where silt has collected, and
+        // making it exactly zero would forbid that in every document at once
+        // rather than letting one say so.
+        vegetation_affinity: 0.04,
+    ),
+)

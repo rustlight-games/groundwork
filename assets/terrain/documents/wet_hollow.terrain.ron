@@ -28,7 +28,7 @@
 
         metadata: (
             name: "Wet hollow",
-            description: "A soaked hollow: dark saturated ground, a wet film in the low places, rank grass around it.",
+            description: "One drainage axis, end to end: a dry rippled sand bar, a damp meadow, and saturated mud in the low places.",
         ),
 
         materials: [
@@ -38,6 +38,16 @@
                 appearance: "surface.ground",
                 profile: Some("materials/meadow_floor.ground.ron"),
                 vegetation_affinity: Some(1.0),
+            ),
+            (
+                key: "bar_sand",
+                display_name: "River sand",
+                appearance: "surface.ground",
+                profile: Some("materials/river_sand.ground.ron"),
+                // Left to the profile, which says four percent. A bar carries
+                // the odd tuft where silt has collected; the document has no
+                // reason to overrule that here.
+                vegetation_affinity: None,
             ),
         ],
 
@@ -97,7 +107,19 @@
                 key: "soil_moisture",
                 display_name: "Soil moisture",
                 range: (0.0, 1.0),
-                default_value: 0.88,
+                // Dry by default, and the direction matters.
+                //
+                // This used to default to 0.88 and be raised to 1.0 in the
+                // hollows, which meant the document could describe *soaked* and
+                // *more soaked* and nothing else. `Max` composition cannot
+                // lower a value, so there was no way to author a dry bank at
+                // all — and a moisture axis with only its wet end is not an
+                // axis, it is a constant with a wobble.
+                //
+                // Starting low and raising it is the composable direction: a
+                // damp meadow is one layer above this floor, a saturated hollow
+                // is another above that, and the sand bar simply has neither.
+                default_value: 0.12,
                 composition: "Max",
                 unit: "Unitless",
                 role: Some("SoilMoisture"),
@@ -142,6 +164,41 @@
                 )),
             ),
             (
+                // The one axis this document is about. High ground sheds water
+                // and is scoured down to a sand bar; low ground collects it and
+                // ends up as mud; the middle is a meadow.
+                //
+                // Deliberately its own source rather than a second reading of
+                // `meadow_richness`. The two would correlate in the world — the
+                // rich ground is the damp ground — but tying them together here
+                // would mean the sand bar could only ever be the poorest patch
+                // of meadow, and a bar is not poor meadow. It is a different
+                // material.
+                key: "drainage",
+                source: Noise((
+                    kind: "Perlin",
+                    frequency_per_m: 0.21,
+                    // One octave, and the reason is the *distribution* rather
+                    // than the look. A three-octave sum at gain one-half is a
+                    // sum of three independent-ish fields, so it piles up near
+                    // its own mean the way any sum does: the first version of
+                    // this document had 90% of its area inside a fifth of the
+                    // range, and both ends of the axis it exists to demonstrate
+                    // — the dry bar and the saturated hollow — simply never
+                    // occurred. Measured: the saturated end fired on exactly
+                    // zero samples.
+                    //
+                    // A single octave spreads much wider, which is what a
+                    // threshold-driven document needs. The detail this gives up
+                    // is detail nothing here reads: the ramps quantise it into
+                    // three regions regardless.
+                    octaves: 1,
+                    lacunarity: 2.0,
+                    gain: 0.5,
+                    stream: "drainage",
+                )),
+            ),
+            (
                 // Finer, and its own stream, so the mat's patches are not the
                 // richness field's patches seen through a different ramp.
                 key: "sward_texture",
@@ -164,6 +221,110 @@
                     material: "meadow_soil",
                     mode: "Replace",
                     amount: 1.0,
+                )),
+            ),
+            (
+                key: "sand_bar",
+                // The dry end of the axis. `Replace`, so the bar sweeps the
+                // whole way to pure sand rather than stopping at a mixture —
+                // the same argument `meadow_path` makes about its track, and
+                // for the same reason: half a bar is a thing nobody has seen.
+                mask: Profile((
+                    source: "drainage",
+                    shape: Ramp((low: 0.560, high: 0.680)),
+                )),
+                operation: Material((
+                    material: "bar_sand",
+                    mode: "Replace",
+                    amount: 1.0,
+                )),
+            ),
+            (
+                key: "sand_bar_bare",
+                // Wider than the material band, and starting sooner. Grass
+                // thins out before the ground stops being soil — the fringe of
+                // a bar is thin turf on sand rather than turf that ends at a
+                // line — which is the one thing that stops a material boundary
+                // reading as a decal laid on a lawn.
+                mask: Profile((
+                    source: "drainage",
+                    shape: Ramp((low: 0.545, high: 0.670)),
+                )),
+                operation: Modifier((
+                    channel: "vegetation_density",
+                    mode: "Multiply",
+                    value: 0.03,
+                )),
+            ),
+            (
+                key: "damp_meadow",
+                // The middle of the axis, and the reason the channel now starts
+                // low: this is where the old default of 0.88 used to live, and
+                // it is now a layer that the bar simply does not receive.
+                mask: Profile((
+                    source: "drainage",
+                    shape: Ramp((low: 0.580, high: 0.450)),
+                )),
+                operation: Modifier((
+                    channel: "soil_moisture",
+                    mode: "Max",
+                    value: 0.62,
+                )),
+            ),
+            (
+                key: "saturated_mud",
+                // The wet end. Full saturation, so every wet response the
+                // profile declares is at its limit at once: the palette lands
+                // on its measured wet mid, the roughness collapses to 0.2, the
+                // relief slumps by the flattening figure, and the film raises a
+                // Principled coat.
+                //
+                // None of those is worth much alone — a shader that only
+                // darkens produces ground that reads as being in shadow. It is
+                // the four together, and this layer exists to have somewhere in
+                // the shipped set where all four are switched fully on.
+                mask: Profile((
+                    source: "drainage",
+                    shape: Ramp((low: 0.560, high: 0.460)),
+                )),
+                operation: Modifier((
+                    channel: "soil_moisture",
+                    mode: "Max",
+                    value: 1.0,
+                )),
+            ),
+            (
+                key: "mud_is_bare",
+                // Saturated ground drowns roots. Without this the hollow is
+                // mud with a meadow standing in it and none of the mud is
+                // visible — which is what this document did before, and it is
+                // why it shipped a wet response nobody could see.
+                mask: Profile((
+                    source: "drainage",
+                    shape: Ramp((low: 0.545, high: 0.455)),
+                )),
+                operation: Modifier((
+                    channel: "vegetation_density",
+                    mode: "Multiply",
+                    value: 0.07,
+                )),
+            ),
+            (
+                key: "mud_is_soft",
+                // Uncompacted, which is not the same as wet. Compaction packs
+                // grains together and flattens relief permanently; saturation
+                // fills the space between them and flattens it while the water
+                // is there. A hollow is soft, so the relief that survives the
+                // water is the relief the profile declares rather than a
+                // trodden fraction of it.
+                mask: Profile((
+                    source: "drainage",
+                    shape: Ramp((low: 0.560, high: 0.460)),
+                )),
+                operation: Modifier((
+                    channel: "soil_compaction",
+                    mode: "Max",
+                    value: 0.02,
                 )),
             ),
             (
@@ -219,11 +380,19 @@
                 )),
             ),
             (
-                key: "soaked_hollows",
+                key: "damp_patches",
                 // Where the ground is lowest in the richness field it is also
-                // wettest — which is not a coincidence the document is
+                // wetter — which is not a coincidence the document is
                 // asserting, it is the same physical cause read twice: water
                 // runs downhill and what it reaches grows differently.
+                //
+                // Held well below saturation, and lowered from 1.0 when the
+                // drainage axis arrived. Two independent sources both reaching
+                // full saturation meant half the plate was at the wet limit and
+                // the mud in the hollow had nothing to be wetter *than* — the
+                // axis was there and nothing on screen moved along it. This is
+                // now damp meadow, and `saturated_mud` is the only thing that
+                // reaches one.
                 mask: Profile((
                     source: "meadow_richness",
                     shape: Ramp((low: 0.55, high: 0.18)),
@@ -231,7 +400,7 @@
                 operation: Modifier((
                     channel: "soil_moisture",
                     mode: "Max",
-                    value: 1.0,
+                    value: 0.72,
                 )),
             ),
             (

@@ -1048,16 +1048,33 @@ fn shape(raw: f32, shape: AggregateShape) -> f32 {
 
 /// Wind ripples, in metres.
 ///
-/// Two things stop this being parallel sine waves, which is the single most
+/// Three things stop this being parallel sine waves, which is the single most
 /// recognisable procedural failure there is:
 ///
-/// - **Meander.** The phase is displaced by a low-frequency field along the
-///   wind direction, so wavefronts wander the way real ones do.
+/// - **Meander.** The phase is displaced by a low-frequency field, so
+///   wavefronts wander the way real ones do.
 /// - **Asymmetry.** Real ripples have a long windward face and a short lee one.
 ///   Skewing the phase before the sine produces that without a second texture.
+/// - **Patchiness.** A bar is not rippled evenly. Some of it was worked over
+///   recently and some was washed flat, so the amplitude itself varies over a
+///   scale of a metre or two.
 ///
-/// Saturation flattens them, because wet sand does not ripple — the water holds
-/// the grains where they are.
+/// ## The meander's *scale* is not its size
+///
+/// The first version derived the meander field's frequency from `meander_m` —
+/// the distance it displaces by — which conflates how far a wavefront wanders
+/// with how quickly it changes its mind. At the shipped sand's settings that
+/// put the meander field's own wavelength at ten centimetres against a
+/// seven-and-a-half-centimetre ripple, so the displacement was *faster* than
+/// the thing it was displacing: every wavefront wobbled inside a single cycle
+/// and none of them curved. What rendered was corduroy.
+///
+/// The scale a wavefront wanders on is set by the ripple itself: real ones hold
+/// their line for a handful of wavelengths and then bend. So the field's
+/// frequency comes from `wavelength_m`, and `meander_m` says only how far.
+///
+/// Saturation flattens all of it, because wet sand does not ripple — the water
+/// holds the grains where they are.
 fn ripple_height(
     ripples: &terrain_core::ground_material::RippleProfile,
     world: Vec2,
@@ -1073,8 +1090,11 @@ fn ripple_height(
     let along = world.x * cos + world.y * sin;
     let across = -world.x * sin + world.y * cos;
 
+    // Six wavelengths, which is about how far a real wavefront holds its line
+    // before it bends. Tied to the ripple rather than to the displacement — see
+    // the note above for what happens when it is not.
     let meander = if ripples.meander_m > 0.0 {
-        let frequency = 1.0 / (ripples.meander_m * 4.0);
+        let frequency = 1.0 / (ripples.wavelength_m.max(f32::MIN_POSITIVE) * 6.0);
         (fbm(
             root_seed ^ 0x_21_99_1E_00,
             Stream::Ripple,
@@ -1083,9 +1103,28 @@ fn ripple_height(
             3,
         ) - 0.5)
             * ripples.meander_m
+            * 2.0
     } else {
         0.0
     };
+
+    // How hard the ripples are working here. A bar carries stretches that were
+    // reworked yesterday beside stretches a flood smoothed over, and drawing
+    // them at one amplitude everywhere is the second half of the corduroy
+    // reading: an even pattern over an even field has nothing anywhere for the
+    // eye to catch on except its own regularity.
+    //
+    // Over two metres, so it organises the bar rather than the ripple. Floored
+    // well above zero, because a ripple field with holes in it reads as damage.
+    let patchiness = 0.45
+        + 0.55
+            * fbm(
+                root_seed ^ 0x_21_99_1E_5A,
+                Stream::Ripple,
+                world.x * 0.5,
+                world.y * 0.5,
+                2,
+            );
 
     let phase =
         (along + meander) * std::f32::consts::TAU / ripples.wavelength_m.max(f32::MIN_POSITIVE);
@@ -1096,7 +1135,7 @@ fn ripple_height(
     // Sharpen the crests without touching the troughs.
     let sharp = ripples.crest_sharpness;
     let crested = wave * (1.0 - sharp) + wave.abs().powf(0.55) * wave.signum() * sharp;
-    crested * amplitude * 0.5
+    crested * amplitude * patchiness * 0.5
 }
 
 /// How deep the desiccation network cuts here, in metres.
