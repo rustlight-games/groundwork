@@ -110,10 +110,26 @@ struct CompileArgs {
     #[arg(long)]
     field_spacing_m: Option<f64>,
     /// How ragged a boundary between two substrates runs.
-    #[arg(long, default_value_t = 0.30)]
+    ///
+    /// ## Raised, because a smooth boundary is the one thing the references
+    /// never show
+    ///
+    /// 0.30 over 0.18 m lobes, and ten reviews against
+    /// `docs/references/grass_to_mud_bumpy.jpg` kept returning to the same
+    /// sentence: the edge reads as a *procedural grass-density falloff* rather
+    /// than the reference's irregular interlock of torn turf, exposed soil and
+    /// embedded clods.
+    ///
+    /// The transition solver exists to produce exactly that interlock and was
+    /// being asked for a third of what it can do. At 0.62 over 0.30 m the grass
+    /// breaks into survivors standing in bare ground, soil reaches back into the
+    /// sward in channels, and the shoulder spoil sits among both — which is what
+    /// `docs/references/README.md` describes the plates as establishing, and
+    /// what the defaults were quietly preventing.
+    #[arg(long, default_value_t = 0.62)]
     raggedness: f32,
     /// The size of the largest boundary lobes, in metres.
-    #[arg(long, default_value_t = 0.18)]
+    #[arg(long, default_value_t = 0.30)]
     boundary_feature_m: f32,
     /// Where to write the plate.
     #[arg(long, default_value = "target/plate.png")]
