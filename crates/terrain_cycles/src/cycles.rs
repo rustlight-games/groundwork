@@ -910,7 +910,7 @@ fn resample_into(walked: &[BladeSample], width_scale: f32, ribs: usize, out: &mu
 /// So the swell is kept and its profile is not. What survives still tilts the
 /// surface toward and away from the sun, which is all the lighting ever wanted
 /// from it.
-const GROUND_RELIEF: f32 = 0.34;
+pub const GROUND_RELIEF: f32 = 0.34;
 
 /// What the ground is made of, and the state it is in, over the sample grid.
 ///

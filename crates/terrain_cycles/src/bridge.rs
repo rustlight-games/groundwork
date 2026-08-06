@@ -64,11 +64,37 @@ use crate::secondary::{
 ///
 /// The whole of the handedness fix, and the only conversion in this module. See
 /// the module note for what its absence looked like.
-fn to_blender(point: terrain_scene::projection::ScenePoint) -> [f32; 3] {
+/// One scene point, crossed into the renderer's frame and lifted onto the mesh.
+///
+/// ## The lift is not a fudge, it is the missing half of the mesh's own height
+///
+/// The ground mesh is built at `mound * GROUND_RELIEF + displacement`, where the
+/// mound is the grass generator's macro swell. The scene compiler places
+/// everything at `surface_height + displacement`, which is the *authored*
+/// elevation and, on a flat world, zero. The two are different functions and
+/// nothing reconciled them.
+///
+/// Measured off an exported package: the mesh sat at a median of +20 mm and the
+/// instances at −59 mm. Soil fragments are 5 to 18 mm in radius and are sunk a
+/// further third of that on purpose, so every one of them was **entirely
+/// underground** — which is exactly what a render showed, fragments crisp and
+/// correct where they overhang the plate's edge into black and invisible
+/// everywhere on the surface itself.
+///
+/// The tuned grass hides the same error rather than escaping it: its roots are
+/// emitted at zero and its blades are ten to thirty centimetres long, so two
+/// centimetres of burial shortens them instead of erasing them.
+///
+/// So the mound is added here, at the one boundary every secondary position
+/// crosses, rather than by changing which surface the mesh uses. Making the mesh
+/// follow the authored elevation instead would remove the plate's swell and turn
+/// the tuned grass's buried roots into floating ones — a much larger change than
+/// a fragment-visibility fix should carry.
+fn to_blender(point: terrain_scene::projection::ScenePoint, lift: f64) -> [f32; 3] {
     let swapped = crate::cycles::to_blender(glam::Vec3::new(
         point.u_m as f32,
         point.v_m as f32,
-        point.z_m as f32,
+        (point.z_m + lift) as f32,
     ));
     [swapped.x, swapped.y, swapped.z]
 }
@@ -175,6 +201,7 @@ pub fn lower(
     scene: &TerrainScene,
     visible: WorldRect,
     shadow_reach_m: f64,
+    mound: &dyn Fn(f64, f64) -> f64,
 ) -> (SecondaryGeometry, BridgeReport) {
     let mut out = SecondaryGeometry::default();
     let mut report = BridgeReport::default();
@@ -268,7 +295,7 @@ pub fn lower(
             match (kind, mark) {
                 (Lowering::Curve, SceneMark::Curve(curve)) => {
                     let offset = out.curve_points.len() as u32;
-                    let points = stem_points(curve);
+                    let points = stem_points(curve, mound(curve.root.u_m, curve.root.v_m));
                     let count = points.len() as u32;
                     out.curve_points.extend(points);
                     out.curves.push(CurveSpan {
@@ -293,7 +320,7 @@ pub fn lower(
                         prototype,
                         material_variant: 0,
                         visibility,
-                        translation: to_blender(head.centre),
+                        translation: to_blender(head.centre, mound(head.centre.u_m, head.centre.v_m)),
                         rotation_xyzw: yaw_quaternion(head.rotation_rad),
                         scale: [
                             head.radius_m[0],
@@ -308,7 +335,12 @@ pub fn lower(
                 (Lowering::Leaf, SceneMark::Ribbon(leaf)) => {
                     let vertex_offset = out.ribbon_vertices.len() as u32;
                     let index_offset = out.ribbon_indices.len() as u32;
-                    tessellate_leaf(leaf, &mut out.ribbon_vertices, &mut out.ribbon_indices);
+                    tessellate_leaf(
+                        leaf,
+                        &mut out.ribbon_vertices,
+                        &mut out.ribbon_indices,
+                        mound(leaf.root.u_m, leaf.root.v_m),
+                    );
                     out.ribbons.push(RibbonSpan {
                         vertex_offset,
                         vertex_count: out.ribbon_vertices.len() as u32 - vertex_offset,
@@ -331,7 +363,7 @@ pub fn lower(
                         prototype,
                         material_variant: 0,
                         visibility,
-                        translation: to_blender(petal.centre),
+                        translation: to_blender(petal.centre, mound(petal.centre.u_m, petal.centre.v_m)),
                         rotation_xyzw: yaw_quaternion(petal.rotation_rad),
                         scale: [
                             petal.radius_m[0].max(1.0e-4),
@@ -359,7 +391,7 @@ pub fn lower(
                         prototype,
                         material_variant: 0,
                         visibility,
-                        translation: to_blender(stone.centre),
+                        translation: to_blender(stone.centre, mound(stone.centre.u_m, stone.centre.v_m)),
                         rotation_xyzw: yaw_quaternion(stone.rotation_rad),
                         scale: [
                             stone.radius_m[0].max(1.0e-4),
@@ -533,6 +565,7 @@ fn tessellate_leaf(
     leaf: &terrain_scene::mark::RibbonMark,
     vertices: &mut Vec<RibbonVertex>,
     indices: &mut Vec<u32>,
+    lift: f64,
 ) {
     let geometry = &leaf.geometry;
     let tint = leaf_tint(leaf.attributes.tint);
@@ -542,7 +575,7 @@ fn tessellate_leaf(
     let mut position = [
         leaf.root.u_m as f32,
         leaf.root.v_m as f32,
-        leaf.root.z_m as f32,
+        (leaf.root.z_m + lift) as f32,
     ];
 
     for section in 0..LEAF_SECTIONS {
@@ -798,11 +831,11 @@ fn tint_from(value: f32) -> [f32; 3] {
 ///
 /// At `θ → 0` the divided form is `0/0`. The straight case is handled
 /// explicitly rather than evaluated at a tiny angle and hoped to cancel.
-fn stem_points(curve: &terrain_scene::mark::CurveMark) -> Vec<[f32; 3]> {
+fn stem_points(curve: &terrain_scene::mark::CurveMark, lift: f64) -> Vec<[f32; 3]> {
     let root = [
         curve.root.u_m as f32,
         curve.root.v_m as f32,
-        curve.root.z_m as f32,
+        (curve.root.z_m + lift) as f32,
     ];
     let length = curve.length_m.max(1.0e-4);
     let bend = curve.bend_rad;
@@ -911,7 +944,7 @@ mod tests {
         // The connection this module exists to make. Before it, every one of
         // these was computed, counted, fingerprinted and thrown away.
         let scene = scene_with_flower((0.0, 0.0));
-        let (geometry, report) = lower(&scene, rect((-2.0, -2.0), (2.0, 2.0)), 0.5);
+        let (geometry, report) = lower(&scene, rect((-2.0, -2.0), (2.0, 2.0)), 0.5, &|_, _| 0.0);
         assert_eq!(report.curves, 1);
         assert_eq!(report.instances, 1);
         assert_eq!(report.groups_camera, 1);
@@ -924,7 +957,7 @@ mod tests {
         // Half a flower reads as a rendering bug rather than as sparse content,
         // so a slice classifies plants and never primitives.
         let scene = scene_with_flower((0.0, 0.0));
-        let (geometry, report) = lower(&scene, rect((-2.0, -2.0), (2.0, 2.0)), 0.5);
+        let (geometry, report) = lower(&scene, rect((-2.0, -2.0), (2.0, 2.0)), 0.5, &|_, _| 0.0);
         // One group, and both of its primitives came through with the same
         // visibility.
         assert_eq!(report.total_groups(), 1);
@@ -937,7 +970,7 @@ mod tests {
         // Dropping it instead takes its shadow with it and leaves a bright rim
         // exactly at the edge of the picture, which is where the eye goes.
         let scene = scene_with_flower((3.0, 0.0));
-        let (geometry, report) = lower(&scene, rect((-2.0, -2.0), (2.0, 2.0)), 2.0);
+        let (geometry, report) = lower(&scene, rect((-2.0, -2.0), (2.0, 2.0)), 2.0, &|_, _| 0.0);
         assert_eq!(report.groups_halo, 1);
         assert_eq!(report.groups_camera, 0);
         assert!(
@@ -957,7 +990,7 @@ mod tests {
     #[test]
     fn a_plant_beyond_every_reach_is_omitted() {
         let scene = scene_with_flower((40.0, 0.0));
-        let (geometry, report) = lower(&scene, rect((-2.0, -2.0), (2.0, 2.0)), 2.0);
+        let (geometry, report) = lower(&scene, rect((-2.0, -2.0), (2.0, 2.0)), 2.0, &|_, _| 0.0);
         assert_eq!(report.groups_omitted, 1);
         assert!(geometry.is_empty());
     }
@@ -994,7 +1027,7 @@ mod tests {
                 bounds: Aabb3::around(at, 0.06),
             }));
         }
-        let (geometry, report) = lower(&builder.build(), rect((-2.0, -2.0), (2.0, 2.0)), 0.5);
+        let (geometry, report) = lower(&builder.build(), rect((-2.0, -2.0), (2.0, 2.0)), 0.5, &|_, _| 0.0);
         assert_eq!(report.instances, 8);
         assert_eq!(geometry.prototypes.len(), 1, "eight stones, one shape");
         assert!(geometry.problems().is_empty(), "{:?}", geometry.problems());
@@ -1031,7 +1064,7 @@ mod tests {
             attributes: MarkAttributes::default(),
             bounds: Aabb3::around(at, 0.02),
         }));
-        let (geometry, report) = lower(&builder.build(), rect((-2.0, -2.0), (2.0, 2.0)), 0.5);
+        let (geometry, report) = lower(&builder.build(), rect((-2.0, -2.0), (2.0, 2.0)), 0.5, &|_, _| 0.0);
         assert!(geometry.is_empty());
         assert_eq!(report.unsupported.get("plant.grass_blade"), Some(&1));
     }
@@ -1043,7 +1076,7 @@ mod tests {
             panic!("the first mark is the stem")
         };
         curve.bend_rad = 0.0;
-        let points = stem_points(curve);
+        let points = stem_points(curve, 0.0);
         assert_eq!(points.len(), 2);
         assert!((points[1][2] - points[0][2] - curve.length_m).abs() < 1.0e-6);
     }
@@ -1058,7 +1091,7 @@ mod tests {
         let SceneMark::Curve(curve) = &scene.marks[0] else {
             panic!("the first mark is the stem")
         };
-        let points = stem_points(curve);
+        let points = stem_points(curve, 0.0);
         let walked: f32 = points
             .windows(2)
             .map(|pair| {
@@ -1085,7 +1118,7 @@ mod tests {
         let SceneMark::Curve(curve) = &scene.marks[0] else {
             panic!("the first mark is the stem")
         };
-        let points = stem_points(curve);
+        let points = stem_points(curve, 0.0);
         let tip = points.last().expect("a stem has a tip");
         // Against the *reflected* bearing, because `stem_points` hands back the
         // centreline already across the mirror. Checking it against the raw
@@ -1181,7 +1214,7 @@ mod tests {
         // and would have passed before the fix as happily as after it.
         let at = (1.25, -0.5);
         let scene = scene_with_flower(at);
-        let (geometry, report) = lower(&scene, rect((-2.0, -2.0), (2.0, 2.0)), 0.2);
+        let (geometry, report) = lower(&scene, rect((-2.0, -2.0), (2.0, 2.0)), 0.2, &|_, _| 0.0);
         assert_eq!(report.groups_camera, 1);
 
         // The stem's first point is its root, reflected.

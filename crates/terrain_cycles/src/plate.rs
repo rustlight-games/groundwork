@@ -543,8 +543,20 @@ pub fn trace(
                         ),
                     ),
                 };
-                let (geometry, report) =
-                    crate::bridge::lower(compiled, visible, secondary_shadow_reach_m(params));
+                // The same macro swell the ground mesh is built on. Without it
+                // every scattered fragment is placed on the authored elevation,
+                // which on a flat world is zero, and buried under the mound the
+                // mesh actually has — see `bridge::to_blender`.
+                let lift = |u: f64, v: f64| {
+                    (field.sample(glam::Vec2::new(u as f32, v as f32)).height
+                        * crate::cycles::GROUND_RELIEF) as f64
+                };
+                let (geometry, report) = crate::bridge::lower(
+                    compiled,
+                    visible,
+                    secondary_shadow_reach_m(params),
+                    &lift,
+                );
                 if !report.unsupported.is_empty() {
                     // Printed rather than swallowed. A flower that silently did
                     // not render looks exactly like a flower that was never
