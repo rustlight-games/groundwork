@@ -348,9 +348,25 @@
             // The crumb below this scale has not gone anywhere. It is in the
             // shader's bump and then in the roughness, which is the same
             // three-tier split the relief uses and for the same reason.
-            grit_per_m2: 700.0,
-            pebble_per_m2: 22.0,
-            fragment_radius_m: (0.005, 0.018),
+            // ## The clods take the shadowing budget from the pocks
+            //
+            // See `docs/todo/soil-perforation.md`. Four separate attempts to
+            // reduce the surface's uniform perforation each dropped the
+            // self-shadowing share below its floor, because in the simulated bed
+            // the relief that reads as perforation *is* the relief that casts.
+            //
+            // The way out is a second source of steep relief that is not a hole.
+            // These fragments are instanced geometry sitting on the bed rather
+            // than part of it, so they can carry the shadows while the bed goes
+            // quiet — which is the trade the reference actually shows: a fairly
+            // calm surface with distinct clods standing on it.
+            //
+            // Paired with the disturbance rate coming down in `soil.rs`. Tuning
+            // either alone moves the picture sideways, which is exactly what the
+            // four failed attempts did.
+            grit_per_m2: 380.0,
+            pebble_per_m2: 46.0,
+            fragment_radius_m: (0.009, 0.030),
         ),
 
         vegetation_affinity: 0.0,

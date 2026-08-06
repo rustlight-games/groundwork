@@ -1018,7 +1018,13 @@ def soil_fragment_material(settings, soils=None):
     # high stops, which is where a piece of unweathered material freshly turned
     # out of the surface actually sits.
     mid = (soils or [{}])[0].get("dry_palette", {}).get("mid", [0.036, 0.021, 0.011])
-    material = stone_material(settings, [c * 2.5 for c in mid])
+    # Two and a half was set when the fragments were buried and invisible, to
+    # make them findable. Now that they are the surface's dominant structure it
+    # reads as a scatter of pale gravel on brown earth: a fragment is a lump of
+    # the ground it broke out of and cannot be twice its brightness. Half again
+    # above the mid is a fresh break catching more sky than the packed surface
+    # around it, which is the whole of the difference.
+    material = stone_material(settings, [c * 1.5 for c in mid])
     principled = material.node_tree.nodes["Principled BSDF"]
     principled.inputs["Roughness"].default_value = 0.94
     # A mineral aggregate, not a dense silicate.
