@@ -795,8 +795,24 @@ fn disturb(grid: &mut Grid, params: &Params, seed: u64) {
             // anything below that belongs to the shader's bump and then to its
             // roughness — which is exactly the three-tier split the rest of this
             // pipeline already draws, applied to the simulation.
+            // ## One event that is not round
+            //
+            // Every event in this simulation was radially symmetric — round
+            // pits, round packets — so however they were tuned the interior of a
+            // worked region came out as isotropic stipple. What a track actually
+            // carries is *directional*: ruts, smears, compacted shelves, all
+            // running the way the traffic went, and all of them long compared to
+            // their width.
+            //
+            // A rut is the same footprint machinery at a much higher squash and
+            // with its turn pinned tightly to the shared travel bias instead of
+            // jittered away from it. Long, shallow, aligned, and compacting what
+            // is left in the bottom — which is what a rut is.
             let roll = draw.unit();
-            let (radius, depth, rim) = if roll < 0.78 {
+            let is_rut = roll >= 0.985;
+            let (radius, depth, rim) = if is_rut {
+                (draw.range(0.020, 0.042), params.disturbance_depth_m * 0.85, 0.40)
+            } else if roll < 0.78 {
                 // Voids and collapses between aggregates. No rim: a pore is
                 // where material is absent, not where it was thrown. Ringing
                 // every one of them was the other half of the speckle.
@@ -813,9 +829,17 @@ fn disturb(grid: &mut Grid, params: &Params, seed: u64) {
             // Elliptical and turned, and a shared bias in the turn so that a
             // stretch of ground looks worked over rather than randomly pocked.
             let bias = fbm(seed ^ 0x0D15_7B00, Stream::Flow, at.x * 0.7, at.y * 0.7, 2);
-            let angle = bias * std::f32::consts::TAU + draw.range(-0.5, 0.5);
+            // A rut holds the travel line; a pit only leans toward it. That
+            // difference in *jitter* is what makes a set of ruts read as one
+            // direction and a set of pits read as scatter.
+            let wander = if is_rut { 0.12 } else { 0.5 };
+            let angle = bias * std::f32::consts::TAU + draw.range(-wander, wander);
             let (sin, cos) = angle.sin_cos();
-            let squash = draw.range(1.0, 2.1);
+            let squash = if is_rut {
+                draw.range(6.0, 14.0)
+            } else {
+                draw.range(1.0, 2.1)
+            };
             let warp = draw.range(0.15, 0.45);
 
             let footprint = move |world: Vec2| -> f32 {
@@ -886,8 +910,12 @@ fn disturb(grid: &mut Grid, params: &Params, seed: u64) {
             }
             // What is left in the hollow has been pressed, and pressed soil
             // holds. This is why old prints keep their shape.
+            // A rut's floor is pressed harder than a footprint's: it has been
+            // run over repeatedly along the same line, which is what turns loose
+            // material into a coherent compacted plane rather than a dent.
+            let press = if is_rut { 0.80 } else { 0.45 };
             for index in inside {
-                grid.strength[index] = (grid.strength[index] + 0.45).min(1.0);
+                grid.strength[index] = (grid.strength[index] + press).min(1.0);
             }
         },
     );
