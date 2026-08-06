@@ -586,7 +586,7 @@ fn deposit(grid: &mut Grid, params: &Params, seed: u64, profile: &GroundMaterial
     }
 
     let margin = params.packet_max_m * 2.4;
-    for_each_event(grid, seed, Stream::Soil, params.packets_per_m2, margin, 0.55, |draw, at, grid| {
+    for_each_event(grid, seed, Stream::Soil, params.packets_per_m2, margin, 0.30, |draw, at, grid| {
         let mut draw = draw;
         // Log-normal-ish: small packets common, large clods rare, which is what
         // a sieve of real soil measures.
@@ -994,14 +994,29 @@ fn wash(grid: &mut Grid, params: &Params, seed: u64) {
 /// because at any shorter scale it stops reading as *where things happened* and
 /// becomes another texture.
 fn worked(seed: u64, world: Vec2, floor: f32) -> f32 {
+    // ## Larger patches and a harder edge between them
+    //
+    // This ran at 0.55 — patches under two metres — through a soft ramp, and the
+    // render still came back described as "a fairly uniform procedural stipple
+    // across the bare expanse". Both numbers were the reason. Patches that small
+    // average out inside any crop a viewer looks at, so the variation exists in
+    // the field and not in the picture; and a soft ramp spends most of its range
+    // in the middle, so almost everywhere is *moderately* worked and nowhere is
+    // plainly one thing or the other.
+    //
+    // Real ground organises into large irregular regions with recognisable edges
+    // — this stretch was churned, that one was left, the corner has been swept
+    // smooth by runoff. Three and a half metres puts a region at half a plate,
+    // and the steeper ramp makes most of the ground commit to one state or the
+    // other with a readable transition between.
     let raw = fbm(
         seed ^ 0x_B_0_1_5_E,
         Stream::Maturity,
-        world.x * 0.55,
-        world.y * 0.55,
+        world.x * 0.28,
+        world.y * 0.28,
         2,
     );
-    floor + (1.0 - floor) * smoothstep(0.25, 0.78, raw)
+    floor + (1.0 - floor) * smoothstep(0.40, 0.62, raw)
 }
 
 /// Visit every event whose influence can reach this grid, seeded from the world.
