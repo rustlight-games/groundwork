@@ -457,9 +457,24 @@
             ),
             (
                 key: "damp_ground",
+                // ## Narrowed, so damp ground is a *place* rather than the
+                // default
+                //
+                // A ramp from 0.1 to 0.7 over the hollow field takes almost the
+                // whole plate: composed with `Max` at 0.95, it pinned nearly
+                // every point of the track near saturation whatever the
+                // baseline said. Lowering the baseline underneath it therefore
+                // changed the render hardly at all — the layer above was winning
+                // everywhere.
+                //
+                // With the span narrowed the wet response finally has somewhere
+                // *not* to apply. What the reference shows on a worn track is a
+                // rough pale crust with dark smooth hollows cut into it, and
+                // both halves of that need to exist before the contrast between
+                // them can.
                 mask: Profile((
                     source: "damp_hollows",
-                    shape: Ramp((low: 0.1, high: 0.7)),
+                    shape: Ramp((low: 0.52, high: 0.88)),
                 )),
                 operation: Modifier((
                     channel: "soil_moisture",
