@@ -1514,9 +1514,42 @@ impl TerrainRecipe for DirtClods {
         // How much of the supply this soil actually wants. A candidate the soil
         // does not want is dropped rather than shrunk, because a scatter thinned
         // by shrinking is a scatter of the wrong particle.
+        // ## Loose material sorts, and until now only a comment said so
+        //
+        // The note further down has claimed since it was written that fines wash
+        // into the hollows and coarse fragments stay on the crowns. The code read
+        // curvature and spent it entirely on *wetness*, so the scatter itself was
+        // uniform: the same rate and the same size distribution over a packed
+        // core, a broken shoulder and a drainage hollow alike. Evenly peppered
+        // debris is the tell that separates a sprinkled surface from a deposited
+        // one, and it collapses the whole size hierarchy into one texture.
+        //
+        // Two fields do the sorting, and they are the two that physically move
+        // material. **Compaction** says whether the ground is releasing any: a
+        // packed core has been pressed together and sheds little, while the
+        // looser shoulder either side of a track is where fragments break free
+        // and collect. **Curvature** says where what has broken free ends up —
+        // fines travel furthest and settle in hollows, coarse material stops on
+        // the crowns.
+        let curvature = context.fields.curvature(candidate.position);
+        let hollow = smoothstep(0.5, -0.5, curvature);
+        let packed = context.ground_sample.state.compaction.clamp(0.0, 1.0);
+        // ## Centred on one, not capped at it
+        //
+        // The first version ran `1 - 0.62 * packed`, which is a sort *and* a
+        // cut: a track's packed core is most of what a plate of it shows, so
+        // halving the core halved the debris almost everywhere and threw away
+        // the granular character the scatter exists for.
+        //
+        // A sort should move material between places, not remove it. This is the
+        // same ratio between a packed core and a loose shoulder — about two to
+        // one — arranged so the core keeps roughly what it had and the shoulder
+        // gains, which is where a track's spoil actually collects.
+        let released = 1.35 - 0.70 * packed;
+
         if let Some(scatter) = &scatter {
             let supply = read(context.parameters, "density", 220.0).max(1.0) as f32;
-            let wanted = (scatter.grit_per_m2 + scatter.pebble_per_m2) / supply;
+            let wanted = (scatter.grit_per_m2 + scatter.pebble_per_m2) / supply * released;
             if candidate.latent(seeds, &stream("clod_keep")) > wanted.clamp(0.0, 1.0) {
                 return;
             }
@@ -1539,18 +1572,20 @@ impl TerrainRecipe for DirtClods {
             .as_ref()
             .map(|s| s.fragment_radius_m.low / s.fragment_radius_m.high.max(1.0e-6))
             .unwrap_or(0.25);
-        let big = size > 1.0 - pebble_share;
+        // A hollow is where the fines went, so a coarse fragment is much less
+        // likely to be found in one — and a crown keeps its lumps. This is the
+        // sorting the comment below has always described.
+        let coarse_here = pebble_share * (1.0 - 0.75 * hollow) * (0.5 + 0.5 * released);
+        let big = size > 1.0 - coarse_here.clamp(0.0, 1.0);
         let radius = if big {
             base * (0.8 + 0.2 * size)
         } else {
-            base * (low + (0.75 - low).max(0.0) * size)
+            // And the fine end runs finer in a hollow than on a crown, because
+            // the material that travelled furthest is the smallest of it.
+            let ceiling = (0.75 - 0.30 * hollow).max(low);
+            base * (low + (ceiling - low).max(0.0) * size)
         };
 
-        // Loose material sorts: fines wash into the hollows and the coarse
-        // fragments stay on the crowns. Reading curvature here is what makes
-        // the scatter look deposited rather than sprinkled.
-        let curvature = context.fields.curvature(candidate.position);
-        let hollow = smoothstep(0.5, -0.5, curvature);
         // The ground's *actual* moisture, plus a little for sitting in a
         // hollow. This carried `hollow` alone, which is curvature wearing a
         // moisture's name — so a fragment lying in saturated mud was drawn as
