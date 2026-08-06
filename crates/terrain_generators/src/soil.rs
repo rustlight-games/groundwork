@@ -890,6 +890,39 @@ fn disturb(grid: &mut Grid, params: &Params, seed: u64) {
                 (r / wobble.max(0.2)).min(4.0)
             };
 
+            // ## Pressed ground grows by accretion, not by scatter
+            //
+            // Every disturbance was placed independently, so a worked region was
+            // a *statistical* accumulation of stamps that happened to overlap —
+            // and what that renders as is uniform perforation, which is the
+            // reading that survived seven reviews.
+            //
+            // Real compacted ground grows at its own edges. A hoof lands beside
+            // the last one because that is where the footing already is; a rut
+            // deepens where a rut already ran. So a disturbance about to land on
+            // ground that is *already* pressed goes deeper and presses harder,
+            // and one landing on virgin ground stays shallow. Over the whole
+            // stage that turns independent stamps into regions with edges,
+            // because the strong get stronger and the untouched stay untouched.
+            //
+            // Read before anything is cut, from the centre cell, so the decision
+            // is about the ground as it was found.
+            let seeded = {
+                let c = grid.cell_of(at);
+                let (x, y) = (c.x.round() as i32, c.y.round() as i32);
+                if x >= 0 && y >= 0 && x < grid.width as i32 && y < grid.width as i32 {
+                    grid.strength[grid.at(x as usize, y as usize)].clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
+            };
+            // Only ever deeper, never shallower. A first attempt ran
+            // `0.55 + 0.85 * seeded`, which on mostly-virgin ground multiplies
+            // almost everything by a half — an accretion rule that flattened the
+            // surface, taking the self-shadowing share from over two per cent to
+            // 0.94.
+            let depth = depth * (1.0 + 0.8 * seeded);
+
             // Take material out of the middle...
             // Scanned unclipped, for the reason written out in `splat`: a rim
             // normalised over only the cells inside the grid depends on where
@@ -951,7 +984,7 @@ fn disturb(grid: &mut Grid, params: &Params, seed: u64) {
             // A rut's floor is pressed harder than a footprint's: it has been
             // run over repeatedly along the same line, which is what turns loose
             // material into a coherent compacted plane rather than a dent.
-            let press = if is_rut { 0.80 } else { 0.45 };
+            let press = (if is_rut { 0.80 } else { 0.45 }) * (1.0 + 0.5 * seeded);
             for index in inside {
                 grid.strength[index] = (grid.strength[index] + press).min(1.0);
             }
