@@ -181,7 +181,22 @@
                 key: "soil_moisture",
                 display_name: "Soil moisture",
                 range: (0.0, 1.0),
-                default_value: 0.45,
+                // ## The baseline damped the whole track into one finish
+                //
+                // 0.45 everywhere, with `damp_ground` raising hollows to 0.95.
+                // A span from 0.45 to 0.95 is damp-to-wet: there is no *dry* in
+                // it anywhere, so every wet response the material has — the
+                // albedo darkening, the roughness collapse, the film — ran over
+                // the top half of its range and the surface came out as a single
+                // uniform treatment.
+                //
+                // A worn track is the driest ground in a meadow. It is packed,
+                // it sheds water rather than holding it, and it is the first
+                // thing to bake in the sun. What it should show is a rough pale
+                // crust broken by dark smooth hollows where the water did
+                // collect, and that contrast needs the bottom of the range to
+                // actually be dry.
+                default_value: 0.28,
                 composition: "Max",
                 unit: "Unitless",
                 role: Some("SoilMoisture"),

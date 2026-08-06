@@ -1386,7 +1386,22 @@ REFLECTION_STRENGTH = 0.006
 # shadows, so this goes back to being what it is meant to be — a small
 # sky-occlusion term for hollows the sun never reaches into anyway. Left at 0.80
 # it double-counts, and the double-counted version is the blotchy one.
-CAVITY_OCCLUSION = 0.30
+# ## Cut too far, then measured
+#
+# This was 0.80 when it was doing the geometry's job — a smooth scalar field
+# painted at aggregate scale, standing in for shadows the flat ground could not
+# cast, and reading as camouflage. Once the mesh started casting real ones it
+# went to 0.30 on the argument that keeping it would double-count.
+#
+# It undercounts instead. A real crevice is dark for two reasons and only one of
+# them is a cast shadow: the other is that a hollow *sees less sky*, and sky is a
+# quarter of the light in this scene. Cast shadow is a sun term and cannot supply
+# it. With the term at 0.30 the soil came back as one flat dry brown with no
+# separation between its crowns and its pockets.
+#
+# Half, which is a hollow at twice the contrast a cast shadow alone gives it and
+# well short of the 0.80 that was painting the structure.
+CAVITY_OCCLUSION = 0.52
 
 # Where the cavity signal starts and finishes counting.
 #

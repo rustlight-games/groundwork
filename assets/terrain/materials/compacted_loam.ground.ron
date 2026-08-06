@@ -178,10 +178,22 @@
             // field goes back to being what it is for — this stretch of the
             // track is a little richer than that one — and the mesh does the
             // work.
-            region_wavelength_m: 2.0,
-            region_strength: 0.30,
+            // ## And these were cut too far with it
+            //
+            // 0.5 and 0.9 were painting the clods, so they came down to 0.30 and
+            // 0.34. That was right about the clods and wrong about the tonal
+            // sweep: the reference photograph keeps more than half its variance
+            // between nine and thirty-five centimetres, and a good part of that
+            // is genuinely *colour* — richer where the ground is undisturbed,
+            // scuffed pale where it has been walked, darker where it holds damp.
+            //
+            // Raised to where the broad term does that work and the fine one
+            // stays out of the clod band, which is the split that matters. The
+            // region wavelength is what carries it now rather than the patch.
+            region_wavelength_m: 1.6,
+            region_strength: 0.52,
             patch_wavelength_m: 0.22,
-            patch_strength: 0.34,
+            patch_strength: 0.30,
             grain_strength: 0.55,
         ),
 
