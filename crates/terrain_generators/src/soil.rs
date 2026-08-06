@@ -767,10 +767,16 @@ fn disturb(grid: &mut Grid, params: &Params, seed: u64) {
         seed,
         Stream::Dirt,
         params.disturbances_per_m2,
-        // The widest disturbance is a broad pressed patch: 13 cm across, up to
-        // twice as long once it is squashed and turned, and its rim reaches
-        // nearly twice that again.
-        0.9,
+        // ## Sized by the rut, which is far the longest event here
+        //
+        // This was 0.9 m, set when the widest disturbance was a broad pressed
+        // patch about a decimetre across. A rut is 42 mm wide at up to fourteen
+        // times the squash, and its rim reaches 2.6 radii beyond that — **a
+        // metre and a half**. Ruts beginning outside a 0.9 m margin were
+        // therefore not generated even though they cross the grid, so a tile's
+        // interior depended on its own halo width and 333 cells in 63001 moved
+        // when the halo doubled.
+        1.7,
         // Down to a sixth in the quiet stretches. This is the term that decides
         // whether a plate of soil reads as one texture or as ground.
         0.16,
@@ -836,7 +842,18 @@ fn disturb(grid: &mut Grid, params: &Params, seed: u64) {
             let angle = bias * std::f32::consts::TAU + draw.range(-wander, wander);
             let (sin, cos) = angle.sin_cos();
             let squash = if is_rut {
-                draw.range(6.0, 14.0)
+                // ## Bounded by the halo, not by how long a rut can be
+                //
+                // Six to fourteen made ruts a metre and a half long — twice the
+                // halo — and a rut that long interacts with the "cut no more
+                // than is there" clamp differently depending on how much
+                // surrounding ground the tile simulated. 333 cells in 63001
+                // moved when the halo doubled.
+                //
+                // Four to eight keeps the reach inside the halo and is still
+                // plainly a line rather than a dent. A longer rut wants a wider
+                // halo, and a wider halo is quadratic in cost.
+                draw.range(4.0, 8.0)
             } else {
                 draw.range(1.0, 2.1)
             };
