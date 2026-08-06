@@ -1029,6 +1029,18 @@ def soil_fragment_material(settings, soils=None):
     principled.inputs["Roughness"].default_value = 0.94
     # A mineral aggregate, not a dense silicate.
     principled.inputs["IOR"].default_value = 1.45
+    # ## The same specular fix the ground got, which this was left out of
+    #
+    # `SOIL_SPECULAR` was applied to the ground material and not here, so every
+    # fragment kept running at the Principled default — a smooth dielectric's
+    # four per cent against an albedo of about five. Specular takes the light's
+    # colour rather than the material's, so a fragment desaturated toward white
+    # and read as **pale grey gravel scattered on brown earth**, which is exactly
+    # what halving its albedo failed to fix: the albedo was never what was wrong.
+    #
+    # A fragment is a lump of the ground it broke out of. It has the ground's
+    # composition, so it has the ground's reflectance.
+    live(principled.inputs, "Specular IOR Level").default_value = SOIL_SPECULAR
     return material
 
 
