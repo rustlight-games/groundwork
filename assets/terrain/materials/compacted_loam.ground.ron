@@ -229,7 +229,20 @@
                 // gradients — see `AggregateShape::profile`. This is the band
                 // the reference is mostly made of and the only one that has ever
                 // needed to cast a shadow.
-                (wavelength_m: 0.0600, amplitude_m: 0.0280, shape: "RoundedRidged", compaction_response: 0.30, clustered: true),
+                // ## Angular, because a clod is broken and not moulded
+                //
+                // `RoundedRidged` all through this band's life, and the render
+                // kept coming back described as procedurally rounded — dimples
+                // in clay rather than soil. Looking at the reference again that
+                // is the plainest difference left: its clods have **broken,
+                // planar faces**. They were torn apart, and material that is
+                // torn parts along flats and edges rather than settling into
+                // domes.
+                //
+                // `Angular` narrows the wall between levels from 0.34 of the
+                // field's range to 0.14 — see `AggregateShape::profile` — which
+                // is a face rather than a shoulder.
+                (wavelength_m: 0.0600, amplitude_m: 0.0280, shape: "Angular", compaction_response: 0.30, clustered: true),
                 // Crumb riding on the clods. Still geometry — it is what stops
                 // the clods reading as poured concrete lumps — and the finest
                 // thing this soil asks the mesh for.
