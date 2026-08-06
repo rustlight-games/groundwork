@@ -72,9 +72,23 @@
                 // Rescaled with the other two — see `compacted_loam` for why
                 // every palette in the set needed it. Still the brightest
                 // ground here by a wide margin, which is what sand is.
-                low:  (0.06336, 0.04796, 0.02640),
-                mid:  (0.14080, 0.10659, 0.05867),
-                high: (0.22528, 0.17054, 0.09387),
+                //
+                // ## Halved with loam's, for the same measured reason
+                //
+                // Rendered on the comparison card these came back at **2.32
+                // times** the mean luminance of the grass on the same plate,
+                // where the reference photograph puts bare ground at 0.90 times
+                // its own turf. Sand is the pale one and is meant to sit above
+                // loam — but not at two and a third times a green sward, which
+                // is a lit beach and reads as a blank card.
+                //
+                // Set to about 1.25 times the grass: clearly the palest ground
+                // in the set, clearly still ground. Warmed a little as well,
+                // because the ordering that matters is that sand is warmer than
+                // loam is warmer than turf.
+                low:  (0.03533, 0.02544, 0.01484),
+                mid:  (0.07853, 0.05654, 0.03298),
+                high: (0.12564, 0.09046, 0.05277),
             ),
             wet: (
                 // A third of the dry mid, which is what a waterline actually
@@ -91,10 +105,15 @@
                 // little more of its warmth than a cohesive soil does — the
                 // grains are large and the film is thin over them — but not
                 // the factor of three the dry palette carries.
-                wet_mid: (0.0430, 0.0362, 0.0256),
+                // Thirty-five per cent of the dry mid — a harder darkening than
+                // loam's forty-five, which is the physical claim this profile
+                // has always made and now survives the palette moving under it.
+                wet_mid: (0.02931, 0.01935, 0.01055),
                 // Glossier than any other ground here. Wet sand reflects the
-                // sky; wet loam does not.
-                roughness_wet: 0.10,
+                // sky; wet loam does not — and it stays the glossier of the two
+                // now that both have come up, because that ordering is the
+                // physical claim and 0.10 against 0.12 barely made it.
+                roughness_wet: 0.34,
                 // Water fills the space between grains almost completely. The
                 // single largest figure in the shipped set, against loam's
                 // 0.45, and it is why a wet bar looks poured rather than
@@ -143,10 +162,17 @@
             // streaks, all of them the same colour and none of them the same
             // brightness. So the region term stays modest — that is the honest
             // part — and the patch term goes up hard.
+            // Both pulled back with loam's, and for the same reason: at 0.72 the
+            // patch term was the loudest thing on the surface, and a sand bar is
+            // not mottled. What it has is scour and ripple, which are now deep
+            // enough to be seen. The patch term stays the larger of the two here
+            // — drift lines and damp streaks are real, and they are what stops
+            // a uniform hue reading as a swatch — but it no longer competes with
+            // the form.
             region_wavelength_m: 2.4,
-            region_strength: 0.40,
+            region_strength: 0.26,
             patch_wavelength_m: 0.085,
-            patch_strength: 0.72,
+            patch_strength: 0.40,
             // Fine and even. Loam's grain is 0.55 and describes crumb; this
             // describes actual grains, which at any framing this project
             // renders at are below a pixel and belong in the BRDF rather than
@@ -163,6 +189,19 @@
             // above grain scale at all. Everything larger on a real bar is a
             // ripple, and ripples are declared separately below where their
             // *direction* can be stated.
+            // ## And these were far too shallow to be seen
+            //
+            // Exported and measured, bare sand came back at **2.0 mm
+            // peak-to-peak** over a twelve-centimetre window, mean slope 5.6
+            // degrees. A 35-degree sun cannot shadow that and neither can it
+            // shade it: what rendered was a flat card carrying a colour field,
+            // which is exactly what it looked like.
+            //
+            // Sand is genuinely gentler than soil — it has no aggregates and its
+            // angle of repose is what it is — so it does not want loam's flanks.
+            // What it wants is *depth*: scour hollows a centimetre and a half
+            // deep rather than three millimetres, and ripples that stand tall
+            // enough to shade their own lee.
             bands: [
                 // Scour: broad, shallow, irregular hollows a hand across, of
                 // the kind water leaves when it drops its load unevenly. New,
@@ -172,10 +211,10 @@
                 //
                 // Clustered, so the scoured areas group rather than covering
                 // the bar evenly.
-                (wavelength_m: 0.1400, amplitude_m: 0.0060, shape: "Rounded", compaction_response: 0.45, clustered: true),
-                (wavelength_m: 0.0340, amplitude_m: 0.0022, shape: "Rounded", compaction_response: 0.40, clustered: true),
+                (wavelength_m: 0.1400, amplitude_m: 0.0180, shape: "Rounded", compaction_response: 0.35, clustered: true),
+                (wavelength_m: 0.0340, amplitude_m: 0.0070, shape: "Rounded", compaction_response: 0.35, clustered: true),
                 // Coarse grains and the odd shell fragment.
-                (wavelength_m: 0.0090, amplitude_m: 0.0014, shape: "Angular", compaction_response: 0.30, clustered: false),
+                (wavelength_m: 0.0090, amplitude_m: 0.0016, shape: "Angular", compaction_response: 0.30, clustered: false),
                 (wavelength_m: 0.0040, amplitude_m: 0.00090, shape: "Angular", compaction_response: 0.30, clustered: false),
                 (wavelength_m: 0.0012, amplitude_m: 0.00032, shape: "Angular", compaction_response: 0.18, clustered: false),
             ],
@@ -187,6 +226,10 @@
             // The scour band clusters; nothing finer does. A clump of sand is
             // a thing that has stopped being sand.
             cluster_strength: 0.55,
+            // Down to the second scour band. Sand has no aggregate hierarchy to
+            // resolve, so this is a shallower request than loam's — it buys the
+            // three-centimetre hollows between the ripples and stops there.
+            mesh_floor_m: Some(0.0340),
             // Almost none. This is the number that says the material cannot
             // hold a shape, and it is why there is no crack profile below: a
             // material with no cohesion has nothing to crack.
@@ -214,10 +257,26 @@
         // a half.
         ripples: Some((
             wavelength_m: 0.080,
-            // A millimetre and a half. The first attempt used four, which put
-            // more relief in the ripple than in everything else on the surface
-            // combined — a ripple is a texture *over* a ground, not the ground.
-            amplitude_m: 0.0015,
+            // ## A millimetre and a half was an over-correction
+            //
+            // The first attempt used four, which put more relief in the ripple
+            // than in everything else on the surface combined — a ripple is a
+            // texture *over* a ground, not the ground — and what came back was
+            // corduroy. So it went to one and a half.
+            //
+            // At one and a half it is invisible. The slope of an 80 mm wave
+            // standing 1.5 mm is **three degrees**; under a 35-degree sun that
+            // is not a ripple field, it is a plane. The corduroy was never the
+            // amplitude's fault — it was the continuous wavefront, which
+            // `ripple_height` now terminates.
+            //
+            // Twelve millimetres is what a river bar measures, and with the
+            // scour bands beneath it now carrying real depth the ripple is once
+            // again a texture over a ground rather than the only thing on it.
+            // It puts the crest slope near 25 degrees, which under a 35-degree
+            // sun is a ripple that shades its own lee without casting — which is
+            // what a ripple does.
+            amplitude_m: 0.0120,
             direction_deg: 35.0,
             crest_sharpness: 0.42,
             asymmetry: 0.45,

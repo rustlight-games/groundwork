@@ -55,9 +55,23 @@
                 // `compacted_loam`: the tonal ramp was reading a dead socket
                 // and every soil rendered at its low stop, so every palette in
                 // the set was authored against a constant.
-                low:  (0.00810, 0.00761, 0.00394),
-                mid:  (0.02133, 0.02003, 0.01040),
-                high: (0.08917, 0.08373, 0.04350),
+                //
+                // ## And rescaled again with it, for the same measured reason
+                //
+                // The track came down by half when it was checked against the
+                // reference photograph's own mud-to-grass ratio — 0.90 there,
+                // 1.79 on the card — and this soil was calibrated against the
+                // same over-bright render, so it had the same error.
+                //
+                // Down by a third rather than by half, which is what keeps the
+                // ordering `soil_decision.rs` insists on: a compacted track in
+                // the open is paler mineral soil, the floor under a canopy is
+                // dark and full of humus, and the gap between them is about
+                // 1.8x. Left where it was, the gap fell to 1.21 and the two
+                // soils became one.
+                low:  (0.00544, 0.00511, 0.00265),
+                mid:  (0.01433, 0.01346, 0.00699),
+                high: (0.05992, 0.05627, 0.02923),
             ),
             // A shaded floor is half damp already, so soaking it moves it less
             // than it moves an open track — and it never goes glossy, because a
@@ -83,13 +97,13 @@
                 // black-brown — and letting the warm sun and the cool sky
                 // supply the colour from there is what makes it read as a
                 // surface rather than as a darker paint.
-                wet_mid: (0.0074, 0.0066, 0.0050),
+                wet_mid: (0.00497, 0.00443, 0.00336),
                 // Glossy. Thirty was a hedge against the canopy — this soil
                 // lives under grass and was authored never to go shiny — which
                 // is lighting context baked into a physical response, and it
                 // stops being true the moment a document exposes the soil. A
                 // bare saturated hollow is the glossiest ground there is.
-                roughness_wet: 0.13,
+                roughness_wet: 0.62,
                 // Twice what it was. Saturated cohesive soil slumps: the crumb
                 // loses its edges and the surface reads as poured rather than
                 // crumbled. A third was not visible against the mound field's

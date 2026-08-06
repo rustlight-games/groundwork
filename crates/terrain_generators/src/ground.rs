@@ -166,20 +166,39 @@ impl BandSplit {
         }
     }
 
-    /// The spacing at which every profile's coarsest band reaches the mesh.
+    /// The spacing at which every profile gets the relief it asked for.
     ///
     /// The reason this is derived rather than a constant: a document of hardpan
     /// and beach sand needs a finer lattice than one of turned farm soil, and a
     /// single number chosen for one of them aliases the other.
+    ///
+    /// A profile that declares a [`mesh_floor_m`] is asking for a *hierarchy* on
+    /// the mesh rather than one band, and the lattice is sized to its floor. One
+    /// that does not gets what this always did: fine enough for its coarsest band
+    /// and no finer.
+    ///
+    /// [`mesh_floor_m`]: terrain_core::ground_material::GroundStructure::mesh_floor_m
     pub fn spacing_for<'a>(
         profiles: impl IntoIterator<Item = &'a GroundMaterialProfile>,
     ) -> Option<f32> {
         profiles
             .into_iter()
-            .filter_map(|profile| profile.coarsest_band())
-            // A band with no amplitude has no shape to alias.
-            .filter(|band| band.amplitude_m > 0.0)
-            .map(|band| band.wavelength_m / SAMPLES_PER_WAVELENGTH)
+            .filter_map(|profile| {
+                let coarsest = profile
+                    .coarsest_band()
+                    // A band with no amplitude has no shape to alias.
+                    .filter(|band| band.amplitude_m > 0.0)?;
+                // Never coarser than the coarsest band needs: a floor declared
+                // above it would put the soil's own shape below the lattice.
+                Some(
+                    profile
+                        .structure
+                        .mesh_floor_m
+                        .unwrap_or(coarsest.wavelength_m)
+                        .min(coarsest.wavelength_m),
+                )
+            })
+            .map(|wavelength| wavelength / SAMPLES_PER_WAVELENGTH)
             .fold(None, |best: Option<f32>, step| {
                 Some(best.map_or(step, |b| b.min(step)))
             })
@@ -250,6 +269,11 @@ struct MaterialEntry {
     affinity: f32,
     /// The profile key, so band lookup does not walk an `Arc` every sample.
     key: String,
+    /// This soil's simulated surface — the mesh-scale relief.
+    ///
+    /// One per material rather than one per document, because two soils on the
+    /// same plate settle differently and must not share a grid.
+    surface: Option<Arc<crate::soil::SoilSurface>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -285,6 +309,7 @@ impl GroundEvaluator {
         transition: TransitionProfile,
         spacing_m: f32,
     ) -> Self {
+        let root_seed = terrain.root_seed().bits();
         let materials: Vec<MaterialEntry> = (0..terrain.materials().len())
             .map(|index| {
                 let index = MaterialIndex(index as u16);
@@ -295,6 +320,12 @@ impl GroundEvaluator {
                         .map(|p| p.key.as_str().to_string())
                         .unwrap_or_default(),
                     affinity: terrain.vegetation_affinity(index),
+                    surface: profile.as_ref().map(|p| {
+                        Arc::new(crate::soil::SoilSurface::new(
+                            Arc::clone(p),
+                            root_seed ^ 0x_501_1_5_1_2,
+                        ))
+                    }),
                     profile,
                 }
             })
@@ -306,7 +337,7 @@ impl GroundEvaluator {
         Self {
             fields,
             transition,
-            root_seed: terrain.root_seed().bits(),
+            root_seed,
             materials,
             split,
             laboratory: None,
@@ -375,6 +406,10 @@ impl GroundEvaluator {
             .map(|profile| MaterialEntry {
                 key: profile.key.as_str().to_string(),
                 affinity: profile.vegetation_affinity,
+                surface: Some(Arc::new(crate::soil::SoilSurface::new(
+                    Arc::clone(&profile),
+                    root_seed ^ 0x_501_1_5_1_2,
+                ))),
                 profile: Some(profile),
             })
             .collect();
@@ -859,6 +894,11 @@ impl GroundEvaluator {
                 continue;
             };
             let cluster = self.cluster(profile, world);
+            // What kind of ground this patch is, as opposed to how deep — see
+            // `shape`. One value per point and per soil, so every band of a
+            // fracture surface breaks the same way here and they read as one
+            // surface rather than three overlaid textures.
+            let shift = centre_shift(profile, self.root_seed, world);
             let mut height = 0.0;
             for planned in plan.bands_in(&entry.key, tier) {
                 let index = planned.band_index as usize;
@@ -867,7 +907,7 @@ impl GroundEvaluator {
                 };
                 let scale = profile.band_scale(band, state.compaction, state.moisture);
                 let clustered = if band.clustered { cluster } else { 1.0 };
-                height += self.band_height(band, index, world) * scale * clustered;
+                height += self.band_height(band, index, world, shift) * scale * clustered;
             }
             total += height * weight;
         }
@@ -909,35 +949,32 @@ impl GroundEvaluator {
             let Some(profile) = &entry.profile else {
                 continue;
             };
-            let mut height = 0.0;
-            let cluster = self.cluster(profile, world);
-            // Addressed by the band's *declaration* index, not by its position
-            // in the filtered geometry list.
+            // ## The mesh-scale relief is simulated, not sampled
             //
-            // This is the whole of the tier-coherence fix. The seed and the two
-            // frame turns are both derived from the index, so using the filtered
-            // position meant a band changed its phase and its direction the
-            // moment a coarser band left the mesh — a five-centimetre clod field
-            // that turned into a different five-centimetre clod field because
-            // the camera moved closer. Moving a band between representations
-            // must change how it is carried, never what it is.
-            for (index, band) in profile.structure.bands.iter().enumerate() {
-                if !self.split.carries(&entry.key, index) {
-                    continue;
-                }
-                let scale = profile.band_scale(band, state.compaction, state.moisture);
-                let clustered = if band.clustered { cluster } else { 1.0 };
-                height += self.band_height(band, index, world) * scale * clustered;
-            }
+            // Everything the mesh can carry comes from `soil`: aggregate packets
+            // laid down, slumped toward a moisture-dependent angle of repose,
+            // pressed into, and washed over. See that module for why no shaping
+            // of a noise field can produce this — the short version is that noise
+            // is statistically uniform and real ground has a history.
+            //
+            // The bands are still what the *shader* draws below a cell, and they
+            // are still what the profile declares, so a soil's authored structure
+            // is unchanged: this replaces how the coarse end of that structure is
+            // realised, not what an author writes.
+            let mut height = match &entry.surface {
+                Some(surface) => surface.height(world, state.moisture, state.compaction),
+                None => 0.0,
+            };
             if let Some(ripples) = &profile.ripples {
                 height += ripple_height(ripples, world, state, self.root_seed);
             }
             if let Some(cracks) = &profile.cracks {
                 height -= crack_depth(cracks, profile, world, state, self.root_seed);
             }
-            // Normalised against the band amplitudes actually in play, then
-            // flipped so that deep is one. A material whose bands are all in the
-            // shader has no mesh-scale cavity, and says so.
+            // How deep in its own relief this point sits, against how much this
+            // soil has to give. The simulation is zero-mean about its own datum,
+            // so the reach is the amplitude the soil declared for the scales the
+            // mesh carries — which is what the simulation was sized from.
             let reach: f32 = self
                 .split
                 .bands_for(&entry.key)
@@ -988,7 +1025,7 @@ impl GroundEvaluator {
     /// visible grid of squares across a whole plate for one render: every other
     /// band was turned and the coarsest one — the one carrying the shape — was
     /// still square to the world.
-    fn band_height(&self, band: &ReliefBand, index: usize, world: Vec2) -> f32 {
+    fn band_height(&self, band: &ReliefBand, index: usize, world: Vec2, shift: f32) -> f32 {
         let frequency = 1.0 / band.wavelength_m;
         let seed = self.root_seed ^ (0x9E37_79B9_u64.wrapping_mul(index as u64 + 1));
         // Golden-angle turns, so no two bands in any profile share a direction
@@ -1006,7 +1043,11 @@ impl GroundEvaluator {
         // spread, so the amplitude in the profile would otherwise mean less than
         // it says.
         let raw = ((sum * 0.5 - 0.5) * 1.41 + 0.5).clamp(0.0, 1.0);
-        shape(raw, band.shape) * band.amplitude_m
+        // The lattice decides how sharp the wall is allowed to be. A fragment
+        // drawn with an edge the mesh cannot resolve is a staircase that moves
+        // when the window does — see `shape`.
+        let floor = flank_floor(band.wavelength_m, self.split.spacing_m);
+        shape(raw, band.shape, floor, shift) * band.amplitude_m
     }
 
     /// How cloddy this patch is, `0..1`.
@@ -1074,25 +1115,138 @@ struct Relief {
 /// smooth field is a family of closed curves. The result is a maze of even-width
 /// squiggles, and no ground anywhere looks like that.
 ///
-/// So the transform here is monotonic by construction: a power curve on the
-/// `0..1` value, re-centred on its own mean. Raising the exponent pushes the
-/// distribution toward zero, which broadens the troughs and narrows the crests —
-/// which is what "ridged" is actually describing about a clod. Nothing folds, so
-/// nothing traces a contour, and a higher noise value is always a higher point.
+/// Everything below is monotonic by construction, which is what a contour cannot
+/// survive. A test asserts it directly.
 ///
-/// The mean of `u^g` for uniform `u` is `1/(g+1)`, which is what is subtracted:
-/// the band has to average zero, or raising a soil's shape factor would sink the
-/// ground under it.
-fn shape(raw: f32, shape: AggregateShape) -> f32 {
+/// ## Why a power curve was not enough either
+///
+/// The skew that replaced the fold — `u^gamma`, re-centred — is monotone and it
+/// does narrow the crests. What it cannot do is make a **flank**, and a flank is
+/// the entire visual difference between soil and dunes.
+///
+/// The reason is a bound rather than a tuning failure. A power curve multiplies
+/// the field's own gradient by at most `gamma`, and the field's gradient is set
+/// by the band: a wavelength `L` carrying a peak-to-trough of `D` has a maximum
+/// slope near `pi*D/L`. Compacted loam's clod band declared 17 mm over 50 mm and
+/// arrived, after compaction and saturation and clustering, at **5.3 mm over
+/// 50 mm — a slope of 19 degrees**. Measured off an exported `ground.bin`, bare
+/// river sand came back at 2.0 mm peak-to-peak, mean slope 5.6, maximum 16.3.
+///
+/// The sun is at 35 degrees. A face has to tilt past **55** before it falls into
+/// its own shadow, and not one vertex of bare ground in the scene did. So the
+/// ground could not cast a single shadow on itself at any moisture, any
+/// compaction, anywhere — and every scrap of apparent structure in a render of it
+/// was pigment. That is why the soil read as a painted card: it *was* one.
+///
+/// ## A fracture surface, not a plane with lumps on it
+///
+/// So the transform is flat at *both* ends and steep in the middle:
+///
+/// ```text
+///   below the wall   the floor of a void between fragments
+///   the wall         the steep side of a fragment
+///   above it         the top of a fragment
+/// ```
+///
+/// The wall is where the steepness comes from, and it is steep because it is
+/// *narrow*: compressing the transition into a fraction `wall` of the field's
+/// range multiplies the gradient there by `1.5 / wall`, independent of the
+/// band's amplitude. That is the point — a six-centimetre clod standing two
+/// centimetres proud has near-vertical sides, which no amplitude-to-wavelength
+/// ratio can express and a narrow wall expresses exactly.
+///
+/// **Flat at both ends** is what the version before this got wrong. It put two
+/// thirds of the field on a single floor and raised rounded domes out of it,
+/// which is spheres on a plane, and looked it — the render was called a
+/// nineties video game and that was the right word for it. Two levels with a
+/// wall between them is a *break*; three bands of that summed is the
+/// many-levelled irregular surface broken ground actually is, because the levels
+/// multiply rather than repeat.
+///
+/// It also fixes a measured shortfall the dome caused. With most of the ground
+/// on one floor the only surfaces facing the sun were dome tops, so a render had
+/// a handful of very bright specular glints and a great deal of dark: its
+/// ninetieth percentile came in at 0.098 against the reference photograph's
+/// 0.167. Plates present broad lit faces, and broad lit faces are where a
+/// photograph of soil keeps its light.
+///
+/// A smoothstep for the wall, because a fragment's edge is chipped and its foot
+/// is buried in loose material — neither end is a knife edge. Its integral is a
+/// half, so the mean is `1 - centre` exactly whatever the wall width, which
+/// keeps the band zero-mean and stops an author retuning the shape from moving
+/// the ground under it.
+///
+/// ## The wall cannot be narrower than the lattice
+///
+/// A transition compressed into a tenth of the field's range occupies about a
+/// tenth of half a wavelength on the ground. Drawn on a lattice that cannot
+/// resolve it, that is not a crisp edge — it is a staircase, and it moves when
+/// the window moves. So the caller passes the finest wall the lattice can carry
+/// and the shape widens to it. A close view gets fragments with edges; a wide
+/// view gets soft undulation of the same field, in the same places, at the same
+/// height. The same argument this file makes everywhere else about drawing a
+/// thing only where it can be seen.
+///
+/// ## And the ground must not be the same everywhere
+///
+/// `centre_shift` is the other half of what made this read as a video game, and
+/// it is about no single clod. Procedural noise is **statistically uniform**:
+/// every patch has the same distribution as every other patch, so a metre of it
+/// reads as one texture tiled, however well that texture is tuned. Real ground
+/// has history — a stretch broken up by a hoof, a swept smooth patch, a corner
+/// gone to fine crumb — and no two hand's-widths of it match.
+///
+/// So the wall's position slides with a slow field. Where it sits low the
+/// fragments merge into broad raised sheets; where it sits high the surface is
+/// mostly void with islands standing in it. Same band, same wavelength, same
+/// seed — different ground.
+fn shape(raw: f32, shape: AggregateShape, wall_floor: f32, centre_shift: f32) -> f32 {
     let u = raw.clamp(0.0, 1.0);
-    let ridge = shape.ridge();
-    if ridge <= 0.0 {
-        return u - 0.5;
+    let (centre, wall) = shape.profile();
+    let centre = (centre + centre_shift).clamp(0.12, 0.88);
+    // Never wider than the room either side, or the wall runs off the end of the
+    // range and the band flattens to a ramp.
+    let room = 2.0 * centre.min(1.0 - centre);
+    let wall = wall.max(wall_floor).clamp(1.0e-4, room);
+    let s = ((u - (centre - 0.5 * wall)) / wall).clamp(0.0, 1.0);
+    let plate = s * s * (3.0 - 2.0 * s);
+    plate - (1.0 - centre)
+}
+
+/// The finest wall a lattice of `spacing_m` can carry, for a band of
+/// `wavelength_m`, as a fraction of the noise's range.
+///
+/// A value-noise field of wavelength `L` traverses its range over roughly `L/2`,
+/// so a wall occupying a fraction `f` of the range is about `f * L/2` wide on
+/// the ground. Asking for at least two and a half cells across it — below that a
+/// transition is a step, and a step aliases — gives `f >= 5 * spacing / L`.
+pub fn flank_floor(wavelength_m: f32, spacing_m: f32) -> f32 {
+    if wavelength_m <= 0.0 {
+        return 1.0;
     }
-    // 1 at no ridge — the identity — up to 3 at full, where the troughs are
-    // broad flats and the crests are narrow.
-    let gamma = 1.0 + 2.0 * ridge;
-    u.powf(gamma) - 1.0 / (gamma + 1.0)
+    (5.0 * spacing_m / wavelength_m).clamp(0.0, 1.0)
+}
+
+/// How far this patch's wall has slid from the shape's declared position.
+///
+/// A slow field, and deliberately slower than the cluster mask it sits beside:
+/// clustering says how *deep* the relief is here, this says what *kind* it is,
+/// and the two varying together would collapse into one signal that only makes
+/// the ground alternately bumpy and smooth. See `shape`'s last section for what
+/// this is for.
+fn centre_shift(profile: &GroundMaterialProfile, root_seed: u64, world: Vec2) -> f32 {
+    let frequency = 1.0 / (profile.structure.cluster_wavelength_m.max(1.0e-3) * 2.6);
+    let raw = fbm(
+        root_seed ^ 0x5E17_0C7E,
+        Stream::GroundCluster,
+        world.x * frequency + 311.0,
+        world.y * frequency - 197.0,
+        2,
+    );
+    // A fifth of the range either way. Enough that a patch of merged sheets and
+    // a patch of scattered islands are plainly different ground; not so much
+    // that either end stops being the material the profile declared.
+    (raw - 0.5) * 0.40
 }
 
 /// Wind ripples, in metres.
@@ -1347,6 +1501,7 @@ mod tests {
                 cluster_wavelength_m: 0.8,
                 cluster_strength: 0.5,
                 cohesion: 0.6,
+                mesh_floor_m: None,
             },
             ripples: None,
             cracks: None,
@@ -1416,7 +1571,7 @@ mod tests {
         ] {
             let mut last = f32::NEG_INFINITY;
             for i in 0..=2000 {
-                let value = shape(i as f32 / 2000.0, shape_kind);
+                let value = shape(i as f32 / 2000.0, shape_kind, 0.0, 0.0);
                 assert!(
                     value >= last,
                     "{shape_kind:?} fell from {last} to {value} at {i}"
@@ -1427,40 +1582,143 @@ mod tests {
     }
 
     #[test]
-    fn a_ridged_band_spends_more_of_its_range_below_zero() {
-        // What "ridged" means for a clod: broad flat troughs and narrow crests.
-        // Stated as a measurement so that a future reshaping has to keep it.
+    fn a_fractured_band_puts_its_surface_on_two_levels() {
+        // The property that separates broken ground from bumps on a plane, and
+        // the reason a render of the previous shape was called a nineties video
+        // game. That one put two thirds of the field on a single floor and raised
+        // rounded domes out of it, so the only thing facing the sun was a dome
+        // top: a handful of specular glints and a lot of dark.
+        //
+        // A fracture surface is flat at *both* ends. Most of it sits on a
+        // fragment top or on the floor of a void, and a narrow wall runs between,
+        // which is what presents broad lit faces to a low sun.
         let count = 4000;
-        let below = |kind| {
+        let near_a_level = |kind: AggregateShape| {
+            let (centre, _) = kind.profile();
             (0..count)
-                .filter(|i| shape(*i as f32 / count as f32, kind) < 0.0)
+                .filter(|i| {
+                    let v = shape(*i as f32 / count as f32, kind, 0.0, 0.0);
+                    // Within a tenth of the range of either level.
+                    v < -(1.0 - centre) + 0.10 || v > centre - 0.10
+                })
                 .count()
         };
-        let rounded = below(AggregateShape::Rounded);
-        let angular = below(AggregateShape::Angular);
+        for kind in [AggregateShape::RoundedRidged, AggregateShape::Angular] {
+            let flat = near_a_level(kind);
+            assert!(
+                flat > count * 6 / 10,
+                "{kind:?} put only {flat} of {count} on a level"
+            );
+        }
+        // And a weathered surface is the one that does not, which is what
+        // weathering is: the wall worn out until the two levels meet.
+        let worn = near_a_level(AggregateShape::Rounded);
         assert!(
-            angular > rounded + count / 10,
-            "rounded {rounded}, angular {angular} of {count}"
+            worn < count * 6 / 10,
+            "Rounded is behaving like a fracture: {worn} of {count}"
         );
     }
 
     #[test]
-    fn ridged_and_rounded_bands_average_the_same() {
-        // Otherwise raising a soil's ridge factor lifts the whole surface, and
-        // an author tuning the look of the clods moves the ground under them.
-        let mut rounded = 0.0;
-        let mut ridged = 0.0;
-        let count = 4000;
-        for i in 0..count {
-            let raw = i as f32 / count as f32;
-            rounded += shape(raw, AggregateShape::Rounded);
-            ridged += shape(raw, AggregateShape::Angular);
-        }
-        let (rounded, ridged) = (rounded / count as f32, ridged / count as f32);
+    fn the_ground_is_not_the_same_everywhere() {
+        // Procedural noise is statistically uniform — every patch has the same
+        // distribution as every other — so a metre of it reads as one texture
+        // tiled however well that texture is tuned. Real ground has history, and
+        // no two hand's-widths of it match.
+        //
+        // The wall's position slides with a slow field, so a patch of merged
+        // sheets and a patch of scattered islands are plainly different ground.
+        let sheets = shape(0.5, AggregateShape::RoundedRidged, 0.0, -0.18);
+        let islands = shape(0.5, AggregateShape::RoundedRidged, 0.0, 0.18);
         assert!(
-            (rounded - ridged).abs() < 0.02,
-            "rounded {rounded}, ridged {ridged}"
+            sheets - islands > 0.25,
+            "the same noise value gave {sheets} and {islands}; the ground is uniform"
         );
+
+        // And the field is slower than the cluster mask beside it, so "how deep"
+        // and "what kind" stay two signals rather than collapsing into one.
+        let profile = profile(vec![band(0.06, 0.02)]);
+        let mut seen: Vec<f32> = (0..40)
+            .map(|i| centre_shift(&profile, 99, Vec2::new(i as f32 * 0.35, 0.0)))
+            .collect();
+        seen.sort_by(f32::total_cmp);
+        let spread = seen[seen.len() - 1] - seen[0];
+        assert!(spread > 0.10, "the shift barely moves across 14 m: {spread}");
+    }
+
+    #[test]
+    fn every_shape_averages_zero() {
+        // Otherwise raising a soil's shape factor lifts the whole surface, and
+        // an author tuning the look of the clods moves the ground under them.
+        let count = 8000;
+        for kind in [
+            AggregateShape::Rounded,
+            AggregateShape::RoundedRidged,
+            AggregateShape::Angular,
+        ] {
+            let mean: f32 = (0..count)
+                .map(|i| shape(i as f32 / count as f32, kind, 0.0, 0.0))
+                .sum::<f32>()
+                / count as f32;
+            assert!(mean.abs() < 0.01, "{kind:?} averages {mean}");
+        }
+    }
+
+    #[test]
+    fn a_clod_has_a_flank_a_gradient_cannot_reach() {
+        // The defect this transform exists for, stated as the property that
+        // fixes it. A power curve on the raw value multiplies the field's own
+        // gradient by its exponent and no more, so a band declaring 17 mm over
+        // 50 mm could never present a face steeper than about 19 degrees — and
+        // the sun is at 35, so no bare ground in the scene cast a shadow on
+        // itself at any moisture, anywhere.
+        //
+        // Compressing the rise into a fraction of the range multiplies the
+        // gradient by `(pi/2) / flank` instead, which does not depend on the
+        // amplitude at all. That is the whole difference between soil and dunes.
+        let step = 1.0e-4;
+        let steepest = |kind| {
+            (0..10_000)
+                .map(|i| {
+                    let u = i as f32 / 10_000.0;
+                    (shape(u + step, kind, 0.0, 0.0) - shape(u, kind, 0.0, 0.0)) / step
+                })
+                .fold(0.0f32, f32::max)
+        };
+        // Four and a half times the raw field's own slope, for a clod.
+        let ridged = steepest(AggregateShape::RoundedRidged);
+        assert!(ridged > 4.0, "RoundedRidged peaks at {ridged}");
+        // And weathered ground is gentler than turned ground, which is what
+        // the two shapes are for.
+        let rounded = steepest(AggregateShape::Rounded);
+        assert!(
+            rounded < ridged,
+            "Rounded {rounded} is not gentler than RoundedRidged {ridged}"
+        );
+    }
+
+    #[test]
+    fn a_lattice_that_cannot_resolve_a_flank_widens_it() {
+        // A rise drawn narrower than the thing sampling it is not a crisp edge,
+        // it is a staircase whose steps move when the window moves — and the
+        // same ground is sampled by overlapping windows that have to agree.
+        //
+        // So the shape gives the steepness back rather than aliasing, and a wide
+        // view gets soft lumps of the same field in the same places instead of
+        // clods that flicker.
+        let sharp = shape(0.7, AggregateShape::RoundedRidged, 0.0, 0.0);
+        let blunt = shape(0.7, AggregateShape::RoundedRidged, 0.9, 0.0);
+        assert!(
+            blunt < sharp,
+            "a floored flank did not lower the crest: {blunt} against {sharp}"
+        );
+
+        // Coarse lattice, coarse flank. Four samples across a wavelength — the
+        // threshold for carrying a band at all — leaves no room for an edge.
+        assert!(flank_floor(0.06, 0.015) >= 1.0);
+        // Fifteen across it does, which is what a soil declaring a mesh floor
+        // is buying.
+        assert!(flank_floor(0.06, 0.004) < 0.34);
     }
 
     #[test]
@@ -1629,6 +1887,7 @@ pub mod tests_support {
                 cohesion: 0.55,
                 cluster_wavelength_m: 0.42,
                 cluster_strength: 0.35,
+                mesh_floor_m: None,
             },
             scatter: GroundScatter {
                 grit_per_m2: 0.0,

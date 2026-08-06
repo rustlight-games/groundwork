@@ -59,6 +59,22 @@
 
 use crate::ids::{AppearanceKey, GroundProfileKey};
 
+/// Below this wavelength, relief is pore structure between grains — the space a
+/// water film fills completely.
+pub const PORE_SCALE_M: f32 = 0.002;
+
+/// Above this wavelength, relief is an aggregate — a lump of soil that holds
+/// together, and that a shower makes no smaller.
+pub const AGGREGATE_SCALE_M: f32 = 0.030;
+
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    if edge1 <= edge0 {
+        return if value >= edge1 { 1.0 } else { 0.0 };
+    }
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// A linear-RGB colour. Not sRGB, and never displayed without a transform.
 pub type LinearRgb = [f32; 3];
 
@@ -211,16 +227,49 @@ impl AggregateShape {
         }
     }
 
-    /// How hard the ridge transform bites, `0..1`.
+    /// Where the wall between levels sits in the noise's range, and how narrow
+    /// it is — both as fractions of that range.
     ///
-    /// Zero leaves the noise alone and reads as soft lumps; one folds it about
-    /// its mean and squares the result, which is what puts a crease along the
-    /// top of a clod and a flat between clods.
-    pub fn ridge(self) -> f32 {
+    /// ## Soil is broken material, not bumps on a plane
+    ///
+    /// Two shapes were tried before this and both were the same mistake in
+    /// different clothing. A power curve on the raw value could not make a steep
+    /// side at all, so the ground never cast a shadow. Replacing it with a floor
+    /// and a rounded dome could — and rendered as **spheres sitting on a plane**,
+    /// which is the oldest-looking surface in computer graphics and was called
+    /// exactly that.
+    ///
+    /// The error in both is the mental model. Neither "a smooth field" nor "a
+    /// plane with lumps on it" is what soil is. Soil is a **fracture surface**:
+    /// material that was broken apart, whose fragments now sit at a range of
+    /// levels with steep-walled voids between them, everything dusted with
+    /// whatever was ground finer.
+    ///
+    /// So the transform is flat at *both* ends and steep in the middle. Most of
+    /// the field lands on one of two levels — a fragment's top or the floor of a
+    /// void — with a narrow wall between. One band of that is a two-level
+    /// fracture; three bands summed is the many-levelled irregular surface that
+    /// broken ground actually is, and the levels multiply rather than repeat.
+    ///
+    /// It also fixes a measured shortfall the dome caused. With two thirds of
+    /// the ground on a single floor, the only surfaces facing the sun were dome
+    /// tops, so a render had a few very bright specular glints and a great deal
+    /// of dark: its ninetieth percentile came in at 0.098 against the reference
+    /// photograph's 0.167. Plates present broad lit faces, which is where a
+    /// photograph of soil keeps its light.
+    ///
+    /// Read with `terrain_generators::ground::shape`, which applies these.
+    pub fn profile(self) -> (f32, f32) {
         match self {
-            Self::Rounded => 0.0,
-            Self::RoundedRidged => 0.55,
-            Self::Angular => 1.0,
+            // Weathered ground: water-rounded, the wall worn out to a slope.
+            // Barely a fracture any more, which is what weathering means.
+            Self::Rounded => (0.50, 0.78),
+            // Freshly turned soil. A little more void than fragment, because
+            // broken ground is loose and the gaps are what make it so, and a
+            // wall narrow enough to shadow.
+            Self::RoundedRidged => (0.54, 0.34),
+            // Fractured plates: hard edges, very little between them.
+            Self::Angular => (0.52, 0.14),
         }
     }
 }
@@ -292,6 +341,29 @@ pub struct GroundStructure {
     /// repose. Also gates cracking, which needs a material that can hold a wall
     /// open.
     pub cohesion: f32,
+    /// The finest band this soil wants carried as **geometry**, in metres.
+    ///
+    /// ## Why the coarsest band is the wrong thing to size a lattice by
+    ///
+    /// The lattice used to be derived from the coarsest band alone: fine enough
+    /// to carry it, and everything below it went to the shader as a bump. That
+    /// rule is defensible per band and wrong for a soil, because it guarantees
+    /// the mesh carries **exactly one** scale of relief — and one scale of noise
+    /// is a dune field. Soil is nested: lumps with crumbs on them and grit
+    /// between, each casting on the one below.
+    ///
+    /// It is also the reason nothing cast a shadow. A single band's slope is
+    /// bounded by its own amplitude over its own wavelength; stack three and the
+    /// slopes add, which is how real ground gets faces steeper than any one of
+    /// its scales.
+    ///
+    /// So a soil states how far down it wants the mesh to go and pays for it in
+    /// vertices. `None` keeps the old behaviour — the coarsest band and nothing
+    /// else — which is right for a material whose look is one scale.
+    ///
+    /// This is a request, not a guarantee. The exporter has a vertex budget and
+    /// will coarsen past it, moving bands back to the shader and saying so.
+    pub mesh_floor_m: Option<f32>,
 }
 
 /// Directional relief left by wind on a granular surface.
@@ -725,12 +797,32 @@ impl GroundMaterialProfile {
 
     /// How much of one band survives this state, `0..1`.
     ///
-    /// Compaction presses it flat; saturation smooths it over. Multiplied
-    /// because they are independent — a wet packed track is smoother than
-    /// either a wet loose one or a dry packed one.
+    /// Compaction presses it flat; saturation fills it in. Multiplied because
+    /// they are independent — a wet packed track is smoother than either a wet
+    /// loose one or a dry packed one.
+    ///
+    /// ## Saturation is a pore-scale effect and was being applied at every scale
+    ///
+    /// `saturation_flattening` describes water filling the space *between
+    /// grains*. That is a real and strong effect and it is why a wet beach reads
+    /// as poured: the film bridges the pores and the grain texture disappears
+    /// completely.
+    ///
+    /// It says nothing about a clod. A six-centimetre aggregate is the same six
+    /// centimetres wet or dry — rain does not dissolve it, and a photograph of
+    /// mud after a shower is *more* cloddy than the same ground dry, not less.
+    /// Applying one number to every band meant river sand's 0.58 took nearly a
+    /// fifth off its 14 cm scour hollows at a moisture of 0.26, and loam's 0.42
+    /// shaved its clods, which are the only thing on bare ground that casts a
+    /// shadow.
+    ///
+    /// So the flattening now falls off with the band's own wavelength: total at
+    /// grain scale, gone by three centimetres, where an aggregate begins.
     pub fn band_scale(&self, band: &ReliefBand, compaction: f32, moisture: f32) -> f32 {
         let packed = 1.0 - band.compaction_response * compaction.clamp(0.0, 1.0);
-        let sodden = 1.0 - self.optics.wet.saturation_flattening * moisture.clamp(0.0, 1.0);
+        let pore = 1.0 - smoothstep(PORE_SCALE_M, AGGREGATE_SCALE_M, band.wavelength_m);
+        let sodden =
+            1.0 - self.optics.wet.saturation_flattening * moisture.clamp(0.0, 1.0) * pore;
         (packed * sodden).clamp(0.0, 1.0)
     }
 
@@ -841,6 +933,7 @@ mod tests {
                 ],
                 cluster_wavelength_m: 0.8,
                 cluster_strength: 0.5,
+                mesh_floor_m: None,
                 cohesion: 0.62,
             },
             ripples: None,
@@ -962,7 +1055,12 @@ mod tests {
     #[test]
     fn packing_and_soaking_both_flatten_and_compound() {
         let p = profile();
-        let band = &p.structure.bands[0];
+        // The grain band, because saturation is a *pore-scale* effect now and
+        // this is the only band in the ladder small enough to have pores. On the
+        // coarse band it is deliberately inert — see `band_scale` — so asking
+        // this question there tests nothing and used to answer wrongly.
+        let band = p.structure.bands.last().expect("a grain band");
+        assert!(band.wavelength_m < PORE_SCALE_M * 2.0);
         let loose_dry = p.band_scale(band, 0.0, 0.0);
         let packed_dry = p.band_scale(band, 1.0, 0.0);
         let loose_wet = p.band_scale(band, 0.0, 1.0);
@@ -971,6 +1069,38 @@ mod tests {
         assert!(packed_dry < loose_dry);
         assert!(loose_wet < loose_dry);
         assert!(packed_wet < packed_dry && packed_wet < loose_wet);
+    }
+
+    #[test]
+    fn soaking_fills_pores_and_leaves_aggregates_alone() {
+        // Water bridges the space between grains, which is a large effect and
+        // the reason a wet beach reads as poured. It does not dissolve a clod: a
+        // six-centimetre aggregate is the same six centimetres wet or dry, and
+        // mud after a shower is more cloddy than the same ground dry.
+        //
+        // One flattening number applied to every band said otherwise, and what
+        // it cost was the only relief on bare ground steep enough to cast a
+        // shadow.
+        let p = profile();
+        let at = |wavelength_m| ReliefBand {
+            wavelength_m,
+            amplitude_m: 0.01,
+            shape: AggregateShape::Rounded,
+            compaction_response: 0.0,
+            clustered: false,
+        };
+        let grain = p.band_scale(&at(0.001), 0.0, 1.0);
+        let crumb = p.band_scale(&at(0.010), 0.0, 1.0);
+        let clod = p.band_scale(&at(0.060), 0.0, 1.0);
+        assert!(grain < crumb && crumb < clod, "{grain} {crumb} {clod}");
+        assert!(
+            (clod - 1.0).abs() < 1.0e-4,
+            "an aggregate lost {} of itself to water",
+            1.0 - clod
+        );
+        // And the grain takes the profile's full declared flattening.
+        let declared = 1.0 - p.optics.wet.saturation_flattening;
+        assert!((grain - declared).abs() < 0.02, "{grain} against {declared}");
     }
 
     #[test]

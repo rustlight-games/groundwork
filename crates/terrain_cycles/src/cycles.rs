@@ -754,10 +754,12 @@ fn profile_json(index: usize, entry: &GroundProfileEntry) -> String {
             bands.push_str(", ");
         }
         bands.push_str(&format!(
-            r#"{{"wavelength_m": {:.6}, "amplitude_m": {:.6}, "ridge": {:.4}, "compaction_response": {:.4}, "clustered": {}}}"#,
+            r#"{{"wavelength_m": {:.6}, "amplitude_m": {:.6}, "centre": {:.4}, "wall": {:.4}, "flank_floor": {:.4}, "compaction_response": {:.4}, "clustered": {}}}"#,
             band.wavelength_m,
             band.amplitude_m,
-            band.shape.ridge(),
+            band.shape.profile().0,
+            band.shape.profile().1,
+            entry.shader_flank_floors.get(slot).copied().unwrap_or(0.0),
             band.compaction_response,
             band.clustered,
         ));
@@ -971,6 +973,14 @@ pub struct GroundProfileEntry {
     /// what stops the two halves double-counting a band or dropping one between
     /// them.
     pub shader_bands: Vec<terrain_core::ground_material::ReliefBand>,
+    /// The narrowest flank each shader band may draw, one per entry above.
+    ///
+    /// The mesh half floors this against the lattice; a bump has no lattice, so
+    /// it is floored against the traced pixel instead. Same rule, same reason —
+    /// a rise drawn narrower than the thing sampling it is not an edge, it is
+    /// aliasing — and computed here rather than in the Python because this is
+    /// where the pixel size is known.
+    pub shader_flank_floors: Vec<f32>,
     /// What the bands finer than a pixel leave behind.
     ///
     /// ## Three tiers, not two
@@ -1061,6 +1071,15 @@ fn sample_ground(
     // constant. A document of hardpan and beach sand needs a finer step than one
     // of turned farm soil, and a single number chosen for one aliases the other.
     let evaluator = field.ground();
+
+    // What one traced pixel covers, which is where the shader runs out of room
+    // — and, below, where the *mesh* runs out of room too.
+    let pixel_m = if settings.trace_px_per_metre > 0.0 {
+        1.0 / settings.trace_px_per_metre
+    } else {
+        f32::INFINITY
+    };
+
     let requested = evaluator
         .and_then(|ground| {
             terrain_generators::ground::BandSplit::spacing_for(
@@ -1068,6 +1087,24 @@ fn sample_ground(
             )
         })
         .unwrap_or(DEFAULT_GROUND_STEP)
+        // ## Never finer than the picture
+        //
+        // A soil asks for a lattice by declaring how far down it wants its
+        // relief carried, and that request says nothing about how closely the
+        // ground is being looked at. Granted literally, a wide plate ends up
+        // with clods a pixel and a half across: not form, because nothing that
+        // small can be seen to have a shape, and not texture either — every
+        // pixel lands on a different part of the field and the surface boils.
+        // Which is what a stripe of loam looked like at six metres across:
+        // gravel, or coffee grounds.
+        //
+        // Four pixels per wavelength is the same threshold `SAMPLES_PER_WAVELENGTH`
+        // applies to the lattice, applied to the sampler instead, and the cut is
+        // four lattice steps — so holding a step at a pixel keeps the finest
+        // mesh band at four pixels. Below that a band belongs to the shader,
+        // where it becomes a bump, and then to the roughness. The three-tier
+        // argument this file already makes, with its top edge finally bounded.
+        .max(pixel_m)
         .clamp(MIN_GROUND_STEP, MAX_GROUND_STEP);
 
     let span = high - low;
@@ -1079,13 +1116,6 @@ fn sample_ground(
         (low.x / spacing).floor() * spacing,
         (low.y / spacing).floor() * spacing,
     );
-
-    // What one traced pixel covers, which is where the shader runs out of room.
-    let pixel_m = if settings.trace_px_per_metre > 0.0 {
-        1.0 / settings.trace_px_per_metre
-    } else {
-        f32::INFINITY
-    };
 
     let profiles: Vec<GroundProfileEntry> = evaluator
         .map(|ground| {
@@ -1106,11 +1136,18 @@ fn sample_ground(
                     let (bump, micro): (Vec<_>, Vec<_>) = left
                         .into_iter()
                         .partition(|band| band.wavelength_m >= 2.0 * pixel_m);
+                    let floors = bump
+                        .iter()
+                        .map(|band| {
+                            terrain_generators::ground::flank_floor(band.wavelength_m, pixel_m)
+                        })
+                        .collect();
                     GroundProfileEntry {
                         key: profile.key.as_str().to_string(),
                         display_name: profile.display_name.clone(),
                         shader: profile.shader.as_str().to_string(),
                         shader_bands: bump,
+                        shader_flank_floors: floors,
                         micro_roughness: micro_roughness(&micro),
                         profile: std::sync::Arc::clone(profile),
                     }

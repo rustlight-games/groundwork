@@ -48,6 +48,7 @@ pub mod recipes;
 pub mod relief;
 pub mod rng;
 pub mod scene;
+pub mod soil;
 pub mod stroke;
 pub mod style;
 pub mod sun;

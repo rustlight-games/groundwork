@@ -197,6 +197,7 @@ pub fn loam_profile() -> GroundMaterialProfile {
             cohesion: 0.55,
             cluster_wavelength_m: 0.42,
             cluster_strength: 0.35,
+            mesh_floor_m: None,
         },
         scatter: GroundScatter {
             grit_per_m2: 0.0,

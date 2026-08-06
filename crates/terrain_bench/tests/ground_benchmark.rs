@@ -230,10 +230,26 @@ fn every_report_serialises_to_json_that_parses_back() {
 }
 
 #[test]
-fn the_moisture_sweep_flattens_by_the_profiles_declared_amount() {
-    // The state response, checked against the profile rather than against a
-    // previous run. `saturation_flattening` is 0.45, so a saturated ground
-    // should carry about 55% of the dry ground's relief.
+fn saturation_fills_the_pores_and_leaves_the_aggregates() {
+    // ## The claim this used to make was the wrong one
+    //
+    // It asserted that a saturated ground carries `1 - saturation_flattening` of
+    // a dry ground's relief, full stop — one number applied to every band. That
+    // is what the code did and it is not what water does.
+    //
+    // `saturation_flattening` describes a film bridging the space *between
+    // grains*. It is a large effect and it is why a wet beach reads as poured.
+    // It says nothing whatever about a clod: a six-centimetre aggregate is the
+    // same six centimetres wet or dry, and a photograph of mud after a shower is
+    // more cloddy than the same ground dry, not less.
+    //
+    // Applied blanket, it was taking a fifth off river sand's fourteen-
+    // centimetre scour hollows and shaving loam's clods — the only thing on bare
+    // ground that casts a shadow, on the only material that has to.
+    //
+    // So the assertion is now the scale dependence itself, which is the
+    // physical claim: the fine end of the ladder loses most of its relief and
+    // the coarse end keeps essentially all of it.
     let dry = ground::run(
         ground::scenarios::scenario("ground_band_full_ladder").expect("exists"),
         ground::DEFAULT_SEED,
@@ -242,15 +258,42 @@ fn the_moisture_sweep_flattens_by_the_profiles_declared_amount() {
         ground::scenarios::scenario("ground_moisture_sweep").expect("exists"),
         ground::DEFAULT_SEED,
     );
-    let declared = 1.0
-        - ground::scenarios::loam_profile()
-            .optics
-            .wet
-            .saturation_flattening as f64;
-    let measured = wet.topography.sq_m / dry.topography.sq_m;
+    let kept = wet.topography.sq_m / dry.topography.sq_m;
+
+    // The ladder's coarsest band is far above `AGGREGATE_SCALE_M` and carries
+    // most of the surface, so almost all of the relief has to survive.
     assert!(
-        (measured - declared).abs() < 0.05,
-        "saturation left {measured:.3} of the relief; the profile declares {declared:.3}"
+        kept > 0.90,
+        "saturation took {:.1}% off a ladder whose relief is mostly aggregate",
+        (1.0 - kept) * 100.0
+    );
+
+    // And it must still do something, or the response has been disconnected
+    // rather than scaled.
+    assert!(
+        kept < 1.0,
+        "saturation left the relief untouched at {kept:.4}; the fine bands should have gone"
+    );
+
+    // The rule itself, stated where it is cheap to check: total at grain scale,
+    // gone by the time a band is an aggregate.
+    let profile = ground::scenarios::loam_profile();
+    let band = |wavelength_m| terrain_core::ground_material::ReliefBand {
+        wavelength_m,
+        amplitude_m: 0.01,
+        shape: terrain_core::ground_material::AggregateShape::Rounded,
+        compaction_response: 0.0,
+        clustered: false,
+    };
+    let grain = profile.band_scale(&band(0.001), 0.0, 1.0);
+    let clod = profile.band_scale(&band(0.060), 0.0, 1.0);
+    assert!(
+        grain < 0.70,
+        "a millimetre band kept {grain:.3} of itself through full saturation"
+    );
+    assert!(
+        clod > 0.99,
+        "a six-centimetre aggregate lost relief to saturation: {clod:.3}"
     );
 }
 

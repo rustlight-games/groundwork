@@ -57,9 +57,44 @@
                 // it to 2.00 to sit in the grass's world and rendered at 1.44
                 // against the grass's 1.84 — cooler than the thing it was
                 // supposed to match.
-                low:  (0.00758, 0.00576, 0.00280),
-                mid:  (0.05570, 0.04233, 0.02063),
-                high: (0.22060, 0.16760, 0.08170),
+                //
+                // ## Halved, and browned, against the reference's own ratio
+                //
+                // The measurement that settles this needs no exposure match,
+                // because the reference photograph contains **both** the grass
+                // and the mud. Its mud runs at **0.90 times** the mean luminance
+                // of the turf beside it — bare earth is very slightly darker
+                // than a green sward, which is the opposite of what everybody
+                // expects and is why this kept drifting upward.
+                //
+                // Rendered on the comparison card these stops came back at
+                // **1.79**. Twice the reference's relationship, which is a pale
+                // beige card sitting next to dark green geometry, and it is what
+                // "khaki" and "looks nothing like dirt" were describing.
+                //
+                // The hue had drifted too, and from this file's own stated
+                // target: the header says G/R about 0.63 and every stop here was
+                // at **0.76**. Green is most of luminance, so an eighth too much
+                // of it is both too bright and too olive at once.
+                //
+                // So the three stops are set from the reference's measured
+                // channel ratios at each end of its range — G/R 0.67/0.60/0.64
+                // and B/R 0.44/0.32/0.36 for shadow, median and highlight — at
+                // half the luminance they had.
+                //
+                // ## Re-measured once the specular stopped diluting them
+                //
+                // Half the light leaving this soil used to be specular, which is
+                // the light's colour rather than the material's — so the palette
+                // was being authored against a render that was washing it out,
+                // and no edit here could reach the target. With the specular at
+                // what a porous aggregate actually returns, these are calibrated
+                // against the render one last time: measured median G/R 0.596
+                // and B/R 0.317, against the reference photograph's 0.596 and
+                // 0.317.
+                low:  (0.00414, 0.00292, 0.00249),
+                mid:  (0.03558, 0.02268, 0.01563),
+                high: (0.12442, 0.08444, 0.06159),
             ),
             // A third of the dry value, and distinctly warmer: wet ground keeps
             // its red far better than its blue. Roughness is the important one
@@ -71,28 +106,124 @@
                 // has been rained on is the wettest-looking ground in any
                 // photograph of a field, because there is no canopy over it to
                 // hide the sheen.
-                wet_mid: (0.0118, 0.0106, 0.0092),
-                roughness_wet: 0.12,
+                // ## And it was near-black
+                //
+                // A fifth of the dry mid, and neutral with it. Rendered, the wet
+                // stripes on the comparison card came out as dark grey panels
+                // with white speckle on them — ground in deep shadow, which is
+                // exactly the reading `WetResponse`'s own documentation warns
+                // about, arrived at by overshooting rather than by omission.
+                //
+                // Wet earth is *darker and browner*, not darker and greyer. It
+                // keeps its red — a water film absorbs blue hardest — so the
+                // hue moves the other way from neutral. Set to 45 per cent of
+                // the dry mid at G/R 0.58 and B/R 0.28: unmistakably wet beside
+                // its dry stripe, and unmistakably still soil.
+                wet_mid: (0.01650, 0.00957, 0.00462),
+                // ## Wet mud is not a mirror
+                //
+                // 0.12 is a varnish, and combined with an uncapped coat it is
+                // what made every wet stripe on the comparison card read as
+                // poured resin. Saturated exposed mud measures nearer a third:
+                // the water fills the pores between the grains, which is a large
+                // change, and stops there — the surface it leaves is still
+                // broken by protruding grit, floating debris and the edges of
+                // its own menisci.
+                //
+                // Now that this scales the dry variation rather than replacing
+                // it, the number is a target for the *midpoint* and the surface
+                // keeps its spread either side.
+                // ## Raised again, because wet mud still glinted
+                //
+                // At 0.28 the track rendered with a hard white catch on every
+                // proud lump — small, bright, and the single most artificial
+                // thing in the picture. The reference has none: wet earth is
+                // *broadly* sheeny, and a narrow specular lobe on a convex bump
+                // is what varnished plastic does.
+                //
+                // Saturated mud is a rough dark dielectric. The gloss it does
+                // have belongs to a water film, which is a separate capped coat
+                // layer over the top of this and only appears where one forms.
+                // ## Raised a third time, and this is the one that mattered
+                //
+                // Saturated exposed mud is quoted around a third in the
+                // literature, and a third is what a *base under a strong
+                // clearcoat* should be — the coat carries the sheen and the base
+                // carries the colour. With the coat cut back to what a real
+                // broken film can cover, the base has to carry the wet response
+                // on its own, and at 0.42 it was still glossy enough to read as
+                // a moulded surface.
+                //
+                // Better than half. Against a dry range of 0.82 to 0.96 that is
+                // still an unmistakable change — wet ground is visibly smoother
+                // than dry — without ever becoming a mirror.
+                roughness_wet: 0.58,
                 saturation_flattening: 0.42,
             ),
             roughness_dry: (0.82, 0.96),
             ior: 1.48,
 
+            // ## Cut back hard, because this was drawing the clods
+            //
+            // Region 0.5 at two metres and patch 0.9 at twenty-five centimetres
+            // is an enormous amount of colour variation, and it was there
+            // because it was the only variation the material had — the mesh
+            // carried one shallow band and cast no shadows, so every scrap of
+            // structure in a render came out of these two numbers. What they
+            // actually produce at that strength is soft blotches a hand across:
+            // camouflage.
+            //
+            // The reference plate is close to uniform in hue and its brightness
+            // range comes from lit tops against shadowed sides. So the tonal
+            // field goes back to being what it is for — this stretch of the
+            // track is a little richer than that one — and the mesh does the
+            // work.
             region_wavelength_m: 2.0,
-            region_strength: 0.5,
-            patch_wavelength_m: 0.25,
-            patch_strength: 0.9,
+            region_strength: 0.30,
+            patch_wavelength_m: 0.22,
+            patch_strength: 0.34,
             grain_strength: 0.55,
         ),
 
+        // ## Measured against the reference, and it was flat
+        //
+        // The band list here used to be three entries of which the mesh carried
+        // **one**: a five-centimetre clod at seventeen millimetres. Exported and
+        // measured off `ground.bin`, bare soil came back at 2.0 mm peak-to-peak
+        // with a mean slope of 5.6 degrees and a maximum of 16.3. The sun is at
+        // 35, so nothing on the ground could shadow anything else, anywhere, at
+        // any moisture — and the whole apparent structure of a soil render was
+        // pigment standing in for form.
+        //
+        // `docs/references/grass_to_mud_bumpy.jpg`, measured over a 760-square
+        // crop of its bare ground, puts **32 per cent of its variance between
+        // three and nine centimetres** and runs fifteen to one from its dark
+        // decile to its bright one. That is clods with lit tops and shadowed
+        // sides. No colour field reaches that range, which is why chasing it in
+        // the palette produced a card with camouflage painted on it.
+        //
+        // So: five bands, three of them on the mesh, declared coarsest first.
+        // The slopes add, which is how real ground gets faces steeper than any
+        // one of its scales.
         structure: (
             bands: [
-                // Five centimetres, standing about a third of that. This is the
-                // band that casts shadows, and it is the reason bare ground has
-                // to reach the mesh at all.
-                (wavelength_m: 0.0500, amplitude_m: 0.0170, shape: "RoundedRidged", compaction_response: 0.62, clustered: true),
-                // Loose crumb riding on the clods.
-                (wavelength_m: 0.0080, amplitude_m: 0.0030, compaction_response: 0.45, clustered: true),
+                // The swell of turned earth. Broad, shallow, and the band that
+                // owns the reference's dominant nine-to-thirty-five centimetre
+                // variance. Barely touched by compaction: rolling a field flat
+                // does not remove its shape at this scale, it removes the crumb.
+                (wavelength_m: 0.1500, amplitude_m: 0.0280, shape: "Rounded", compaction_response: 0.30, clustered: false),
+                // **The clods.** Six centimetres across, standing a good third
+                // of that, and shaped so the sides are flanks rather than
+                // gradients — see `AggregateShape::profile`. This is the band
+                // the reference is mostly made of and the only one that has ever
+                // needed to cast a shadow.
+                (wavelength_m: 0.0600, amplitude_m: 0.0280, shape: "RoundedRidged", compaction_response: 0.30, clustered: true),
+                // Crumb riding on the clods. Still geometry — it is what stops
+                // the clods reading as poured concrete lumps — and the finest
+                // thing this soil asks the mesh for.
+                (wavelength_m: 0.0160, amplitude_m: 0.0045, shape: "RoundedRidged", compaction_response: 0.35, clustered: true),
+                // Grit, into the shader as a bump.
+                (wavelength_m: 0.0060, amplitude_m: 0.0022, compaction_response: 0.45, clustered: true),
                 // Grain. Barely flattened by compaction — a wheel presses clods
                 // down and hardly touches what is between them.
                 //
@@ -104,7 +235,26 @@
                 (wavelength_m: 0.0012, amplitude_m: 0.0006, compaction_response: 0.20),
             ],
             cluster_wavelength_m: 0.8,
+            // Half, which is where it started. Lowering it to 0.38 was chasing
+            // the wrong shortage: the ground was not short of clods, it was
+            // short of *floor between* them — see `AggregateShape::profile`,
+            // which is where that got fixed. With clods properly sparse the
+            // clustering goes back to doing its own job, which is giving a track
+            // calm stretches beside broken ones.
             cluster_strength: 0.5,
+            // ## This buys sharpness, not just another band
+            //
+            // Sixteen millimetres puts the lattice at four, and the third band
+            // is the only one that actually needs carrying at that scale. The
+            // rest of what it buys is the **clod flank**: `shape` widens a flank
+            // the lattice cannot resolve, and at a five-and-a-half millimetre
+            // step the six-centimetre band's declared flank of 0.34 was being
+            // opened to 0.46 — a third of its steepness given away to sampling.
+            // At four it binds, and the clods have edges.
+            //
+            // Costs about two and a quarter million vertices on a six-metre
+            // plate, which is why the mesh is built through the buffer API now.
+            mesh_floor_m: Some(0.0160),
             cohesion: 0.62,
         ),
 

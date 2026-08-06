@@ -14,57 +14,57 @@ spectrum = axis 0.000, alias 0.000, anisotropy 0.000
 [ground_band_coarse_only]
 verdict = pass
 grid = 161x161 at 0.00625 m
-height = Sq 0.003135 m, Sa 0.002502 m, skew -0.163, kurtosis 2.864
-cavity = pearson -0.995, spearman -0.994
-spectrum = axis 0.718, alias 0.000, anisotropy 0.121
-  band0 = declared 0.0500 m, dominant 0.0936 m, 0.256 of energy
+height = Sq 0.004559 m, Sa 0.003893 m, skew -0.081, kurtosis 1.964
+cavity = pearson -0.991, spearman -0.992
+spectrum = axis 0.708, alias 0.000, anisotropy 0.139
+  band0 = declared 0.0500 m, dominant 0.0936 m, 0.274 of energy
 
 [ground_band_crumb_only]
 verdict = pass
 grid = 287x287 at 0.00175 m
-height = Sq 0.001033 m, Sa 0.000838 m, skew +0.003, kurtosis 2.512
-cavity = pearson -0.997, spearman -0.997
-spectrum = axis 0.799, alias 0.000, anisotropy 0.033
-  band0 = declared 0.0140 m, dominant 0.0238 m, 0.251 of energy
+height = Sq 0.001487 m, Sa 0.001291 m, skew +0.115, kurtosis 1.752
+cavity = pearson -0.997, spearman -0.996
+spectrum = axis 0.800, alias 0.000, anisotropy 0.047
+  band0 = declared 0.0140 m, dominant 0.0238 m, 0.271 of energy
 
 [ground_band_grain_only]
 verdict = pass
 grid = 501x501 at 0.00050 m
-height = Sq 0.000279 m, Sa 0.000214 m, skew +1.569, kurtosis 5.229
-cavity = pearson -0.992, spearman -1.000
-spectrum = axis 0.780, alias 0.000, anisotropy 0.009
-  band0 = declared 0.0040 m, dominant 0.0079 m, 0.287 of energy
+height = Sq 0.000463 m, Sa 0.000412 m, skew +0.200, kurtosis 1.592
+cavity = pearson -1.000, spearman -0.998
+spectrum = axis 0.794, alias 0.001, anisotropy 0.052
+  band0 = declared 0.0040 m, dominant 0.0068 m, 0.284 of energy
 
 [ground_band_full_ladder]
 verdict = pass
 grid = 641x641 at 0.00050 m
-height = Sq 0.003749 m, Sa 0.003053 m, skew -0.034, kurtosis 2.420
-cavity = pearson -0.986, spearman -0.987
-spectrum = axis 0.962, alias 0.000, anisotropy 0.095
-  band0 = declared 0.0500 m, dominant 0.0905 m, 0.722 of energy
-  band1 = declared 0.0140 m, dominant 0.0251 m, 0.051 of energy
-  band2 = declared 0.0040 m, dominant 0.0078 m, 0.005 of energy
+height = Sq 0.005184 m, Sa 0.004431 m, skew +0.184, kurtosis 2.036
+cavity = pearson -0.990, spearman -0.991
+spectrum = axis 0.966, alias 0.000, anisotropy 0.133
+  band0 = declared 0.0500 m, dominant 0.0905 m, 0.721 of energy
+  band1 = declared 0.0140 m, dominant 0.0256 m, 0.050 of energy
+  band2 = declared 0.0040 m, dominant 0.0078 m, 0.006 of energy
   [not_applicable] band_dominant_wavelength
 
 [ground_compaction_sweep]
 verdict = pass
 grid = 641x641 at 0.00050 m
-height = Sq 0.001075 m, Sa 0.000869 m, skew +0.082, kurtosis 2.621
-cavity = pearson -0.989, spearman -0.990
-spectrum = axis 0.922, alias 0.000, anisotropy 0.111
-  band0 = declared 0.0500 m, dominant 0.0905 m, 0.707 of energy
-  band1 = declared 0.0140 m, dominant 0.0251 m, 0.138 of energy
-  band2 = declared 0.0040 m, dominant 0.0078 m, 0.026 of energy
+height = Sq 0.001520 m, Sa 0.001239 m, skew +0.165, kurtosis 2.464
+cavity = pearson -0.993, spearman -0.994
+spectrum = axis 0.928, alias 0.000, anisotropy 0.034
+  band0 = declared 0.0500 m, dominant 0.0905 m, 0.679 of energy
+  band1 = declared 0.0140 m, dominant 0.0256 m, 0.161 of energy
+  band2 = declared 0.0040 m, dominant 0.0078 m, 0.033 of energy
   [not_applicable] band_dominant_wavelength
 
 [ground_moisture_sweep]
 verdict = pass
 grid = 641x641 at 0.00050 m
-height = Sq 0.002062 m, Sa 0.001679 m, skew -0.034, kurtosis 2.420
-cavity = pearson -0.986, spearman -0.987
-spectrum = axis 0.962, alias 0.000, anisotropy 0.095
-  band0 = declared 0.0500 m, dominant 0.0905 m, 0.722 of energy
-  band1 = declared 0.0140 m, dominant 0.0251 m, 0.051 of energy
-  band2 = declared 0.0040 m, dominant 0.0078 m, 0.005 of energy
+height = Sq 0.005072 m, Sa 0.004378 m, skew +0.173, kurtosis 1.924
+cavity = pearson -0.989, spearman -0.990
+spectrum = axis 0.975, alias 0.000, anisotropy 0.172
+  band0 = declared 0.0500 m, dominant 0.0905 m, 0.726 of energy
+  band1 = declared 0.0140 m, dominant 0.0220 m, 0.027 of energy
+  band2 = declared 0.0040 m, dominant 0.0078 m, 0.002 of energy
   [not_applicable] band_dominant_wavelength
 

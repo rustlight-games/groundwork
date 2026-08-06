@@ -29,6 +29,7 @@ arrives reflected.
 """
 
 import json
+import math
 import os
 import sys
 import time
@@ -654,9 +655,27 @@ def build_ground(scene_dir, spec):
     faces[0::2] = np.stack([top_left, bottom_left, top_right], axis=1)
     faces[1::2] = np.stack([top_right, bottom_left, bottom_right], axis=1)
 
+    # ## Built through the buffer API, not from Python lists
+    #
+    # `from_pydata` wants lists, and `.tolist()` on the arrays above materialises
+    # one Python float object per coordinate. That was free at the old lattice —
+    # a few tens of thousands of vertices — and is not now: soils that ask for a
+    # relief hierarchy pull the spacing down to about five millimetres, which is
+    # a couple of million vertices and four million triangles per page. The list
+    # conversion alone ran to minutes and most of a gigabyte.
+    #
+    # `foreach_set` writes from the numpy buffer directly. The loop-start /
+    # loop-total pair is the same triangle fan every face here has, so it is
+    # generated rather than stored.
     mesh = bpy.data.meshes.new("ground")
-    mesh.from_pydata(vertices.tolist(), [], faces.tolist())
-    mesh.update()
+    mesh.vertices.add(vertices.shape[0])
+    mesh.vertices.foreach_set("co", vertices.ravel())
+    mesh.loops.add(faces.size)
+    mesh.loops.foreach_set("vertex_index", faces.ravel())
+    mesh.polygons.add(faces.shape[0])
+    mesh.polygons.foreach_set("loop_start", np.arange(0, faces.size, 3, dtype=np.int32))
+    mesh.polygons.foreach_set("loop_total", np.full(faces.shape[0], 3, dtype=np.int32))
+    mesh.update(calc_edges=True)
     mesh.shade_smooth()
 
     # What each vertex is made of, and what state it is in, carried as mesh
@@ -673,7 +692,7 @@ def build_ground(scene_dir, spec):
                 f"{path} has {values.size} floats, expected {rows * columns}"
             )
         layer = mesh.attributes.new(name=name, type="FLOAT", domain="POINT")
-        layer.data.foreach_set("value", values.tolist())
+        layer.data.foreach_set("value", values)
 
     materials = spec.get("materials", [])
     for index, entry in enumerate(materials):
@@ -716,7 +735,7 @@ def build_ground(scene_dir, spec):
 # grass ghosts.
 
 
-def appearance_builders(settings):
+def appearance_builders(settings, soils=None):
     """Every appearance this build knows how to construct.
 
     Explicit rather than discovered, for the same reason the Rust-side registry
@@ -752,7 +771,7 @@ def appearance_builders(settings):
         "rock.elongated": lambda: stone_material(settings, [0.172, 0.170, 0.166]),
         # Broken soil, at soil's own reflectance. The stone shader is four
         # times brighter and turns grit into a scatter of white eggs.
-        "surface.soil_fragment": lambda: soil_fragment_material(settings),
+        "surface.soil_fragment": lambda: soil_fragment_material(settings, soils),
         "surface.shell_fragment": lambda: stone_material(settings, [0.42, 0.40, 0.35]),
         "surface.organic_fragment": lambda: stone_material(settings, [0.045, 0.033, 0.024]),
         # Every ground material shares one implementation. What a particular
@@ -773,7 +792,7 @@ def material_for(appearance, settings, cache):
     if appearance in cache:
         return cache[appearance]
 
-    builders = appearance_builders(settings)
+    builders = appearance_builders(settings, settings.get("soils"))
     builder = builders.get(appearance)
     if builder is None:
         print(
@@ -956,7 +975,7 @@ def leaf_material(settings):
     return material
 
 
-def soil_fragment_material(settings):
+def soil_fragment_material(settings, soils=None):
     """A lump of the ground, not a pebble of granite.
 
     Its own builder rather than `stone_material` at a darker colour, because the
@@ -971,7 +990,23 @@ def soil_fragment_material(settings):
     roughness runs 0.82 to 0.96; this sits near the top of that, because a loose
     fragment is rougher than the packed surface around it.
     """
-    material = stone_material(settings, [0.043, 0.035, 0.024])
+    # ## The colour comes from the soil, because that is what it is
+    #
+    # This was the literal `[0.043, 0.035, 0.024]`, chosen once against a
+    # palette that has since been recalibrated twice. Measured against the
+    # current loam it was **1.2x brighter in red, 1.6x in green and 2.1x in
+    # blue** — so every fragment was a pale grey chip lying on warm brown earth,
+    # and a track carrying ninety a square metre read as gravel chippings.
+    #
+    # A fragment is a piece of the ground that broke off. Taking its colour from
+    # the ground's own mid stop is not a convenience; it is the only value that
+    # can be right, and it means retuning a soil retunes its debris with it.
+    #
+    # Lifted a little, because a fresh break exposes unweathered material and a
+    # loose lump catches more sky than the packed surface it is lying on. A
+    # little — the old figure's mistake was the size of the gap, not its sign.
+    mid = (soils or [{}])[0].get("dry_palette", {}).get("mid", [0.036, 0.021, 0.011])
+    material = stone_material(settings, [c * 1.25 for c in mid])
     principled = material.node_tree.nodes["Principled BSDF"]
     principled.inputs["Roughness"].default_value = 0.94
     # A mineral aggregate, not a dense silicate.
@@ -1326,7 +1361,20 @@ REFLECTION_ELEVATION_DEG = 35.264
 # stops outrunning the mean and it becomes a lift again.
 REFLECTION_STRENGTH = 0.006
 
-CAVITY_OCCLUSION = 0.80
+# ## Painted occlusion, now that the ground can cast its own
+#
+# This was 0.80 — crevices darkened to a fifth of the crest beside them — and it
+# was doing the job the geometry could not. Measured off an export, bare soil ran
+# at 2.0 mm peak-to-peak and a mean slope of 5.6 degrees against a 35-degree sun,
+# so nothing shadowed anything and the only thing standing between a render and a
+# flat card was this multiply. It is why soil came back looking like camouflage:
+# a smooth scalar field painted at aggregate scale is a blob, not a pocket.
+#
+# The mesh now carries three bands down to two centimetres and casts real
+# shadows, so this goes back to being what it is meant to be — a small
+# sky-occlusion term for hollows the sun never reaches into anyway. Left at 0.80
+# it double-counts, and the double-counted version is the blotchy one.
+CAVITY_OCCLUSION = 0.30
 
 # Where the cavity signal starts and finishes counting.
 #
@@ -1338,6 +1386,43 @@ CAVITY_LOW = 0.34
 CAVITY_HIGH = 0.68
 
 CAVITY_TONE_FINE = 0.70
+
+# Where a water film starts to be a coherent reflecting surface, where it is as
+# coherent as it gets, and how much of the hemisphere it can ever cover.
+#
+# The ceiling is the important one. A real film over earth is broken by
+# protruding grains, debris and its own shallow menisci; it is never the
+# unbroken dielectric layer that a coat weight of one describes, and rendering
+# it as one is the difference between wet mud and poured resin.
+# ## A clearcoat is what plastic is
+#
+# These were 0.30 / 0.85 / 0.45, and a track at a moisture of 0.78 therefore
+# rendered under a quarter-strength smooth dielectric layer. That is not a
+# description of damp earth — it is a description of a varnished object, and it
+# is why the surface read as plastic however the geometry underneath it moved.
+#
+# The physical case for a coat at all is a *continuous film*: water standing on
+# ground that cannot absorb any more, with a real air-water interface of its own.
+# Damp soil has no such interface. Water in the pores changes how the substrate
+# scatters — which is the albedo and the roughness underneath, and both already
+# respond — and adds no second surface at all.
+#
+# So the onset moves up to where a film genuinely forms, and the ceiling comes
+# down to something a broken, grain-studded, debris-strewn sheet of water can
+# plausibly cover.
+COAT_ONSET = 0.62
+COAT_FULL = 0.92
+COAT_CEILING = 0.20
+
+# How much of a smooth dielectric's reflectance a porous aggregate keeps.
+#
+# Blender's neutral is 0.5. This is a twelfth of it — see `ground_material` for
+# the measurement that sets it.
+SOIL_SPECULAR = 0.04
+
+# What is left of the pore-scale bump at full saturation, and under a wheel.
+BUMP_WET = 0.55
+BUMP_PACKED = 0.40
 
 
 def ground_material(materials=None):
@@ -1479,11 +1564,65 @@ def ground_material(materials=None):
     links.new(live(occluded.outputs, "Result"), principled.inputs["Base Color"])
     links.new(rough_sum, principled.inputs["Roughness"])
 
+    # ## Soil has almost no coherent specular, and this was giving it a full one
+    #
+    # The ground never set this, so it ran at the Principled default — a smooth
+    # dielectric's four per cent. Against a soil albedo of about three per cent
+    # that is not a highlight sitting on a surface, it is **half the light coming
+    # back**: computed from the scene's own sun and sky, 51% of the returned red
+    # was specular. Specular takes the *light's* colour rather than the
+    # material's, so the brown was being diluted with white before it reached the
+    # camera, and no palette edit could fix it — the measured render sat at B/R
+    # 0.47 against an authored 0.32, and moving the palette just moved the
+    # diffuse half.
+    #
+    # The reference photograph settles what the right figure is. If soil had a
+    # meaningful specular its bright end would desaturate toward the sun's
+    # colour; measured, its brightest pixels come back at G/R 0.665 against a
+    # median of 0.596 — essentially the same brown. Real soil is a porous
+    # aggregate whose outer boundary is mostly voids and loose grains, with very
+    # little coherent interface to reflect from at all.
+    #
+    # A water film is a coherent interface, which is what the coat is for and why
+    # it is separate from this.
+    live(principled.inputs, "Specular IOR Level").default_value = SOIL_SPECULAR
+
+    # ## The micro-relief fades under water and under a wheel
+    #
+    # The bump ran at full strength whatever state the ground was in, so a
+    # saturated hollow carried the same pore-scale texture as dry ground beside
+    # it. Both of those fill it in: water bridges the gaps between grains, which
+    # is the same physical fact `saturation_flattening` states and the reason wet
+    # sand reads as poured; a wheel presses the crumb flat.
+    #
+    # The coarse relief is untouched, because it is on the mesh and neither
+    # process removes an aggregate. This is only the part that was a normal.
+    bump_state = nodes.new("ShaderNodeMath")
+    bump_state.operation = "MULTIPLY_ADD"
+    bump_state.location = (-700, -560)
+    links.new(moisture.outputs["Fac"], bump_state.inputs[0])
+    bump_state.inputs[1].default_value = BUMP_WET - 1.0
+    bump_state.inputs[2].default_value = 1.0
+
+    bump_packed = nodes.new("ShaderNodeMath")
+    bump_packed.operation = "MULTIPLY_ADD"
+    bump_packed.location = (-700, -700)
+    links.new(compaction.outputs["Fac"], bump_packed.inputs[0])
+    bump_packed.inputs[1].default_value = BUMP_PACKED - 1.0
+    bump_packed.inputs[2].default_value = 1.0
+
+    bump_strength = nodes.new("ShaderNodeMath")
+    bump_strength.operation = "MULTIPLY"
+    bump_strength.location = (-600, -620)
+    links.new(bump_state.outputs["Value"], bump_strength.inputs[0])
+    links.new(bump_packed.outputs["Value"], bump_strength.inputs[1])
+    bump_strength.use_clamp = True
+
     # One Bump for the whole surface. See the docstring: blending perturbed
     # normals is not the same operation and does not give a usable one.
     bump = nodes.new("ShaderNodeBump")
     bump.location = (-500, -300)
-    bump.inputs["Strength"].default_value = 1.0
+    links.new(bump_strength.outputs["Value"], bump.inputs["Strength"])
     # The heights are already in metres, so the distance is unity and the
     # amplitudes in the profiles mean what they say.
     bump.inputs["Distance"].default_value = 1.0
@@ -1504,8 +1643,30 @@ def ground_material(materials=None):
     #
     # Standing water is still a separate future mesh. A film is a millimetre of
     # specular; a puddle has a bottom you can see.
+    # ## And a film has a ceiling
+    #
+    # The coat weight was `wet_film` itself, straight through, so saturated
+    # ground reached a **full-strength** dielectric coat: a perfect varnish, and
+    # the reason wet stripes on the comparison card read as poured resin rather
+    # than as mud. A water film over earth is broken, thin and full of protruding
+    # grains and floating debris; it never covers the whole hemisphere.
+    #
+    # So it is capped, and it starts late. Below about a third of a film there is
+    # no coherent surface to reflect from at all — that ground is damp, which is
+    # a substrate property and is already handled by the albedo and the roughness
+    # underneath.
+    coat = nodes.new("ShaderNodeMapRange")
+    coat.location = (-300, -560)
+    coat.interpolation_type = "SMOOTHSTEP"
+    live(coat.inputs, "From Min").default_value = COAT_ONSET
+    live(coat.inputs, "From Max").default_value = COAT_FULL
+    live(coat.inputs, "To Min").default_value = 0.0
+    live(coat.inputs, "To Max").default_value = COAT_CEILING
+    coat.clamp = True
+    links.new(wet_film.outputs["Fac"], live(coat.inputs, "Value"))
+
     try:
-        links.new(wet_film.outputs["Fac"], live(principled.inputs, "Coat Weight"))
+        links.new(live(coat.outputs, "Result"), live(principled.inputs, "Coat Weight"))
         film_ior = materials[0]["wet"]["film_ior"]
         # Broader than a mirror. 0.06 is a varnish and puts a small round
         # hotspot on the ground; a water film over earth follows a surface that
@@ -1516,7 +1677,35 @@ def ground_material(materials=None):
         #
         # A tighter figure, near 0.03, is reserved for standing water, which
         # needs its own flat surface rather than a coat on a displaced one.
-        live(principled.inputs, "Coat Roughness").default_value = 0.10
+        #
+        # Driven rather than fixed: a film thin enough to be patchy follows every
+        # grain it is lying over and scatters accordingly, and only a continuous
+        # one is smooth. Holding it at 0.10 gave the first drops of water the
+        # same specular tightness as a puddle.
+        coat_rough = nodes.new("ShaderNodeMapRange")
+        coat_rough.location = (-300, -720)
+        live(coat_rough.inputs, "From Min").default_value = COAT_ONSET
+        live(coat_rough.inputs, "From Max").default_value = COAT_FULL
+        # ## And it is not a mirror even when it is there
+        #
+        # 0.22 falling to 0.06 is a tight lobe: a small hard catch on every
+        # convex bump, which is the signature of moulded plastic and was
+        # measured directly — the render's brightest pixels came back at G/R
+        # 0.928 against the reference photograph's 0.678, meaning they had
+        # desaturated toward the light's own colour instead of keeping the
+        # material's brown.
+        #
+        # A film lying over earth follows a surface that is itself irregular at
+        # every scale below the film's thickness, so the response is a broad
+        # smear that traces the form rather than a point that sits on it.
+        live(coat_rough.inputs, "To Min").default_value = 0.42
+        live(coat_rough.inputs, "To Max").default_value = 0.22
+        coat_rough.clamp = True
+        links.new(wet_film.outputs["Fac"], live(coat_rough.inputs, "Value"))
+        links.new(
+            live(coat_rough.outputs, "Result"),
+            live(principled.inputs, "Coat Roughness"),
+        )
         live(principled.inputs, "Coat IOR").default_value = film_ior
     except KeyError as missing:
         # Reported rather than swallowed. A Blender without a coat layer renders
@@ -1550,8 +1739,21 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
         links.new(coordinate.outputs["Object"], node.inputs["Vector"])
         return node
 
-    region = noise(optics["region_wavelength_m"], 2.0, 300)
-    patch = noise(optics["patch_wavelength_m"], 3.0, 150)
+    # ## The tonal field is not allowed into the clod band
+    #
+    # These ran at two and three octaves. Three octaves under a declared
+    # wavelength of 25 cm puts pigment at 12.5, 6.3 and 3.1 cm — squarely inside
+    # the three-to-nine centimetre band where the reference plate keeps a third
+    # of its variance, and where that variance is *clods with shadows beside
+    # them*. A colour field there does not read as clods. It reads as
+    # camouflage, which is what a render of this soil looked like.
+    #
+    # The same argument `band_height` makes about hidden octaves, applied to the
+    # colour: a declared wavelength has to be the wavelength. One octave each,
+    # so the region term says which clearing this is and the patch term says
+    # which scuff, and neither of them pretends to be geometry.
+    region = noise(optics["region_wavelength_m"], 0.0, 300)
+    patch = noise(optics["patch_wavelength_m"], 1.0, 150)
 
     # Where this point sits on the soil's tonal range, 0..1. Two bands, because
     # one reads as a gradient at any real magnification: the broad one says which
@@ -1836,12 +2038,36 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
     # ground shine before it makes it dark — while leaving damp ground damp.
     rough_response.inputs[1].default_value = 0.7
 
-    wet_rough = nodes.new("ShaderNodeMix")
-    wet_rough.data_type = "FLOAT"
+    # ## Wetting scales the roughness; it does not replace it
+    #
+    # This mixed toward `roughness_wet` as a *constant*, so a fully wet surface
+    # had one roughness everywhere — every scuff, crest and hollow the dry
+    # surface distinguished collapsed onto a single microfacet width. That is the
+    # melted-chocolate failure exactly: a uniform glossy brown with no structure
+    # in its highlight, and it is what the wet stripes on the comparison card
+    # were.
+    #
+    # Real wet ground keeps its variation. Water fills the pores, which lowers
+    # the whole distribution; it does not level the surface, because broken film,
+    # protruding grains and shallow menisci all survive. So the wet target is a
+    # *ratio* against the dry midpoint and it multiplies, which lowers every
+    # point by the same proportion and leaves the differences between them.
+    dry_mid = 0.5 * (dry_low + dry_high)
+    wet_ratio = entry["wet"]["roughness"] / dry_mid if dry_mid > 0.0 else 1.0
+
+    rough_factor = nodes.new("ShaderNodeMapRange")
+    rough_factor.location = (-1000, y - 260)
+    live(rough_factor.inputs, "To Min").default_value = 1.0
+    live(rough_factor.inputs, "To Max").default_value = wet_ratio
+    rough_factor.clamp = True
+    links.new(rough_response.outputs["Value"], live(rough_factor.inputs, "Value"))
+
+    wet_rough = nodes.new("ShaderNodeMath")
+    wet_rough.operation = "MULTIPLY"
     wet_rough.location = (-950, y - 150)
-    links.new(micro.outputs["Value"], live(wet_rough.inputs, "A"))
-    live(wet_rough.inputs, "B").default_value = entry["wet"]["roughness"]
-    links.new(rough_response.outputs["Value"], live(wet_rough.inputs, "Factor"))
+    links.new(micro.outputs["Value"], wet_rough.inputs[0])
+    links.new(live(rough_factor.outputs, "Result"), wet_rough.inputs[1])
+    wet_rough.use_clamp = True
 
     height = band_height(nodes, links, coordinate, moisture, compaction, entry, y)
 
@@ -1897,7 +2123,7 @@ def soil_branch(nodes, links, coordinate, moisture, compaction, cavity, entry, y
 
     return (
         colour_out,
-        live(wet_rough.outputs, "Result"),
+        wet_rough.outputs["Value"],
         height,
     )
 
@@ -1947,7 +2173,7 @@ def band_height(nodes, links, coordinate, moisture, compaction, entry, y):
         noise.inputs["Roughness"].default_value = 0.5
         links.new(coordinate.outputs["Object"], noise.inputs["Vector"])
 
-        shaped = aggregate_shape(nodes, links, noise.outputs["Fac"], band["ridge"], row)
+        shaped = aggregate_shape(nodes, links, noise.outputs["Fac"], band, row)
 
         # State. Both responses multiply, and both are the profile's own
         # numbers rather than anything chosen here.
@@ -2005,86 +2231,65 @@ def band_height(nodes, links, coordinate, moisture, compaction, entry, y):
     return total
 
 
-def aggregate_shape(nodes, links, raw, ridge_amount, y):
-    """Skew a `0..1` band toward its crests, monotonically.
+def aggregate_shape(nodes, links, raw, band, y):
+    """Turn a `0..1` band into a fracture surface: two levels and a steep wall.
 
-    The same transform as `terrain_generators::ground::shape`:
+    The same transform as `terrain_generators::ground::shape`, and it has to stay
+    that way: a band can move between the mesh and this graph as the lattice
+    changes, and a band that changed *shape* when it changed representation would
+    make a clod turn into a different clod because the camera moved closer.
 
     ```text
-    gamma = 1 + 2·ridge
-    u^gamma - 1/(gamma + 1)
+    s    = clamp((u - (centre - wall/2)) / wall, 0, 1)
+    out  = smoothstep(s) - (1 - centre)
     ```
 
-    Monotone, which is the entire point. The fold this replaced —
-    `1 − 2|c|` — maps two different inputs to one output, so its crests follow
-    the *mid-level contours* of the noise underneath rather than its peaks. Mid
-    contours of a smooth random field are long, thin and closed, which is why a
-    plate of it read unmistakably as worms.
+    Flat at both ends, steep in the middle. The version before it was flat at one
+    end and domed at the other — a plane with spheres on it, which is what a
+    render of soil looked like, and it was called a nineties video game.
 
-    The constant subtraction is the mean of `u^gamma` over a uniform `u`, so the
-    band stays zero-mean and the profile's amplitude means what it says.
+    Monotone, which is the other thing both of these had to be. The fold they
+    replaced — `1 − 2|c|` — maps two different inputs to one output, so its
+    crests follow the *mid-level contours* of the noise underneath rather than
+    its peaks. Mid contours of a smooth random field are long, thin and closed,
+    which is why a plate of it read unmistakably as worms.
+
+    Smoothstep integrates to a half over its own width, so subtracting
+    `1 - centre` keeps the band zero-mean whatever the wall width — the profile's
+    amplitude means what it says and retuning a shape does not move the ground.
+
+    ## The wall is floored here too, against the traced pixel
+
+    On the mesh the limit is the lattice; here there is no lattice, so the limit
+    is what the sampler can carry. A transition narrower than a couple of traced
+    pixels is not a crisp edge in the image — it is aliasing that the denoiser
+    then smears — so the same widening applies, measured against the pixel.
+
+    These bands are bumps, below the mesh, so they do not take the slow
+    `centre_shift` field the mesh bands do. At a scale below a lattice cell,
+    "what kind of ground this patch is" is not a question the surface is being
+    asked; it is grain, and grain is the same everywhere.
     """
-    if ridge_amount <= 0.0:
-        centred = nodes.new("ShaderNodeMath")
-        centred.operation = "SUBTRACT"
-        centred.location = (-2200, y)
-        links.new(raw, centred.inputs[0])
-        centred.inputs[1].default_value = 0.5
-        return centred.outputs["Value"]
+    centre = band.get("centre", 0.50)
+    wall = max(band.get("wall", 0.78), band.get("flank_floor", 0.0))
+    wall = min(max(wall, 1.0e-4), 2.0 * min(centre, 1.0 - centre))
 
-    gamma = 1.0 + 2.0 * ridge_amount
-    power = nodes.new("ShaderNodeMath")
-    power.operation = "POWER"
-    power.location = (-2200, y)
-    links.new(raw, power.inputs[0])
-    power.inputs[1].default_value = gamma
+    offset = nodes.new("ShaderNodeMapRange")
+    offset.location = (-2200, y)
+    offset.interpolation_type = "SMOOTHSTEP"
+    live(offset.inputs, "From Min").default_value = centre - 0.5 * wall
+    live(offset.inputs, "From Max").default_value = centre + 0.5 * wall
+    live(offset.inputs, "To Min").default_value = 0.0
+    live(offset.inputs, "To Max").default_value = 1.0
+    offset.clamp = True
+    links.new(raw, live(offset.inputs, "Value"))
 
     centred = nodes.new("ShaderNodeMath")
     centred.operation = "SUBTRACT"
-    centred.location = (-2050, y)
-    links.new(power.outputs["Value"], centred.inputs[0])
-    centred.inputs[1].default_value = 1.0 / (gamma + 1.0)
+    centred.location = (-1980, y)
+    links.new(live(offset.outputs, "Result"), centred.inputs[0])
+    centred.inputs[1].default_value = 1.0 - centre
     return centred.outputs["Value"]
-
-
-def ridge(nodes, links, centred, amount, y):
-    """Fold a centred noise band toward a ridge, keeping its mean at zero.
-
-    `1 - 2|c|` is the fold; squaring it creases the crest and flattens the
-    trough, which is what separates a soil from gravel. The offset is one third
-    — the mean of the squared fold — and not one half: subtracting a half would
-    leave the band averaging -1/12, so an author raising a soil's ridge factor
-    would sink the ground under it.
-    """
-    if amount <= 0.0:
-        return centred.outputs["Value"]
-
-    absolute = nodes.new("ShaderNodeMath")
-    absolute.operation = "ABSOLUTE"
-    absolute.location = (-2100, y)
-    links.new(centred.outputs["Value"], absolute.inputs[0])
-
-    folded = nodes.new("ShaderNodeMath")
-    folded.operation = "MULTIPLY_ADD"
-    folded.location = (-2050, y)
-    links.new(absolute.outputs["Value"], folded.inputs[0])
-    folded.inputs[1].default_value = -2.0
-    folded.inputs[2].default_value = 1.0
-
-    squared = nodes.new("ShaderNodeMath")
-    squared.operation = "MULTIPLY_ADD"
-    squared.location = (-2000, y)
-    links.new(folded.outputs["Value"], squared.inputs[0])
-    links.new(folded.outputs["Value"], squared.inputs[1])
-    squared.inputs[2].default_value = -1.0 / 3.0
-
-    mixed = nodes.new("ShaderNodeMix")
-    mixed.data_type = "FLOAT"
-    mixed.location = (-1950, y)
-    links.new(centred.outputs["Value"], live(mixed.inputs, "A"))
-    links.new(squared.outputs["Value"], live(mixed.inputs, "B"))
-    live(mixed.inputs, "Factor").default_value = amount
-    return live(mixed.outputs, "Result")
 
 
 def accumulate_colour(nodes, links, running, colour, weight, y):
@@ -2497,6 +2702,12 @@ def render_one(header_path, output):
     build_sun(spec["sun"])
     build_reflection_light(spec["sun"])
     build_camera(spec["camera"], spec["page"])
+    # The soils, put where the material builders can reach them. A soil fragment
+    # is a piece of the ground and takes its colour from the ground's own
+    # palette — see `soil_fragment_material` — so the ground spec has to be
+    # visible when the secondary materials are built, not only when the ground
+    # mesh is.
+    spec["soils"] = spec["ground"].get("materials", [])
     ground = build_ground(scene_dir, spec["ground"])
     blades = build_blades(scene_dir, spec["blades"], spec)
     secondary = build_secondary(scene_dir, spec.get("secondary"), spec)

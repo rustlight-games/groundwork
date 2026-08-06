@@ -137,6 +137,11 @@ pub struct RawStructure {
     pub cluster_wavelength_m: f32,
     pub cluster_strength: f32,
     pub cohesion: f32,
+    /// Optional. Absent means the mesh carries the coarsest band and nothing
+    /// else, which is what every profile did before soils could ask for a
+    /// hierarchy — see `GroundStructure::mesh_floor_m`.
+    #[serde(default)]
+    pub mesh_floor_m: Option<f32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -315,6 +320,7 @@ pub fn from_str(path: &str, text: &str) -> Result<GroundMaterialProfile, Profile
             cluster_wavelength_m: raw.structure.cluster_wavelength_m,
             cluster_strength: raw.structure.cluster_strength,
             cohesion: raw.structure.cohesion,
+            mesh_floor_m: raw.structure.mesh_floor_m,
         },
         // Degrees on the wire and radians in the model. An author reasoning
         // about which way the wind blew is thinking in degrees; every consumer
