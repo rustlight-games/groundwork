@@ -326,7 +326,7 @@
                     // The radius is a reach bound for the same reason: it has to
                     // cover the largest `fragment_radius_m` in play, which is
                     // the loam's twenty millimetres.
-                    ("density", Number(240.0)),
+                    ("density", Number(2700.0)),
                     ("radius_m", Number(0.010)),
                 ],
             ),

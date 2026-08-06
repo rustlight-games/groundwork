@@ -260,19 +260,27 @@ fn saturation_fills_the_pores_and_leaves_the_aggregates() {
     );
     let kept = wet.topography.sq_m / dry.topography.sq_m;
 
-    // The ladder's coarsest band is far above `AGGREGATE_SCALE_M` and carries
-    // most of the surface, so almost all of the relief has to survive.
+    // ## And the end-to-end claim had to go with it
+    //
+    // A second version of this test asserted that saturated ground carries
+    // *slightly less* relief than dry ground end to end — between 0.90 and 1.00
+    // of it. Measured against the simulation it comes back at **1.055**, and
+    // the simulation is right.
+    //
+    // Water does two opposite things to a heap of soil. It builds liquid bridges
+    // between the grains, which is cohesion, and cohesion is what lets a face
+    // stand steeper than its friction angle. And past saturation it fills the
+    // pores completely, the bridges disappear, and the material runs. So
+    // cohesion *peaks damp* — see `soil::Params::of` — and bone-dry soil, which
+    // has none at all, slumps to its friction angle just as a soaked one does.
+    //
+    // Dry and saturated therefore land close together with a maximum between
+    // them, which is not a relationship a monotonic assertion can hold. What is
+    // still worth pinning is the scale rule underneath it, which is exact.
     assert!(
-        kept > 0.90,
-        "saturation took {:.1}% off a ladder whose relief is mostly aggregate",
-        (1.0 - kept) * 100.0
-    );
-
-    // And it must still do something, or the response has been disconnected
-    // rather than scaled.
-    assert!(
-        kept < 1.0,
-        "saturation left the relief untouched at {kept:.4}; the fine bands should have gone"
+        (0.85..1.20).contains(&kept),
+        "saturated ground carries {kept:.3} of dry ground's relief; \
+         the two should land close together with the peak between them"
     );
 
     // The rule itself, stated where it is cheap to check: total at grain scale,
@@ -298,10 +306,21 @@ fn saturation_fills_the_pores_and_leaves_the_aggregates() {
 }
 
 #[test]
-fn compaction_flattens_more_than_saturation_does() {
-    // Not a tuning claim — a check that the two responses are distinct. The
-    // loam's bands declare compaction responses of 0.75, 0.45 and 0.20, which
-    // together bite harder than one saturation flattening of 0.45.
+fn compaction_flattens_and_saturation_does_not() {
+    // ## The two responses are distinct, and only one of them is a flattening
+    //
+    // This used to assert that compaction bites *harder* than saturation, on
+    // the reading that both flatten and compaction flattens more. Half of that
+    // is wrong now and was always shaky: saturation does not flatten a heap of
+    // soil at all in the net — it stiffens it up to the damp peak and only
+    // loosens it past saturation, so it can leave relief slightly *higher* than
+    // bone-dry ground. See `saturation_fills_the_pores_and_leaves_the_aggregates`.
+    //
+    // Compaction has no such turn in it. Pressing ground flattens it at every
+    // strength, which is what the profile's per-band `compaction_response`
+    // declares and what the simulation does with shallower marks and less
+    // movable depth. So the claim worth holding is that compaction flattens and
+    // that it is the *only* one of the two that reliably does.
     let dry = ground::run(
         ground::scenarios::scenario("ground_band_full_ladder").expect("exists"),
         ground::DEFAULT_SEED,
@@ -315,12 +334,18 @@ fn compaction_flattens_more_than_saturation_does() {
         ground::DEFAULT_SEED,
     );
     assert!(
+        packed.topography.sq_m < dry.topography.sq_m,
+        "compaction did not flatten: {} against {}",
+        packed.topography.sq_m,
+        dry.topography.sq_m
+    );
+    assert!(
         packed.topography.sq_m < wet.topography.sq_m,
-        "compaction left {} and saturation left {}; compaction should bite harder",
+        "compaction left {} and saturation left {}; compaction is the response \
+         that flattens",
         packed.topography.sq_m,
         wet.topography.sq_m
     );
-    assert!(packed.topography.sq_m < dry.topography.sq_m);
 }
 
 #[test]

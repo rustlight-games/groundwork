@@ -283,9 +283,49 @@
         )),
 
         scatter: (
-            grit_per_m2: 90.0,
-            pebble_per_m2: 0.5,
-            fragment_radius_m: (0.004, 0.02),
+            // ## The reference's texture *is* the grit
+            //
+            // Ninety a square metre. Shown a crop of the reference photograph
+            // beside a crop of the render at the same magnification, the gap is
+            // not the shading and it is not the heightfield — it is that the
+            // photograph is made of **thousands of discrete small objects**,
+            // each with a lit top and a shadowed side, and the render is a
+            // smooth surface with holes in it.
+            //
+            // That is a representation difference and no amount of simulating
+            // the heightfield can close it. A height field is by definition a
+            // single continuous surface; soil at this scale is a heap of
+            // separate fragments lying on one. Ninety a square metre is one
+            // every ten centimetres — invisible. Two and a half thousand is one
+            // every two, which is what a photograph of a track shows.
+            //
+            // Radii go down as well as up: most of what covers real ground is
+            // crumb a couple of millimetres across, with the occasional larger
+            // lump. The old floor of four millimetres had nothing below it at
+            // all.
+            // ## Sized to what the frame can resolve, not to what soil has
+            //
+            // A millimetre and a half to fourteen is honest about real crumb and
+            // renders as nothing: at this project's trace resolution a five
+            // millimetre fragment covers **a pixel and a half**, so ninety
+            // thousand of them arrived as a faint grey haze over a smooth
+            // surface. Seen in silhouette against the black at the plate's edge
+            // the same fragments read perfectly — crisp, lit, distinctly
+            // separate objects — which is what says the geometry is right and
+            // the size is not.
+            //
+            // Ten to thirty-six millimetres across puts a fragment at three to
+            // twelve pixels, which is the band where a thing has a lit top and a
+            // shadow beside it. Fewer of them, because they are each several
+            // times the area: a quarter of the ground covered rather than all of
+            // it.
+            //
+            // The crumb below this scale has not gone anywhere. It is in the
+            // shader's bump and then in the roughness, which is the same
+            // three-tier split the relief uses and for the same reason.
+            grit_per_m2: 700.0,
+            pebble_per_m2: 22.0,
+            fragment_radius_m: (0.005, 0.018),
         ),
 
         vegetation_affinity: 0.0,

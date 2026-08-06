@@ -565,12 +565,32 @@ fn gates(
                 // tight one. It exists to catch a band that came out at a
                 // tenth or ten times its amplitude, which is what a lost
                 // state response or a doubled contribution produces.
+                // ## What a declared amplitude now means
+                //
+                // This bracket was `0.01 .. 1.0`, and it read as a
+                // reconstruction check: a band declares an amplitude, the mesh
+                // draws that band, the energy should come back at or below the
+                // sinusoidal `A²/2`.
+                //
+                // The mesh no longer draws bands. `terrain_generators::soil`
+                // simulates the surface — packets, slumping, pits, wash — and
+                // takes its *scales* from the profile's bands. A declared
+                // amplitude is now the size of the material the simulation has
+                // to work with rather than the height of a wave it reproduces,
+                // and a surface built by piling that material up and knocking
+                // holes in it can carry more variance than one wave of it would.
+                //
+                // The upper bound therefore moves. What the gate is for does
+                // not: it exists to catch a band that came out at a *tenth* or
+                // *ten times* its amplitude, which is what a lost state response
+                // or a doubled contribution produces, and a bracket two decades
+                // wide still catches both.
                 let declared = (band.amplitude_m as f64).powi(2);
                 gates.push(GateResult::within(
                     "band_energy_against_amplitude",
                     measured.energy_m2 / declared.max(f64::MIN_POSITIVE),
                     0.01,
-                    1.0,
+                    4.0,
                     "measured band energy over the declared amplitude squared",
                 ));
 

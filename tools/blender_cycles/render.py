@@ -1005,8 +1005,20 @@ def soil_fragment_material(settings, soils=None):
     # Lifted a little, because a fresh break exposes unweathered material and a
     # loose lump catches more sky than the packed surface it is lying on. A
     # little — the old figure's mistake was the size of the gap, not its sign.
+    # ## And a fragment is a *lit* object, not a dark speck
+    #
+    # A quarter above the soil's mid stop still rendered darker than the lit
+    # ground around it, so ninety thousand fragments came out as dark dots
+    # peppering a smooth surface. In the reference photograph the crumbs are the
+    # brightest thing on the ground — they stand proud, they catch the sun on
+    # top, and what reads is the *pair*: a lit crown with its own shadow beside
+    # it. Dots have no shadow and no crown.
+    #
+    # Two and a half times the mid puts a fragment between the soil's mid and
+    # high stops, which is where a piece of unweathered material freshly turned
+    # out of the surface actually sits.
     mid = (soils or [{}])[0].get("dry_palette", {}).get("mid", [0.036, 0.021, 0.011])
-    material = stone_material(settings, [c * 1.25 for c in mid])
+    material = stone_material(settings, [c * 2.5 for c in mid])
     principled = material.node_tree.nodes["Principled BSDF"]
     principled.inputs["Roughness"].default_value = 0.94
     # A mineral aggregate, not a dense silicate.
@@ -1421,8 +1433,19 @@ COAT_CEILING = 0.20
 SOIL_SPECULAR = 0.04
 
 # What is left of the pore-scale bump at full saturation, and under a wheel.
-BUMP_WET = 0.55
-BUMP_PACKED = 0.40
+# ## Both were far too deep
+#
+# At a moisture of 0.78 and a compaction of 0.59 these multiplied out to **0.42**
+# — the pore-scale bump running at two fifths strength on the one surface whose
+# whole problem was that it had no fine detail. A crop of the render beside the
+# reference at the same magnification came back as soft gradients with nothing
+# above a centimetre in it.
+#
+# Water and compaction do fill pores, and the effect is real; it is not this
+# large. Enough to be seen as a difference between damp and dry, not enough to
+# erase the surface.
+BUMP_WET = 0.82
+BUMP_PACKED = 0.72
 
 
 def ground_material(materials=None):

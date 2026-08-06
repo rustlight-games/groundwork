@@ -12,59 +12,62 @@ spectrum = axis 0.000, alias 0.000, anisotropy 0.000
   [not_applicable] band_dominant_wavelength
 
 [ground_band_coarse_only]
-verdict = pass
+verdict = fail
 grid = 161x161 at 0.00625 m
-height = Sq 0.004559 m, Sa 0.003893 m, skew -0.081, kurtosis 1.964
-cavity = pearson -0.991, spearman -0.992
-spectrum = axis 0.708, alias 0.000, anisotropy 0.139
-  band0 = declared 0.0500 m, dominant 0.0936 m, 0.274 of energy
+height = Sq 0.002320 m, Sa 0.001378 m, skew -2.381, kurtosis 11.618
+cavity = pearson -0.974, spearman -0.929
+spectrum = axis 0.840, alias 0.004, anisotropy 0.073
+  band0 = declared 0.0500 m, dominant 0.0992 m, 0.287 of energy
+  [fail] band_energy_against_amplitude
 
 [ground_band_crumb_only]
-verdict = pass
+verdict = fail
 grid = 287x287 at 0.00175 m
-height = Sq 0.001487 m, Sa 0.001291 m, skew +0.115, kurtosis 1.752
-cavity = pearson -0.997, spearman -0.996
-spectrum = axis 0.800, alias 0.000, anisotropy 0.047
-  band0 = declared 0.0140 m, dominant 0.0238 m, 0.271 of energy
+height = Sq 0.000578 m, Sa 0.000358 m, skew -2.418, kurtosis 13.756
+cavity = pearson -0.927, spearman -0.812
+spectrum = axis 0.852, alias 0.001, anisotropy 0.201
+  band0 = declared 0.0140 m, dominant 0.0278 m, 0.038 of energy
+  [fail] band_energy_against_amplitude
 
 [ground_band_grain_only]
-verdict = pass
+verdict = fail
 grid = 501x501 at 0.00050 m
-height = Sq 0.000463 m, Sa 0.000412 m, skew +0.200, kurtosis 1.592
-cavity = pearson -1.000, spearman -0.998
-spectrum = axis 0.794, alias 0.001, anisotropy 0.052
-  band0 = declared 0.0040 m, dominant 0.0068 m, 0.284 of energy
+height = Sq 0.000218 m, Sa 0.000134 m, skew +0.251, kurtosis 8.995
+cavity = pearson -0.974, spearman -0.886
+spectrum = axis 0.771, alias 0.000, anisotropy 0.106
+  band0 = declared 0.0040 m, dominant 0.0080 m, 0.021 of energy
+  [fail] band_energy_against_amplitude
 
 [ground_band_full_ladder]
 verdict = pass
 grid = 641x641 at 0.00050 m
-height = Sq 0.005184 m, Sa 0.004431 m, skew +0.184, kurtosis 2.036
-cavity = pearson -0.990, spearman -0.991
-spectrum = axis 0.966, alias 0.000, anisotropy 0.133
-  band0 = declared 0.0500 m, dominant 0.0905 m, 0.721 of energy
-  band1 = declared 0.0140 m, dominant 0.0256 m, 0.050 of energy
-  band2 = declared 0.0040 m, dominant 0.0078 m, 0.006 of energy
+height = Sq 0.001534 m, Sa 0.000981 m, skew -1.381, kurtosis 7.014
+cavity = pearson -0.990, spearman -0.944
+spectrum = axis 0.997, alias 0.000, anisotropy 0.297
+  band0 = declared 0.0500 m, dominant 0.0905 m, 0.556 of energy
+  band1 = declared 0.0140 m, dominant 0.0256 m, 0.004 of energy
+  band2 = declared 0.0040 m, dominant 0.0075 m, 0.000 of energy
   [not_applicable] band_dominant_wavelength
 
 [ground_compaction_sweep]
 verdict = pass
 grid = 641x641 at 0.00050 m
-height = Sq 0.001520 m, Sa 0.001239 m, skew +0.165, kurtosis 2.464
-cavity = pearson -0.993, spearman -0.994
-spectrum = axis 0.928, alias 0.000, anisotropy 0.034
-  band0 = declared 0.0500 m, dominant 0.0905 m, 0.679 of energy
-  band1 = declared 0.0140 m, dominant 0.0256 m, 0.161 of energy
-  band2 = declared 0.0040 m, dominant 0.0078 m, 0.033 of energy
+height = Sq 0.000661 m, Sa 0.000401 m, skew -0.745, kurtosis 8.597
+cavity = pearson -0.991, spearman -0.945
+spectrum = axis 1.004, alias 0.000, anisotropy 0.288
+  band0 = declared 0.0500 m, dominant 0.0905 m, 0.601 of energy
+  band1 = declared 0.0140 m, dominant 0.0256 m, 0.003 of energy
+  band2 = declared 0.0040 m, dominant 0.0075 m, 0.000 of energy
   [not_applicable] band_dominant_wavelength
 
 [ground_moisture_sweep]
 verdict = pass
 grid = 641x641 at 0.00050 m
-height = Sq 0.005072 m, Sa 0.004378 m, skew +0.173, kurtosis 1.924
-cavity = pearson -0.989, spearman -0.990
-spectrum = axis 0.975, alias 0.000, anisotropy 0.172
-  band0 = declared 0.0500 m, dominant 0.0905 m, 0.726 of energy
-  band1 = declared 0.0140 m, dominant 0.0220 m, 0.027 of energy
-  band2 = declared 0.0040 m, dominant 0.0078 m, 0.002 of energy
+height = Sq 0.001778 m, Sa 0.001212 m, skew -1.452, kurtosis 6.254
+cavity = pearson -0.985, spearman -0.960
+spectrum = axis 1.013, alias 0.001, anisotropy 0.348
+  band0 = declared 0.0500 m, dominant 0.0905 m, 0.574 of energy
+  band1 = declared 0.0140 m, dominant 0.0251 m, 0.023 of energy
+  band2 = declared 0.0040 m, dominant 0.0067 m, 0.006 of energy
   [not_applicable] band_dominant_wavelength
 

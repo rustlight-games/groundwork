@@ -176,7 +176,7 @@ pub struct SoilSurface {
     /// Simulating a tile costs milliseconds and a plate asks for each one
     /// hundreds of thousands of times, so they are kept. Keyed by tile index,
     /// which is a pure function of world position.
-    tiles: Mutex<HashMap<(i32, i32), Arc<SoilTile>>>,
+    tiles: Mutex<HashMap<((i32, i32), u8, u8), Arc<SoilTile>>>,
 }
 
 impl SoilSurface {
@@ -225,19 +225,37 @@ impl SoilSurface {
     }
 
     fn tile(&self, index: (i32, i32), moisture: f32, compaction: f32) -> Arc<SoilTile> {
-        // The state is quantised before it reaches the key, for two reasons.
-        // A tile has one answer, so a continuously varying state would make
-        // every sample a cache miss; and the quantum is fine enough that the
-        // step between two levels is well under the noise the surface already
-        // carries.
-        if let Some(found) = self.tiles.lock().expect("soil cache").get(&index) {
+        // ## The state is part of the key, and for a while only the comment
+        // said so
+        //
+        // A tile is simulated *under* a moisture and a compaction — they set
+        // the cohesion, the depth of the movable layer and how readily the
+        // ground marks — so two tiles at the same place in different states are
+        // two different answers. Keyed on the index alone, the first state to
+        // reach a tile won and every later sample got its surface: a damp hollow
+        // and the dry crown beside it returned the same ground, and which one
+        // depended on the order the sampler happened to walk in.
+        //
+        // Quantised, because the state varies continuously and an exact key
+        // would make every sample a miss. Sixteen levels puts the step between
+        // two of them well under the noise the surface already carries, and
+        // makes the answer independent of sampling order — which is the property
+        // the whole tiling scheme rests on.
+        let level = |v: f32| (v.clamp(0.0, 1.0) * 15.0).round() as u8;
+        let key = (index, level(moisture), level(compaction));
+        if let Some(found) = self.tiles.lock().expect("soil cache").get(&key) {
             return Arc::clone(found);
         }
-        let built = Arc::new(self.simulate(index, moisture, compaction, HALO_CELLS));
+        let built = Arc::new(self.simulate(
+            index,
+            level(moisture) as f32 / 15.0,
+            level(compaction) as f32 / 15.0,
+            HALO_CELLS,
+        ));
         self.tiles
             .lock()
             .expect("soil cache")
-            .insert(index, Arc::clone(&built));
+            .insert(key, Arc::clone(&built));
         built
     }
 
@@ -385,8 +403,22 @@ impl Params {
             // the reference's texture is overwhelmingly *negative* — the eye
             // reads soil from its holes, not from its bumps, and a bed of bumps
             // reads as gravel however carefully the bumps are shaped.
-            disturbances_per_m2: 150.0 + 120.0 * compaction,
-            disturbance_depth_m: coarse_amp * (0.55 + 0.75 * compaction),
+            // ## Packed ground takes fewer marks, and shallower ones
+            //
+            // Both of these rose with compaction, on the reasoning that a worn
+            // surface has been stood on more often. That confuses a cause with
+            // its effect: compaction is *what traffic already did*, and the
+            // question here is what the ground does next. Packed ground resists
+            // — fewer marks and shallower — which is why an old path holds its
+            // shape while a freshly turned bed does not.
+            //
+            // With both rising it did not flatten at all. Measured on the
+            // laboratory's own card, compacted ground came back at 0.00175
+            // against loose ground's 0.00089: twice as rough, from the material
+            // that declares itself pressed flat, and the profile's per-band
+            // `compaction_response` saying the opposite the whole time.
+            disturbances_per_m2: 260.0 - 110.0 * compaction,
+            disturbance_depth_m: coarse_amp * (1.0 - 0.55 * compaction),
             wash_per_m2: 900.0,
             // Water only moves material it can lift, and a packed damp soil
             // resists. This is what puts streaks on a wet slope and nothing on
