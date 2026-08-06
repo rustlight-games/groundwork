@@ -1534,6 +1534,25 @@ impl TerrainRecipe for DirtClods {
         let curvature = context.fields.curvature(candidate.position);
         let hollow = smoothstep(0.5, -0.5, curvature);
         let packed = context.ground_sample.state.compaction.clamp(0.0, 1.0);
+        // ## And the shoulder is where it piles up
+        //
+        // A track's spoil does not sit evenly across it. It is pushed outward —
+        // by feet, by wheels, by water running off the crown — and it collects
+        // along the edge where the bare ground meets what is still growing. Every
+        // reference photograph of a path shows that band: coarse material, torn
+        // material, more of it than anywhere else on the plate.
+        //
+        // The dominant substrate's own weight says where that band is without
+        // any new field. Deep inside the track one soil holds nearly all of the
+        // weight; deep in the meadow the other does; and the *boundary* is
+        // exactly where neither does, which is the peak of this term.
+        let share = context
+            .substrate
+            .dominant()
+            .map(|(_, weight)| weight)
+            .unwrap_or(1.0)
+            .clamp(0.0, 1.0);
+        let shoulder = (1.0 - (2.0 * share - 1.0).abs()).clamp(0.0, 1.0);
         // ## Centred on one, not capped at it
         //
         // The first version ran `1 - 0.62 * packed`, which is a sort *and* a
@@ -1545,7 +1564,10 @@ impl TerrainRecipe for DirtClods {
         // same ratio between a packed core and a loose shoulder — about two to
         // one — arranged so the core keeps roughly what it had and the shoulder
         // gains, which is where a track's spoil actually collects.
-        let released = 1.35 - 0.70 * packed;
+        // Half as much again along the shoulder, on top of what the packing
+        // releases. This is the term that gives the grass fringe the accumulated
+        // spoil it has never had.
+        let released = (1.35 - 0.70 * packed) * (1.0 + 0.85 * shoulder);
 
         if let Some(scatter) = &scatter {
             let supply = read(context.parameters, "density", 220.0).max(1.0) as f32;
@@ -1575,7 +1597,10 @@ impl TerrainRecipe for DirtClods {
         // A hollow is where the fines went, so a coarse fragment is much less
         // likely to be found in one — and a crown keeps its lumps. This is the
         // sorting the comment below has always described.
-        let coarse_here = pebble_share * (1.0 - 0.75 * hollow) * (0.5 + 0.5 * released);
+        // Coarser there too: the shoulder is where the material that was pushed
+        // aside came to rest, and what gets pushed aside is the big stuff.
+        let coarse_here =
+            pebble_share * (1.0 - 0.75 * hollow) * (0.5 + 0.5 * released) * (1.0 + 1.6 * shoulder);
         let big = size > 1.0 - coarse_here.clamp(0.0, 1.0);
         let radius = if big {
             base * (0.8 + 0.2 * size)
