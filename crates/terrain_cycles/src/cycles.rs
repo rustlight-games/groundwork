@@ -1197,7 +1197,26 @@ fn sample_ground(
             // One evaluation. Everything below reads from it, which is what
             // makes the colour, the relief and the grass agree by construction.
             let sample = ground.sample(world);
-            heights.push(mound + sample.displacement_m);
+            // ## The mesh was ignoring the authored elevation
+            //
+            // This was `mound + displacement`, and the scene compiler places
+            // every mark at `fields.surface_height + displacement`. The missing
+            // term is the *authored* elevation — what the document says the
+            // ground's height is — and `meadow_path` uses it to sink its worn
+            // track.
+            //
+            // So the marks followed the sunken track and the mesh stayed flat
+            // over it. Measured by pairing each instance against the mesh at its
+            // own x and y: 5936 soil fragments sat a median of **62 mm** below
+            // the surface, none of them above it, on objects 12 mm tall. Every
+            // one was underground, which is why a render showed them crisply
+            // where they overhang the plate's edge into black and not at all on
+            // the ground itself.
+            //
+            // `final_surface_z_m` is the compiler's own expression, so using it
+            // here makes the two halves the same function by construction rather
+            // than by two definitions that agree until one of them moves.
+            heights.push(mound + ground.final_surface_z_m(world));
             for plane in weights.iter_mut() {
                 plane.push(0.0);
             }
